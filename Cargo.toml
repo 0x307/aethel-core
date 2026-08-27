@@ -1,0 +1,124 @@
+[package]
+name = "aethel-core"
+version = "0.1.0"
+edition = "2021"
+description = "Post-Quantum Ephemeral Identifier Engine — Polymorphic Lattice Projection (PLP), SAAP, and 5D Hypercube HTSS routing"
+authors = ["Kenneth Harper"]
+license = "Apache-2.0"
+repository = "https://github.com/0x307/aethel-core"
+keywords = ["post-quantum", "identity", "lattice", "zero-knowledge"]
+categories = ["cryptography", "no-std"]
+readme = "README.md"
+rust-version = "1.85"
+build = "build.rs"
+exclude = ["dist/*"]
+
+# ── Library configuration ─────────────────────────────────────────────────────
+
+[lib]
+name = "aethel_core"
+crate-type = ["cdylib", "rlib"]
+
+# ── Dependencies ──────────────────────────────────────────────────────────────
+
+[dependencies]
+
+# SHA3-256 / SHAKE-256 for Fiat-Shamir challenge derivation and context expansion
+sha3 = { version = "0.10", default-features = false }
+
+# Zeroize for secure memory cleanup of secret key material.
+# `alloc` is enabled unconditionally (not just via the `std` feature) so
+# Vec<_>-backed intermediates (e.g. htss.rs's Shamir polynomial coefficients)
+# can be zeroized in every build configuration, including `--features wasm`
+# with `std` off.
+zeroize = { version = "1.7", default-features = false, features = ["zeroize_derive", "alloc"] }
+
+# Serialization for proof transcript encoding/decoding
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
+
+# Binary encoding for proof serialization
+bincode = { version = "1.3", default-features = false }
+
+# WASM bindings (optional, enabled by `wasm` feature)
+wasm-bindgen = { version = "0.2", optional = true }
+
+# ── Dev dependencies ──────────────────────────────────────────────────────────
+
+[dev-dependencies]
+
+# Standard RNG for tests
+rand = { version = "0.8", features = ["std_rng"] }
+
+# Hex encoding for test output
+hex = "0.4"
+
+# Compile-time "type does NOT implement trait" assertions — used to prove
+# key-bearing types carry no Debug/Display impl that could format-leak them.
+static_assertions = "1.1"
+
+# Runs #[wasm_bindgen_test] tests under wasm32-unknown-unknown (via `wasm-pack
+# test --node`), so the zeroization test actually executes in WASM linear
+# memory, not just on native.
+wasm-bindgen-test = "0.3"
+
+# `rand`'s transitive `getrandom` dependency refuses to compile for
+# wasm32-unknown-unknown without the "js" feature (unrelated to anything this
+# crate actually does — nothing here uses OS randomness, everything is
+# SHAKE-256-derived) but it's still pulled in for every `cargo test`,
+# including `wasm-pack test`. Pin it directly with "js" so wasm32 test builds
+# compile; on native this target block simply doesn't apply.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
+# ── Build dependencies ────────────────────────────────────────────────────────
+
+[build-dependencies]
+cc = "1.0"
+
+# ── Feature flags ─────────────────────────────────────────────────────────────
+
+[features]
+
+# Default: std enabled for native builds; WASM uses --no-default-features --features wasm
+default = ["std"]
+
+# std: Enable standard library support (heap allocation, I/O)
+std = [
+    "serde/std",
+    "zeroize/std",
+]
+
+# wasm: WebAssembly target with wasm-bindgen bindings
+wasm = [
+    "wasm-bindgen",
+]
+
+# enclave: Enables constant-time enclave execution paths and volatile zeroization
+# Activates the fixed-iteration rejection sampling loop and CMOV selection
+enclave = []
+
+# puf: Enables the SRAM PUF + BCH(1023,512,55) fuzzy extractor module (research,
+# out of scope for the aethel:core WIT world). Non-default: excluded from the
+# default build so a standard `cargo build` carries no unsafe FFI to the
+# (unshipped) enclave shim for a subsystem the charter puts out of scope.
+puf = []
+
+# ── Build profiles ────────────────────────────────────────────────────────────
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = false              # Keep symbols for security auditing
+overflow-checks = true     # Keep overflow checks in release for safety
+
+[profile.release-wasm]
+inherits = "release"
+opt-level = "s"            # Optimize for binary size in WASM
+strip = true               # Strip debug symbols for WASM deployment
+overflow-checks = false    # Drop runtime integer overflow checks in WASM release
+
+[profile.dev]
+opt-level = 0
+debug = true

@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --all-targets
+      - run: cargo test
+
+  # Declared rust-version in Cargo.toml, pinned and actually built rather than only stated.
+  # 1.75 was the original declared MSRV but was never tested and does not build: the locked
+  # zeroize_derive already requires the `edition2024` Cargo feature, which needs rustc 1.85+.
+  # 1.85 also matches the MSRV declared by pqc-kem/pqc-sig, so this keeps all three repos in
+  # the Identity Release initiative on the same floor.
+  msrv:
+    name: MSRV (1.85) build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - run: cargo build --all-targets --locked
+      - run: cargo test --locked
+
+  # P3-02: proves identity generation works fully offline by denying the
+  # capability at the boundary (a real network namespace with no interface),
+  # not by an in-process "am I offline?" assertion. An in-process check can
+  # only observe the paths it knows to instrument and would pass even if a
+  # dependency three levels down still had a route out.
+  #
+  # `sudo unshare --net` puts the step's process tree in a fresh network
+  # namespace with no configured interface (loopback only, and unused here)
+  # — equivalent to the `--network none` a container runtime would give you,
+  # without needing to solve "how does an offline container fetch crates".
+  # GitHub-hosted ubuntu-latest runners have passwordless sudo, so this needs
+  # no extra setup.
+  #
+  # NOTE: an earlier version of this job used the unprivileged
+  # `unshare --net --map-root-user` (no sudo) specifically to avoid depending
+  # on passwordless sudo, and that was verified working in WSL2/Ubuntu. It
+  # does NOT work on GitHub-hosted runners: Ubuntu 23.10+ restricts
+  # unprivileged user-namespace creation via AppArmor
+  # (kernel.apparmor_restrict_unprivileged_userns=1), so the job died with
+  # "unshare: write failed /proc/self/uid_map: Operation not permitted"
+  # before either isolated step ran at all — the first real run of this
+  # workflow produced zero evidence in either direction. `sudo unshare --net`
+  # sidesteps the user-namespace restriction entirely (root doesn't need
+  # CAP_SYS_ADMIN granted via userns) and is what's actually confirmed
+  # working on ubuntu-latest.
+  #
+  # Dependencies and test binaries are built in the earlier, networked step;
+  # the isolated steps only execute already-built code with `--offline`, so
+  # cargo itself never needs a route either.
+  offline-generation:
+    name: offline generation (network-isolated)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Prefetch deps and build test binaries (network available here)
+        run: |
+          cargo build --all-targets
+          cargo test --no-run --lib --test plp_tests
+          cargo test --no-run --test network_isolation_negative_control
+
+      - name: Generation suite MUST succeed with no network interface available
+        run: |
+          sudo -E env "PATH=$PATH" unshare --net -- \
+            cargo test --offline --lib --test plp_tests
+
+      - name: Negative control MUST fail with no network interface available
+        run: |
+          if sudo -E env "PATH=$PATH" unshare --net -- \
+               cargo test --offline --test network_isolation_negative_control; then
+            echo "::error::negative-control network call succeeded inside the network-isolated step — isolation is NOT enforced, the offline-generation claim is unproven"
+            exit 1
+          fi
+          echo "Negative control failed as expected under network isolation — isolation confirmed real."
+
+  # P3-08 follow-up: zeroize_wipes_master_identity_secret_wasm (src/plp.rs)
+  # proves MasterIdentity's secret is actually zeroized in WASM linear
+  # memory, not just on native — but a test nobody runs isn't proof (same
+  # failure shape as the earlier `unshare` incident on this repo, where the
+  # isolation job silently didn't execute what it claimed to). This job runs
+  # it for real, under wasm32-unknown-unknown via wasm-pack + Node.
+  #
+  # `--no-default-features --features wasm` matches the README's documented
+  # production WASM build, not just any feature combination that happens to
+  # compile.
+  wasm-test:
+    name: wasm test (zeroization + full suite, node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: Run wasm test suite (production feature set)
+        run: wasm-pack test --node -- --no-default-features --features wasm
