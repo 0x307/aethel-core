@@ -17,7 +17,7 @@ document for what counts as breaking inside `0.x`.
   zero-knowledge selective disclosure; and 5D Hypercube Threshold Secret Sharing (HTSS) —
   Shamir 3-of-5 secret sharing routed over a Q_5 hypercube graph.
 - WASM bindings (`wasm` feature) exporting `plp_*`, `saap_*_wasm`, and `htss_*`.
-- 27 `--lib` unit tests, 18 `tests/plp_tests.rs` integration tests, and 1 doctest passing on
+- 31 `--lib` unit tests, 15 `tests/plp_tests.rs` integration tests, and 1 doctest passing on
   default features. CI proves offline generation by running it inside a network-isolated
   namespace with a negative control, rather than by in-process assertion alone.
 - `puf` (SRAM PUF fuzzy extraction, research code) and `enclave` (C FFI shim) are non-default
