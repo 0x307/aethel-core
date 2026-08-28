@@ -106,6 +106,62 @@ predates the typed WIT world — see that file for how the two relate). `puf_enr
 `puf_reconstruct` are WASM exports only when built with `--features puf`; they are not part of
 the WIT world either way.
 
+## The WASM Component (L1 boundary)
+
+`aethel-core` builds as a **WebAssembly Component Model component** implementing the
+`aethel:core` world declared in [`wit/aethel-core.wit`](wit/aethel-core.wit). This is the
+artifact every language binding embeds — one shared component, never per-language crypto.
+
+```bash
+cargo build --release --target wasm32-unknown-unknown   --no-default-features --features component
+wasm-tools component new   target/wasm32-unknown-unknown/release/aethel_core.wasm   -o aethel_core.component.wasm
+```
+
+Verify what you built exposes the declared world:
+
+```bash
+wasm-tools validate aethel_core.component.wasm
+wasm-tools component wit aethel_core.component.wasm
+```
+
+### Reproducing the published artifact
+
+Two builds of the same source commit produce byte-identical output. The expected hash is
+checked into [`component.sha256`](component.sha256) and enforced in CI, so you do not have to
+take our word for what the binary contains:
+
+```bash
+sha256sum aethel_core.component.wasm
+cat component.sha256
+```
+
+If those differ, the artifact was not built from this source. Requires the toolchain pinned in
+`.github/workflows/component.yml` (currently Rust 1.97.0, wasm-tools 1.258.0) — a different
+toolchain will produce different bytes.
+
+### Component status per operation
+
+| Operation | Status |
+|---|---|
+| `plp-project-at-context` | Implemented |
+| `plp-prove-identity` | Implemented |
+| `plp-verify` | Implemented |
+| `saap-prove` | Implemented |
+| `saap-verify` | **Always returns `ok(false)`** — denies rather than pretends; see below |
+| `htss-split` | Implemented (fixed internal nonce, see `src/component.rs`) |
+| `htss-reconstruct` | Implemented |
+
+`saap-verify` is not wired to the corrected verifier because that needs a public key
+`t = A_τ·sk`, which this signature has no parameter to carry and which — with the current
+prover, having no error term — is an exact linear image of the secret and unsafe to publish.
+The specification anchors verification on the PLP projection `b_τ = A_τ·s + e_τ`, whose noise
+makes it publishable; building that is tracked as P3-11. A verifier that cannot verify soundly
+denies. **Do not read `ok(false)` from this operation as "this proof is invalid."**
+
+The separate `wasm` feature still produces the older `wasm-bindgen` core module with a flat
+pointer/length ABI. It is not a component, its exports are untyped, and it is retained only
+for existing callers.
+
 ## Building
 
 ### Prerequisites

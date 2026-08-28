@@ -99,6 +99,10 @@ pub mod sdk;
 /// Rust-side mirror of the `aethel:core` WIT world's `identity-error` variant.
 pub mod identity_error;
 
+/// WebAssembly Component Model adapter implementing the `aethel:core` WIT world.
+#[cfg(feature = "component")]
+pub mod component;
+
 // ── Re-exports of public API types ───────────────────────────────────────────
 
 pub use plp::{EphemeralProjection, MasterIdentity, Prover, Verifier, ZkIdentityProof};
