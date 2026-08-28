@@ -116,10 +116,16 @@ impl IdentityGuest for Component {
     fn plp_project_at_context(
         secret: Vec<u8>,
         tau: Vec<u8>,
+        randomness: Vec<u8>,
     ) -> Result<WitProjection, WitError> {
         let seed = secret_as_seed(&secret)?;
+        // `randomness` seeds the error term e_tau; short randomness weakens the
+        // projection to an exact linear image of the secret, so reject it.
+        if randomness.len() < 32 {
+            return Err(WitError::InvalidInputLength);
+        }
         let identity = plp::MasterIdentity::from_seed(&seed);
-        let proj = identity.project_at_context(&tau);
+        let proj = identity.project_at_context(&tau, &randomness);
 
         Ok(WitProjection {
             tau: proj.tau.to_vec(),
@@ -131,11 +137,11 @@ impl IdentityGuest for Component {
     fn plp_prove_identity(secret: Vec<u8>, tau: Vec<u8>) -> Result<WitZkProof, WitError> {
         let seed = secret_as_seed(&secret)?;
         let identity = plp::MasterIdentity::from_seed(&seed);
-        let proj = identity.project_at_context(&tau);
-
-        // The WIT gives this operation `secret` and `tau` only, so the
-        // proving seed is the secret itself. `prove_identity` runs a
-        // fixed 16-iteration rejection loop and always returns a proof.
+        // The proof is independent of e_tau, so proving needs only A_tau and
+        // tau — no fresh randomness. The proving seed is the secret itself;
+        // `prove_identity` runs a fixed 16-iteration rejection loop and always
+        // returns a proof, which verifies against whatever b_tau was published.
+        let proj = plp::EphemeralProjection::for_proving(&tau);
         let proof = plp::Prover::prove_identity(&identity, &proj, &seed);
 
         Ok(WitZkProof {
@@ -198,14 +204,21 @@ impl AttestationGuest for Component {
         disclosed: DisclosureAttributes,
         tau: Vec<u8>,
         secret_key: Vec<u8>,
+        randomness: Vec<u8>,
     ) -> Result<WitSaapProof, WitError> {
         // The named flags are the interface; the bitmask stays an implementation
         // detail below this boundary. The WIT is explicit that a raw mask must
         // never appear on the wire.
         let mask = disclosed.bits() as u64;
 
+        // `randomness` seeds the sigma mask r that hides sk in z = r + c·sk;
+        // reject short randomness rather than emit a weakly-masked proof.
+        if randomness.len() < 32 {
+            return Err(WitError::InvalidInputLength);
+        }
+
         let sk = saap_secret_key_from_bytes(&secret_key)?;
-        let proof = saap::saap_prove(&credential, mask, &tau, &sk);
+        let proof = saap::saap_prove(&credential, mask, &tau, &sk, &randomness);
 
         Ok(WitSaapProof {
             context_tag: proof.context_tag.to_vec(),

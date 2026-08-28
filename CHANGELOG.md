@@ -7,6 +7,29 @@ adheres to the breaking-change and deprecation rules in
 [`STABILITY.md`](./STABILITY.md) rather than strict SemVer prior to `1.0.0` — see that
 document for what counts as breaking inside `0.x`.
 
+## [Unreleased]
+
+### Security
+
+- **Strengthened randomness handling in PLP and SAAP.** The projection error term
+  `e_τ` and the SAAP proof mask `r` are now seeded from caller-supplied fresh
+  secret entropy, so each projection is a sound single-use M-LWE sample and each
+  proof carries an independent mask, which is the property the soundness
+  reduction assumes. Each context τ is used once, per the scheme's ephemeral
+  design.
+
+### Changed (breaking)
+
+- `project_at_context`, `checked_project_at_context`, and `saap_prove` gain a
+  trailing `randomness` argument. WIT `plp-project-at-context` and `saap-prove`
+  gain `randomness: list<u8>`; the WASM exports fail closed on fewer than 32
+  bytes; `checked_project_at_context` returns `InvalidInputLength` for short
+  randomness. `plp-prove-identity` is unchanged.
+
+  **Migration:** supply at least 32 bytes of fresh secret entropy at each call
+  site, sampled anew per call. Never reuse a value or derive it from public
+  data, and use each context τ once.
+
 ## [0.1.0] - 2026-08-27
 
 ### Added

@@ -175,14 +175,17 @@ use wasm_bindgen::prelude::*;
 /// Returns serialized [`EphemeralProjection`] as bytes.
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
-pub fn plp_project_at_context(seed: &[u8], tau: &[u8]) -> Vec<u8> {
-    if seed.len() < 32 {
+pub fn plp_project_at_context(seed: &[u8], tau: &[u8], randomness: &[u8]) -> Vec<u8> {
+    // `randomness` MUST be >=32 bytes of fresh, secret entropy: it seeds the
+    // error term e_tau that makes b_tau an M-LWE sample rather than an exact
+    // linear image of the secret. Fail closed on short randomness.
+    if seed.len() < 32 || randomness.len() < 32 {
         return alloc::vec![];
     }
     let mut seed_arr = [0u8; 32];
     seed_arr.copy_from_slice(&seed[..32]);
     let identity = MasterIdentity::from_seed(&seed_arr);
-    let proj = identity.project_at_context(tau);
+    let proj = identity.project_at_context(tau, randomness);
     // Serialize: tau(32) + matrix_a coeffs(256*4) + public_b coeffs(256*4)
     let mut out = alloc::vec![0u8; 32 + 256 * 4 + 256 * 4];
     out[..32].copy_from_slice(&proj.tau);
@@ -209,7 +212,11 @@ pub fn plp_prove_identity(seed: &[u8], tau: &[u8]) -> Vec<u8> {
     let mut seed_arr = [0u8; 32];
     seed_arr.copy_from_slice(&seed[..32]);
     let identity = MasterIdentity::from_seed(&seed_arr);
-    let proj = identity.project_at_context(tau);
+    // The proof is independent of e_tau (the verifier's approximate check
+    // absorbs c·e_tau), so proving needs only A_tau and tau — no fresh
+    // randomness and no real b_tau. It verifies against whatever b_tau the
+    // caller published via plp_project_at_context.
+    let proj = plp::EphemeralProjection::for_proving(tau);
     let proof = Prover::prove_identity(&identity, &proj, &seed_arr);
     // Serialize: commitment_w(256*4) + challenge_c(256*4) + response_z(256*4)
     let mut out = alloc::vec![0u8; 256 * 4 * 3];
@@ -296,8 +303,16 @@ pub fn saap_prove_wasm(
     disclosure_mask: u64,
     tau: &[u8],
     secret_key_bytes: &[u8],
+    randomness: &[u8],
 ) -> Vec<u8> {
     use saap::{saap_prove, VectorK as SaapVectorK};
+
+    // `randomness` MUST be >=32 bytes of fresh, secret entropy: it seeds the
+    // sigma-protocol mask r that hides sk in z = r + c·sk. Fail closed on short
+    // randomness rather than emitting a proof with a weak mask.
+    if randomness.len() < 32 {
+        return alloc::vec![];
+    }
 
     // Deserialize secret key from bytes
     let mut sk = SaapVectorK::zero();
@@ -313,7 +328,7 @@ pub fn saap_prove_wasm(
         }
     }
 
-    let proof = saap_prove(credential, disclosure_mask, tau, &sk);
+    let proof = saap_prove(credential, disclosure_mask, tau, &sk, randomness);
 
     // Serialize proof: context_tag(32) + disclosure_mask(8) + attributes(64) +
     //                  challenge(256*4) + z(4*256*4) + commitment_hash(32) + commitment_w(4*256*4)

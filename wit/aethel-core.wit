@@ -32,7 +32,11 @@ interface identity {
   }
 
   /// Project a master identity (from secret key material) at context τ.
-  plp-project-at-context: func(secret: list<u8>, tau: list<u8>) -> result<ephemeral-projection, identity-error>;
+  ///
+  /// `randomness` MUST be at least 32 bytes of fresh, secret entropy, distinct
+  /// per projection: it seeds the error term e_τ that makes b_τ an M-LWE sample
+  /// rather than an exact linear image of the secret. τ MUST be single-use.
+  plp-project-at-context: func(secret: list<u8>, tau: list<u8>, randomness: list<u8>) -> result<ephemeral-projection, identity-error>;
 
   /// Prove identity ownership at context τ.
   plp-prove-identity: func(secret: list<u8>, tau: list<u8>) -> result<zk-identity-proof, identity-error>;
@@ -68,7 +72,11 @@ interface attestation {
   }
 
   /// Prove selective attribute disclosure.
-  saap-prove: func(credential: list<u8>, disclosed: disclosure-attributes, tau: list<u8>, secret-key: list<u8>) -> result<saap-proof, identity-error>;
+  ///
+  /// `randomness` MUST be at least 32 bytes of fresh, secret entropy, distinct
+  /// per proof: it seeds the sigma-protocol mask r that hides the secret key in
+  /// the response z = r + c·sk.
+  saap-prove: func(credential: list<u8>, disclosed: disclosure-attributes, tau: list<u8>, secret-key: list<u8>, randomness: list<u8>) -> result<saap-proof, identity-error>;
 
   /// Verify a SAAP selective disclosure proof.
   saap-verify: func(proof: saap-proof, tau: list<u8>) -> result<bool, identity-error>;

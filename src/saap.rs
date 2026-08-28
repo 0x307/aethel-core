@@ -323,14 +323,23 @@ fn derive_saap_matrix(tau: &[u8]) -> [VectorK; MODULE_K] {
 }
 
 /// Sample a masking vector r from uniform [-γ₁, γ₁]^k using SHAKE-256.
-fn sample_saap_masking_vector(tau: &[u8], nonce: u8) -> VectorK {
+/// Sample the sigma-protocol masking vector `r ← [-γ₁, γ₁]^k`.
+///
+/// `rho` MUST be fresh, secret entropy, distinct per proof. The mask is the
+/// only thing hiding `sk` in the response `z = r + c·sk`: an earlier version
+/// derived `r` from the public context tag, so a transcript's `w = A·r` could
+/// be replayed to recover `r` and hence `c·sk`. Worse, `r` did not depend on
+/// the disclosure mask, so two proofs of one credential under one τ disclosing
+/// different attribute sets shared `r` and leaked `sk` via `z₁ − z₂ = (c₁−c₂)·sk`.
+/// Both are closed by sampling `r` from fresh `rho` here.
+fn sample_saap_masking_vector(rho: &[u8], nonce: u8) -> VectorK {
     let mut r = VectorK::zero();
     let range = 2 * PARAM_GAMMA1 as u32 + 1;
 
     for k in 0..MODULE_K {
         let mut hasher = Shake256::default();
-        hasher.update(b"AETHEL_SAAP_MASK_V1");
-        hasher.update(tau);
+        hasher.update(b"AETHEL_SAAP_MASK_V2");
+        hasher.update(rho);
         hasher.update(&[nonce, k as u8]);
         let mut xof = hasher.finalize_xof();
 
@@ -370,6 +379,7 @@ pub fn saap_prove(
     disclosure_mask: AttributeMask,
     tau: &[u8],
     secret_key: &VectorK,
+    rho: &[u8],
 ) -> SaapProof {
     // 1. Parse credential into attribute vector (up to MAX_ATTRIBUTES u64 values)
     let mut attributes = AttributePayload::zero();
@@ -393,7 +403,7 @@ pub fn saap_prove(
     // 4. Fixed 16-iteration rejection sampling loop
     for iter in 0u8..16 {
         // Sample masking vector r ← S_{γ₁}^k
-        let mut r = sample_saap_masking_vector(&context_tag, iter);
+        let mut r = sample_saap_masking_vector(rho, iter);
 
         // Compute commitment w = A · r
         let mut w = VectorK::zero();
@@ -448,7 +458,7 @@ pub fn saap_prove(
     }
 
     // Fallback: return last candidate (all 16 iterations rejected — negligible probability)
-    let mut r = sample_saap_masking_vector(&context_tag, 0);
+    let mut r = sample_saap_masking_vector(rho, 0);
     let mut w = VectorK::zero();
     for i in 0..MODULE_K {
         for j in 0..MODULE_K {
@@ -701,7 +711,7 @@ mod tests {
         let disclosure_mask = 0b00001111u64;
         let tau = b"test_context_tau_saap";
 
-        let proof = saap_prove(&credential, disclosure_mask, tau, &sk);
+        let proof = saap_prove(&credential, disclosure_mask, tau, &sk, &[0x7cu8; 32]);
 
         // Verify norm bound
         assert_eq!(verify_response_norm(&proof.z), 0, "response norm should be within bound");

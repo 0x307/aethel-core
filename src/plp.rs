@@ -506,16 +506,40 @@ impl MasterIdentity {
 
     /// Derive a single-use polymorphic public projection for context τ.
     ///
-    /// b_τ = A_τ · s + e_τ (mod q)
-    /// where A_τ ← SHAKE-256("AETHEL_PLP_CTX_V1" ∥ τ)
-    /// and e_τ ← CBD η=2
-    pub fn project_at_context(&self, tau: &[u8]) -> EphemeralProjection {
+    /// `b_τ = A_τ · s + e_τ (mod q)`, where `A_τ ← SHAKE-256("AETHEL_PLP_CTX_V1" ∥ τ)`
+    /// and `e_τ ← CBD η=2` sampled from the caller-supplied fresh randomness `rho`.
+    ///
+    /// ## `rho` MUST be fresh, secret entropy — at least 32 bytes
+    ///
+    /// The error term is what makes `b_τ` an M-LWE sample rather than an exact
+    /// linear image of the secret. It only hides `s` if it is unknown to the
+    /// verifier. An earlier version derived `e_τ` from `τ` alone (public), so
+    /// anyone who knew the context could recompute and subtract it, recovering
+    /// `A_τ·s` from a single projection. Deriving it from fresh secret `rho`
+    /// closes that: with `rho` unknown, one projection is a sound M-LWE sample.
+    ///
+    /// ## τ MUST be single-use
+    ///
+    /// `A_τ` is a deterministic function of `τ`, so projecting the *same*
+    /// identity at the *same* `τ` more than once yields many samples
+    /// `b_i = A_τ·s + e_i` sharing one `A_τ`. Because `e ← CBD` is centered,
+    /// averaging enough of them recovers `A_τ·s` regardless of how fresh each
+    /// `e_i` is. The projection is called *ephemeral* for this reason: each `τ`
+    /// (e.g. a block height) is consumed once. Callers reusing `τ` void the
+    /// hiding guarantee. (Closing this for reused `τ` — freshening `A` per
+    /// projection — is a design question flagged for review, not a defect in
+    /// single-use operation.)
+    pub fn project_at_context(&self, tau: &[u8], rho: &[u8]) -> EphemeralProjection {
         // Derive context-bound matrix A_τ deterministically
         let matrix_a = derive_context_matrix_k1(tau);
 
-        // Generate ephemeral error e_τ from SHAKE-256("AETHEL_ERROR_V1" ∥ τ)
+        // Generate ephemeral error e_τ ← CBD η=2 from fresh secret randomness.
+        // Bound to τ as well, so an accidentally-reused rho still yields a
+        // distinct e_τ per context (defence in depth; freshness of rho is the
+        // primary guarantee).
         let mut hasher = Shake256::default();
-        hasher.update(b"AETHEL_ERROR_V1");
+        hasher.update(b"AETHEL_ERROR_V2");
+        hasher.update(rho);
         hasher.update(tau);
         let mut xof = hasher.finalize_xof();
         let mut e_tau = sample_cbd_eta2_from_xof(&mut xof);
@@ -548,17 +572,25 @@ impl MasterIdentity {
 /// identity-error>` out. [`MasterIdentity::from_seed`] takes an already-sized
 /// `[u8; 32]` and so cannot itself observe a wrong-length input; this is the
 /// entry point that actually validates it.
+///
+/// `rho` MUST be at least 32 bytes of fresh, secret entropy — see
+/// [`MasterIdentity::project_at_context`] for why. A short `rho` is rejected
+/// rather than silently weakening the projection.
 pub fn checked_project_at_context(
     secret: &[u8],
     tau: &[u8],
+    rho: &[u8],
 ) -> Result<EphemeralProjection, IdentityError> {
     if secret.len() != 32 {
+        return Err(IdentityError::InvalidInputLength);
+    }
+    if rho.len() < 32 {
         return Err(IdentityError::InvalidInputLength);
     }
     let mut seed = [0u8; 32];
     seed.copy_from_slice(secret);
     let identity = MasterIdentity::from_seed(&seed);
-    Ok(identity.project_at_context(tau))
+    Ok(identity.project_at_context(tau, rho))
 }
 
 // ── Ephemeral Projection ──────────────────────────────────────────────────────
@@ -579,6 +611,30 @@ pub struct EphemeralProjection {
 }
 
 impl EphemeralProjection {
+    /// A projection carrying only `A_τ` and `τ`, with `public_b` left zero.
+    ///
+    /// Used by the prover path. [`Prover::prove_identity`] reads only
+    /// `matrix_a` and `tau` — the proof `(w, c, z)` is *independent of* `e_τ`,
+    /// because the verifier's `A_τ·z − c·b_τ ≈ w` check absorbs the `c·e_τ`
+    /// term within its norm tolerance. So proving needs no fresh randomness and
+    /// no real `b_τ`, and a proof made here verifies against any correctly
+    /// formed `b_τ = A_τ·s + (small e_τ)` the holder publishes separately via
+    /// [`MasterIdentity::project_at_context`].
+    ///
+    /// `pub(crate)` on purpose: the zero `public_b` is not a real projection and
+    /// must never escape as one.
+    pub(crate) fn for_proving(tau: &[u8]) -> Self {
+        let matrix_a = derive_context_matrix_k1(tau);
+        let mut t = [0u8; 32];
+        let len = tau.len().min(32);
+        t[..len].copy_from_slice(&tau[..len]);
+        EphemeralProjection {
+            tau: t,
+            matrix_a,
+            public_b: Poly::zero(),
+        }
+    }
+
     /// Encode as `tau(32) ++ matrix_a.coeffs(N*4, LE) ++ public_b.coeffs(N*4, LE)`.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = alloc::vec![0u8; EPHEMERAL_PROJECTION_BYTE_LEN];
@@ -785,6 +841,12 @@ mod tests {
         [0x42u8; 32]
     }
 
+    /// Fixed fresh-randomness for e_τ in tests. Production MUST sample this per
+    /// projection; a constant is fine only because these tests fix inputs.
+    fn test_rho() -> [u8; 32] {
+        [0xa5u8; 32]
+    }
+
     #[test]
     fn test_poly_add_sub() {
         let mut a = Poly::zero();
@@ -823,7 +885,7 @@ mod tests {
         let seed = test_seed();
         let identity = MasterIdentity::from_seed(&seed);
         let tau = b"block_1000_context";
-        let proj = identity.project_at_context(tau);
+        let proj = identity.project_at_context(tau, &test_rho());
         let proof = Prover::prove_identity(&identity, &proj, &seed);
         assert!(Verifier::verify(&proj, &proof), "proof should verify");
     }
@@ -832,8 +894,8 @@ mod tests {
     fn test_cross_context_unlinkability() {
         let seed = test_seed();
         let identity = MasterIdentity::from_seed(&seed);
-        let proj1 = identity.project_at_context(b"context_1");
-        let proj2 = identity.project_at_context(b"context_2");
+        let proj1 = identity.project_at_context(b"context_1", &test_rho());
+        let proj2 = identity.project_at_context(b"context_2", &test_rho());
         // Projections should differ
         assert_ne!(proj1.public_b.coeffs, proj2.public_b.coeffs);
         // Proof for context 1 should not verify against context 2
@@ -884,7 +946,7 @@ mod tests {
         let identity = MasterIdentity::from_seed(&seed);
 
         let tau = b"tamper_test_context_777";
-        let proj = identity.project_at_context(tau);
+        let proj = identity.project_at_context(tau, &test_rho());
         let mut proof = Prover::prove_identity(&identity, &proj, &seed);
 
         // Tamper with the first coefficient of the response vector

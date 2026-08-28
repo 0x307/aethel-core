@@ -49,7 +49,7 @@ fn test_identifier_generation() {
     let seed = test_seed();
     let identity = MasterIdentity::from_seed(&seed);
     let tau = b"block_1000";
-    let proj = identity.project_at_context(tau);
+    let proj = identity.project_at_context(tau, &[0xa5u8; 32]);
 
     // Public projection b_τ should be non-zero
     let b_all_zero = proj.public_b.coeffs().iter().all(|&c| c == 0);
@@ -66,7 +66,7 @@ fn test_proof_generation_and_verification() {
     let seed = test_seed();
     let identity = MasterIdentity::from_seed(&seed);
     let tau = b"block_42";
-    let proj = identity.project_at_context(tau);
+    let proj = identity.project_at_context(tau, &[0xa5u8; 32]);
     let proof = Prover::prove_identity(&identity, &proj, &seed);
 
     // Proof response norm should be within rejection bound
@@ -91,8 +91,8 @@ fn test_cross_context_unlinkability() {
     let seed = test_seed();
     let identity = MasterIdentity::from_seed(&seed);
 
-    let proj_1 = identity.project_at_context(b"context_1000");
-    let proj_2 = identity.project_at_context(b"context_1001");
+    let proj_1 = identity.project_at_context(b"context_1000", &[0xa5u8; 32]);
+    let proj_2 = identity.project_at_context(b"context_1001", &[0xa5u8; 32]);
 
     // The two public projections should differ
     let projections_equal = proj_1
@@ -127,8 +127,8 @@ fn test_cross_block_replay_rejected() {
     let seed = test_seed();
     let identity = MasterIdentity::from_seed(&seed);
 
-    let proj_1 = identity.project_at_context(b"context_1000");
-    let proj_2 = identity.project_at_context(b"context_1001");
+    let proj_1 = identity.project_at_context(b"context_1000", &[0xa5u8; 32]);
+    let proj_2 = identity.project_at_context(b"context_1001", &[0xa5u8; 32]);
 
     // Generate proof for context 1
     let proof_1 = Prover::prove_identity(&identity, &proj_1, &seed);
@@ -154,8 +154,8 @@ fn test_deterministic_context_matrix() {
     let identity = MasterIdentity::from_seed(&seed);
 
     let tau = b"deterministic_context_9999";
-    let proj_a = identity.project_at_context(tau);
-    let proj_b = identity.project_at_context(tau);
+    let proj_a = identity.project_at_context(tau, &[0xa5u8; 32]);
+    let proj_b = identity.project_at_context(tau, &[0xa5u8; 32]);
 
     // A_τ must be identical for the same context
     let matrices_equal = proj_a
@@ -186,7 +186,7 @@ fn test_saap_prove_norm_bound() {
     let disclosure_mask = 0b00001111u64;
     let tau = b"test_saap_context";
 
-    let proof = saap_prove(&credential, disclosure_mask, tau, &sk);
+    let proof = saap_prove(&credential, disclosure_mask, tau, &sk, &[0x7cu8; 32]);
 
     // Norm bound check
     let norm_result = aethel_core::saap::verify_response_norm(&proof.z);
@@ -206,7 +206,7 @@ fn test_saap_prove_verify_roundtrip() {
     let disclosure_mask = 0b00001111u64;
     let tau = b"test_saap_context_verify";
 
-    let proof = saap_prove(&credential, disclosure_mask, tau, &sk);
+    let proof = saap_prove(&credential, disclosure_mask, tau, &sk, &[0x7cu8; 32]);
 
     // Build dummy matrix and attribute commitments
     let matrix_a = [SaapVectorK::zero(); aethel_core::saap::MODULE_K];
@@ -416,7 +416,7 @@ fn test_proof_norm_bounds_satisfied() {
 
     for i in 0u8..5 {
         let tau = [i; 32];
-        let proj = identity.project_at_context(&tau);
+        let proj = identity.project_at_context(&tau, &[0xa5u8; 32]);
         let proof = Prover::prove_identity(&identity, &proj, &seed);
 
         let norm = proof.response_z.infinity_norm();
