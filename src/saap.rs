@@ -251,10 +251,22 @@ pub fn hash_to_challenge_from_xof(xof: &mut impl XofReader) -> Polynomial {
 /// Recompute the SAAP Fiat-Shamir challenge using SHAKE-256.
 ///
 /// c = SHAKE-256("AETHEL_SAAP_CHALLENGE_V1" ∥ commitment_w ∥ tau ∥ disclosure_mask)
+/// Derive the Fiat-Shamir challenge.
+///
+/// Binds the disclosed attribute values (`m_pub` in SAAP-SPEC.md §7 step 3)
+/// alongside the commitment, context and mask. Without them in the hash, the
+/// disclosed values ride in the transcript unbound and can be rewritten after
+/// proof generation while the proof still verifies — see
+/// `disclosed_attributes_are_bound_into_the_challenge`.
+///
+/// Only the values selected by `disclosure_mask` are bound. Undisclosed slots
+/// are skipped rather than hashed, so the challenge cannot act as an oracle on
+/// attributes the proof is meant to withhold (§11.5).
 pub fn recompute_challenge(
     commitment_w: &VectorK,
     tau: &[u8],
     disclosure_mask: AttributeMask,
+    attributes: &AttributePayload,
 ) -> Polynomial {
     let mut hasher = Shake256::default();
     hasher.update(b"AETHEL_SAAP_CHALLENGE_V1");
@@ -265,6 +277,12 @@ pub fn recompute_challenge(
     }
     hasher.update(tau);
     hasher.update(&disclosure_mask.to_le_bytes());
+    for i in 0..MAX_ATTRIBUTES {
+        if (disclosure_mask >> i) & 1 == 1 {
+            hasher.update(&(i as u8).to_le_bytes());
+            hasher.update(&attributes.values[i].to_le_bytes());
+        }
+    }
     let mut xof = hasher.finalize_xof();
     hash_to_challenge_from_xof(&mut xof)
 }
@@ -387,7 +405,7 @@ pub fn saap_prove(
         }
 
         // Compute Fiat-Shamir challenge c using padded context_tag (same as verifier)
-        let mut c = recompute_challenge(&w, &context_tag, disclosure_mask);
+        let mut c = recompute_challenge(&w, &context_tag, disclosure_mask, &attributes);
 
         // Compute response z = r + c · secret_key
         let mut z = VectorK::zero();
@@ -438,7 +456,7 @@ pub fn saap_prove(
             w.vec[i] = poly_add(&w.vec[i], &prod);
         }
     }
-    let c = recompute_challenge(&w, &context_tag, disclosure_mask);
+    let c = recompute_challenge(&w, &context_tag, disclosure_mask, &attributes);
     let mut z = VectorK::zero();
     for k in 0..MODULE_K {
         let mut cs_k = poly_mul_negacyclic(&c, &secret_key.vec[k]);
@@ -528,7 +546,7 @@ pub fn verify_saap_proof_against(
     context_tag[..len].copy_from_slice(&tau[..len]);
 
     let recomputed_c =
-        recompute_challenge(&proof.commitment_w, &context_tag, proof.disclosure_mask);
+        recompute_challenge(&proof.commitment_w, &context_tag, proof.disclosure_mask, &proof.attributes);
     let mut mismatch = 0u32;
     for i in 0..RING_N {
         mismatch |= (recomputed_c.coeffs[i] ^ proof.challenge.coeffs[i]) as u32;
@@ -596,6 +614,7 @@ pub fn verify_saap_proof(
         &proof.commitment_w,
         &proof.context_tag,
         proof.disclosure_mask,
+        &proof.attributes,
     );
 
     // Step 3: Challenge Consistency Verification (constant-time)
@@ -662,15 +681,15 @@ mod tests {
         let w = VectorK::zero();
         let tau = b"test_tau";
         let mask = 0b00001111u64;
-        let c1 = recompute_challenge(&w, tau, mask);
-        let c2 = recompute_challenge(&w, tau, mask);
+        let c1 = recompute_challenge(&w, tau, mask, &AttributePayload::zero());
+        let c2 = recompute_challenge(&w, tau, mask, &AttributePayload::zero());
         assert_eq!(c1.coeffs, c2.coeffs, "challenge should be deterministic");
     }
 
     #[test]
     fn test_recompute_challenge_sparse() {
         let w = VectorK::zero();
-        let c = recompute_challenge(&w, b"tau", 0u64);
+        let c = recompute_challenge(&w, b"tau", 0u64, &AttributePayload::zero());
         let nonzero = c.coeffs.iter().filter(|&&x| x != 0).count();
         assert_eq!(nonzero, 60, "challenge should have exactly 60 non-zero coefficients");
     }
@@ -688,7 +707,7 @@ mod tests {
         assert_eq!(verify_response_norm(&proof.z), 0, "response norm should be within bound");
 
         // Verify challenge consistency — use proof.context_tag (padded) not raw tau
-        let recomputed = recompute_challenge(&proof.commitment_w, &proof.context_tag, disclosure_mask);
+        let recomputed = recompute_challenge(&proof.commitment_w, &proof.context_tag, disclosure_mask, &proof.attributes);
         let mut mismatch = 0u32;
         for i in 0..RING_N {
             mismatch |= (recomputed.coeffs[i] ^ proof.challenge.coeffs[i]) as u32;

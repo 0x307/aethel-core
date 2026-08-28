@@ -48,6 +48,7 @@ fn forge(context_tag: [u8; 32], disclosure_mask: u64) -> SaapProof {
         &proof.commitment_w,
         &proof.context_tag,
         proof.disclosure_mask,
+        &proof.attributes,
     );
 
     // Dependent: the commitment hash is SHAKE-256 over the commitment vector,
@@ -200,6 +201,46 @@ fn corrected_verifier_rejects_a_tampered_response() {
     assert!(
         saap::verify_saap_proof_against(&proof, TAU, &public_key).is_err(),
         "a tampered response vector still verified"
+    );
+}
+
+/// SAAP-SPEC.md §7 step 3 requires the Fiat-Shamir challenge to bind the
+/// disclosed attribute values:
+///
+/// ```text
+/// c' = Hash(W_1' ∥ W_2' ∥ b_τ ∥ t_blind ∥ m_pub ∥ τ)
+/// ```
+///
+/// `recompute_challenge` hashes only `(commitment_w, τ, disclosure_mask)`. The
+/// disclosed values ride in the transcript as `proof.attributes` and never enter
+/// the challenge, so they can be rewritten after the fact.
+///
+/// This is a gap in the corrected verifier too — fixing the verification
+/// equation did not fix attribute binding, because the two are independent.
+#[test]
+fn disclosed_attributes_are_bound_into_the_challenge() {
+    let sk = test_secret_key();
+    let mut proof = saap::saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk);
+    let public_key = saap::saap_public_key(TAU, &sk);
+
+    // Sanity: the untampered proof verifies.
+    assert_eq!(
+        saap::verify_saap_proof_against(&proof, TAU, &public_key),
+        Ok(()),
+        "test setup: the honest proof should verify before tampering"
+    );
+
+    // Rewrite a disclosed attribute value. Nothing else is touched.
+    let original = proof.attributes.values[0];
+    proof.attributes.values[0] = original.wrapping_add(0xDEAD_BEEF);
+
+    assert!(
+        saap::verify_saap_proof_against(&proof, TAU, &public_key).is_err(),
+        "a disclosed attribute value was rewritten after proof generation and the \
+         proof still verified. SAAP-SPEC.md §7 step 3 binds m_pub into the \
+         challenge; recompute_challenge does not. The verifier therefore attests \
+         to attribute values the prover never committed to, which is the property \
+         SAAP exists to provide."
     );
 }
 
