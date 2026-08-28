@@ -65,21 +65,25 @@ fn forge(context_tag: [u8; 32], disclosure_mask: u64) -> SaapProof {
     proof
 }
 
+/// Characterises the defect in the deprecated verifier, executably.
+///
+/// This asserts the **known-bad** behaviour deliberately: `verify_saap_proof`
+/// accepts a proof forged with no secret key. It is written as a passing test so
+/// the defect is pinned rather than merely described, and so it disappears
+/// together with the function it characterises. The correctness assertions live
+/// in `corrected_verifier_*` above.
 #[test]
-fn forged_proof_without_any_secret_is_rejected() {
+#[allow(deprecated)]
+fn deprecated_verifier_accepts_forgeries_known_defect() {
     let matrix_a = [VectorK::zero(); saap::MODULE_K];
     let attr_commits = [Polynomial::zero(); saap::MAX_ATTRIBUTES];
 
     let proof = forge([7u8; 32], 0b0000_0011);
 
-    let result = verify_saap_proof(&proof, &matrix_a, &attr_commits);
-
     assert!(
-        result.is_err(),
-        "a proof constructed with no secret key, no credential, and no access to \
-         any key material was accepted by verify_saap_proof. Every check in the \
-         verifier reads only fields carried inside the proof, so the proof proves \
-         knowledge of nothing."
+        verify_saap_proof(&proof, &matrix_a, &attr_commits).is_ok(),
+        "the deprecated verifier now rejects the forgery — if it was fixed, delete \
+         this characterisation test along with the function"
     );
 }
 
@@ -126,32 +130,104 @@ fn plp_rejects_the_analogous_forgery() {
     );
 }
 
+// ── The corrected verifier ────────────────────────────────────────────────────
+
+const TAU: &[u8] = b"context-alpha";
+const CREDENTIAL: &[u8] = b"attribute-block-0123456789abcdef";
+
+fn test_secret_key() -> VectorK {
+    let mut sk = VectorK::zero();
+    for k in 0..saap::MODULE_K {
+        for n in 0..saap::RING_N {
+            sk.vec[k].coeffs[n] = (n % 5) as i32 - 2;
+        }
+    }
+    sk
+}
+
+/// The load-bearing test: an honestly generated proof must satisfy
+/// `A_τ · z - c · t == w`. If this fails, the verification equation is wrong and
+/// nothing built on it can be trusted.
 #[test]
-fn proof_does_not_verify_under_a_different_context() {
+fn honest_proof_satisfies_the_verification_equation() {
+    let sk = test_secret_key();
+    let proof = saap::saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk);
+    let public_key = saap::saap_public_key(TAU, &sk);
+
+    assert_eq!(
+        saap::verify_saap_proof_against(&proof, TAU, &public_key),
+        Ok(()),
+        "an honestly generated proof failed the verification equation"
+    );
+}
+
+#[test]
+fn corrected_verifier_rejects_the_forgery() {
+    let sk = test_secret_key();
+    let public_key = saap::saap_public_key(TAU, &sk);
+    let forged = forge_for(TAU, 0b0000_0011);
+
+    assert!(
+        saap::verify_saap_proof_against(&forged, TAU, &public_key).is_err(),
+        "the corrected verifier still accepts a proof forged with no secret key"
+    );
+}
+
+#[test]
+fn corrected_verifier_rejects_a_proof_from_another_context() {
+    let sk = test_secret_key();
+    let proof = saap::saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk);
+
+    // Same identity, different context: derive the public key for the context
+    // the verifier actually cares about.
+    let other_tau: &[u8] = b"context-beta";
+    let public_key_beta = saap::saap_public_key(other_tau, &sk);
+
+    assert!(
+        saap::verify_saap_proof_against(&proof, other_tau, &public_key_beta).is_err(),
+        "a proof issued for one context verified under another"
+    );
+}
+
+#[test]
+fn corrected_verifier_rejects_a_tampered_response() {
+    let sk = test_secret_key();
+    let mut proof = saap::saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk);
+    let public_key = saap::saap_public_key(TAU, &sk);
+
+    proof.z.vec[0].coeffs[0] = proof.z.vec[0].coeffs[0].wrapping_add(1);
+
+    assert!(
+        saap::verify_saap_proof_against(&proof, TAU, &public_key).is_err(),
+        "a tampered response vector still verified"
+    );
+}
+
+/// Same construction as `forge`, parameterised by τ so it can be aimed at the
+/// corrected verifier.
+fn forge_for(tau: &[u8], disclosure_mask: u64) -> SaapProof {
+    let mut context_tag = [0u8; 32];
+    let len = tau.len().min(32);
+    context_tag[..len].copy_from_slice(&tau[..len]);
+    forge(context_tag, disclosure_mask)
+}
+
+/// Characterises the second defect in the deprecated verifier: it takes no
+/// caller-supplied τ at all, so a proof certifies its own context. Asserted as
+/// known-bad for the same reason as above.
+#[test]
+#[allow(deprecated)]
+fn deprecated_verifier_is_self_certifying_known_defect() {
     let matrix_a = [VectorK::zero(); saap::MODULE_K];
     let attr_commits = [Polynomial::zero(); saap::MAX_ATTRIBUTES];
 
-    let tau_a = [0xAAu8; 32];
-    let tau_b = [0xBBu8; 32];
+    let proof = forge([0xAAu8; 32], 0b0000_0001);
 
-    // A proof built for context A.
-    let proof = forge(tau_a, 0b0000_0001);
-
-    // The native verifier takes no caller-supplied τ at all, so "verify under
-    // context B" cannot even be expressed against this signature. Assert the
-    // shape the WIT world declares: verification is parameterised by the
-    // caller's context.
-    assert_ne!(
-        tau_a, tau_b,
-        "test setup: the two contexts must differ for this to mean anything"
-    );
-
-    let result = verify_saap_proof(&proof, &matrix_a, &attr_commits);
     assert!(
-        result.is_err(),
-        "verify_saap_proof has no τ parameter, so a proof carrying its own \
-         context_tag is self-certifying: the caller cannot ask 'is this valid \
-         for MY context?'. The WIT world declares \
+        verify_saap_proof(&proof, &matrix_a, &attr_commits).is_ok(),
+        "the deprecated verifier has no τ parameter, so it cannot answer 'is this \
+         valid for MY context?' — it accepts whatever context the proof asserts \
+         about itself. The WIT world declares \
          saap-verify(proof, tau) -> result<bool, identity-error>."
     );
 }

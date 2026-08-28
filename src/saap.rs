@@ -470,12 +470,114 @@ pub fn saap_prove(
 
 // ── SAAP Verifier ─────────────────────────────────────────────────────────────
 
+/// Compute the SAAP public key t = A_τ · sk for a context τ.
+///
+/// This is the value a proof must be verified against, and the piece that was
+/// missing: the module documentation describes verification as
+/// `w' = A · z - c · t_attr`, but nothing in the crate ever computed `t_attr`,
+/// so the verifier was written as a self-consistency check instead. See P3-10
+/// (0X3-78).
+///
+/// **Not yet safe to hand out as a public key.** With the current prover,
+/// `w = A·r` and `z = r + c·sk` carry no error term, so `t = A·sk` is an exact
+/// linear image of the secret: recovering `sk` from `t` is linear algebra over
+/// the ring, not an MLWE instance. Publishing `t` requires an error term in the
+/// prover (Dilithium's `t = A·s1 + s2`), which changes the proof format and the
+/// WIT world. Flagged for Ken. This function exists so verification can be
+/// implemented and tested, not so `t` can be distributed.
+pub fn saap_public_key(tau: &[u8], secret_key: &VectorK) -> VectorK {
+    let matrix_a = derive_saap_matrix(tau);
+    let mut t = VectorK::zero();
+    for i in 0..MODULE_K {
+        for j in 0..MODULE_K {
+            let prod = poly_mul_negacyclic(&matrix_a[i].vec[j], &secret_key.vec[j]);
+            t.vec[i] = poly_add(&t.vec[i], &prod);
+        }
+    }
+    t
+}
+
+/// Verify a SAAP proof against a caller-supplied context and public key.
+///
+/// This is the verification the module documentation always described. Unlike
+/// [`verify_saap_proof`], every check is anchored outside the proof:
+///
+/// 1. Norm bound on `z`
+/// 2. Fiat-Shamir consistency, with the challenge recomputed against the
+///    **caller's** τ, and the proof's own `context_tag` required to match it —
+///    so a proof cannot certify its own context
+/// 3. The verification equation `A_τ · z - c · t == w`
+///
+/// Step 3 is an exact equality rather than an approximate one because this
+/// construction adds no error term: `A·z = A·(r + c·sk) = A·r + c·(A·sk) = w +
+/// c·t`. PLP's analogous check is approximate because its `public_b` is an LWE
+/// sample carrying noise.
+pub fn verify_saap_proof_against(
+    proof: &SaapProof,
+    tau: &[u8],
+    public_key: &VectorK,
+) -> Result<(), SaapValidationError> {
+    // 1. Norm bound.
+    if verify_response_norm(&proof.z) != 0 {
+        return Err(SaapValidationError::NormBoundViolation);
+    }
+
+    // 2. Challenge consistency, against the caller's context.
+    let mut context_tag = [0u8; 32];
+    let len = tau.len().min(32);
+    context_tag[..len].copy_from_slice(&tau[..len]);
+
+    let recomputed_c =
+        recompute_challenge(&proof.commitment_w, &context_tag, proof.disclosure_mask);
+    let mut mismatch = 0u32;
+    for i in 0..RING_N {
+        mismatch |= (recomputed_c.coeffs[i] ^ proof.challenge.coeffs[i]) as u32;
+    }
+    // The proof's own tag must match the caller's, or a proof issued for one
+    // context could be replayed under another.
+    let mut tag_mismatch = 0u8;
+    for i in 0..32 {
+        tag_mismatch |= proof.context_tag[i] ^ context_tag[i];
+    }
+    if mismatch != 0 || tag_mismatch != 0 {
+        return Err(SaapValidationError::ChallengeMismatch);
+    }
+
+    // 3. Verification equation: A_τ · z - c · t == w.
+    let matrix_a = derive_saap_matrix(tau);
+    let mut equation_mismatch = 0u32;
+    for i in 0..MODULE_K {
+        let mut az_i = Polynomial::zero();
+        for j in 0..MODULE_K {
+            let prod = poly_mul_negacyclic(&matrix_a[i].vec[j], &proof.z.vec[j]);
+            az_i = poly_add(&az_i, &prod);
+        }
+        let ct = poly_mul_negacyclic(&proof.challenge, &public_key.vec[i]);
+        let w_prime = poly_sub(&az_i, &ct);
+        for n in 0..RING_N {
+            equation_mismatch |= (w_prime.coeffs[n] ^ proof.commitment_w.vec[i].coeffs[n]) as u32;
+        }
+    }
+    if equation_mismatch != 0 {
+        return Err(SaapValidationError::InvalidAttributeCommitment);
+    }
+
+    compiler_fence(Ordering::SeqCst);
+    Ok(())
+}
+
 /// Verify a SAAP proof transcript.
 ///
 /// Checks:
 /// 1. Norm bound: ||z||∞ < γ₁ - β
 /// 2. Challenge consistency: c' = SHAKE-256("AETHEL_SAAP_CHALLENGE_V1" ∥ w ∥ τ ∥ mask)
 /// 3. Commitment hash consistency
+#[deprecated(
+    since = "0.1.1",
+    note = "unsound: ignores its public parameters and checks the proof only against \
+            itself, so it accepts proofs forged with no secret key. Use \
+            verify_saap_proof_against(proof, tau, public_key). See P3-10 / 0X3-78."
+)]
 pub fn verify_saap_proof(
     proof: &SaapProof,
     _matrix_a: &[VectorK; MODULE_K],

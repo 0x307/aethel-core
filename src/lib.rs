@@ -337,8 +337,17 @@ pub fn saap_prove_wasm(
 }
 
 /// Verify a SAAP proof.
+///
+/// **Still calls the deprecated, unsound verifier.** The corrected verification
+/// (`saap::verify_saap_proof_against`) requires a public key `t = A_τ · sk`,
+/// and this export has no parameter to receive one — the WIT world declares
+/// `saap-verify: func(proof, tau) -> result<bool, identity-error>`, which admits
+/// no public key either. Fixing the export therefore requires deciding what the
+/// public statement is and reshaping the WIT signature to carry it. Tracked in
+/// P3-10 (0X3-78); do not treat this export as sound in the meantime.
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
+#[allow(deprecated)]
 pub fn saap_verify_wasm(proof_bytes: &[u8], _tau: &[u8]) -> bool {
     use saap::{SaapProof, VectorK as SaapVectorK, Polynomial as SaapPoly, verify_saap_proof};
 
