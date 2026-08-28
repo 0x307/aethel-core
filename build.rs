@@ -11,7 +11,7 @@
 //   dist/README.md          — usage documentation (always generated)
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn main() {
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
@@ -103,106 +103,29 @@ fn generate_dist_artifacts() {
     }
 
     // ── 2. WIT interface definition ───────────────────────────────────────────
-    let wit_content = r#"package aethel:core@0.1.0;
-
-interface types {
-  /// Closed set of failure reasons across all aethel:core operations.
-  /// A flat variant — no operation's error nests another operation's error.
-  variant identity-error {
-    invalid-input-length,
-    serialization-error,
-    rejection-sampling-failed,
-    norm-bound-violation,
-    challenge-mismatch,
-    invalid-attribute-commitment,
-    threshold-not-met,
-  }
-}
-
-interface identity {
-  use types.{identity-error};
-
-  /// A context-bound projection of a master identity at context τ.
-  record ephemeral-projection {
-    tau: list<u8>,
-    matrix-a: list<u32>,
-    public-b: list<u32>,
-  }
-
-  /// A zero-knowledge proof of ownership over an ephemeral-projection.
-  record zk-identity-proof {
-    commitment-w: list<u32>,
-    challenge-c: list<u32>,
-    response-z: list<u32>,
-  }
-
-  /// Project a master identity (from secret key material) at context τ.
-  plp-project-at-context: func(secret: list<u8>, tau: list<u8>) -> result<ephemeral-projection, identity-error>;
-
-  /// Prove identity ownership at context τ.
-  plp-prove-identity: func(secret: list<u8>, tau: list<u8>) -> result<zk-identity-proof, identity-error>;
-
-  /// Verify a ZK identity proof against a projection.
-  plp-verify: func(projection: ephemeral-projection, proof: zk-identity-proof) -> result<bool, identity-error>;
-}
-
-interface attestation {
-  use types.{identity-error};
-
-  /// Named disclosure slots — never a raw bitmask on the wire.
-  flags disclosure-attributes {
-    attribute0,
-    attribute1,
-    attribute2,
-    attribute3,
-    attribute4,
-    attribute5,
-    attribute6,
-    attribute7,
-  }
-
-  /// A SAAP selective-disclosure proof.
-  record saap-proof {
-    context-tag: list<u8>,
-    disclosed: disclosure-attributes,
-    attributes: list<u64>,
-    challenge: list<s32>,
-    response-z: list<s32>,
-    commitment-hash: list<u8>,
-    commitment-w: list<s32>,
-  }
-
-  /// Prove selective attribute disclosure.
-  saap-prove: func(credential: list<u8>, disclosed: disclosure-attributes, tau: list<u8>, secret-key: list<u8>) -> result<saap-proof, identity-error>;
-
-  /// Verify a SAAP selective disclosure proof.
-  saap-verify: func(proof: saap-proof, tau: list<u8>) -> result<bool, identity-error>;
-}
-
-interface secret-sharing {
-  use types.{identity-error};
-
-  /// A single threshold share of split key material.
-  record htss-share {
-    index: u8,
-    value: list<u8>,
-  }
-
-  /// Split key material into 5 Shamir shares (3-of-5 threshold).
-  htss-split: func(secret: list<u8>) -> result<list<htss-share>, identity-error>;
-
-  /// Reconstruct key material from threshold shares.
-  htss-reconstruct: func(shares: list<htss-share>) -> result<list<u8>, identity-error>;
-}
-
-world aethel-core {
-  import types;
-
-  export identity;
-  export attestation;
-  export secret-sharing;
-}
-"#;
+    // The WIT world is checked in at `wit/aethel-core.wit` and is the single
+    // source of truth. It used to live here as a string literal, which meant the
+    // typed interface existed only as Rust source: no binding generator could
+    // read it without first building the crate, and what it then read was
+    // written into a gitignored, package-excluded directory. That is how the
+    // world and the implementation drifted apart without anything failing
+    // (P3-10 / 0X3-78).
+    //
+    // dist/ still receives a copy, because dist/README.md references it, but the
+    // copy is now an output rather than the original.
+    let wit_source = Path::new(env!("CARGO_MANIFEST_DIR")).join("wit/aethel-core.wit");
+    println!("cargo:rerun-if-changed=wit/aethel-core.wit");
+    let wit_content = match fs::read_to_string(&wit_source) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "cargo:warning=dist: could not read {}: {}",
+                wit_source.display(),
+                e
+            );
+            String::new()
+        }
+    };
 
     let wit_path = dist_dir.join("aethel_core.wit");
     match fs::write(&wit_path, wit_content) {
