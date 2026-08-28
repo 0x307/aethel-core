@@ -273,6 +273,74 @@ impl SecretSharer {
         Ok(secret)
     }
 
+    /// Split key material and serialize the shares for a byte-oriented boundary.
+    ///
+    /// Wire format, so a caller in another language can parse it without this
+    /// crate:
+    ///
+    /// ```text
+    /// [count: u8][width: u32 LE][ index: u8, value: width bytes ] × count
+    /// ```
+    ///
+    /// Deliberately not `#[cfg(feature = "wasm")]`: the WASM export is a thin
+    /// wrapper over this, so the logic behind the artifact's boundary is
+    /// reachable by native tests. A boundary that can only be tested by building
+    /// for WASM is a boundary that does not get tested.
+    pub fn split_key_material_bytes(
+        secret: &[u8],
+        nonce: &[u8],
+    ) -> Result<Vec<u8>, IdentityError> {
+        let shares = Self::split_key_material(secret, nonce)?;
+        let width = shares[0].value.len();
+
+        let mut out = Vec::with_capacity(1 + 4 + shares.len() * (1 + width));
+        out.push(shares.len() as u8);
+        out.extend_from_slice(&(width as u32).to_le_bytes());
+        for share in &shares {
+            out.push(share.index);
+            out.extend_from_slice(&share.value);
+        }
+        Ok(out)
+    }
+
+    /// Parse the wire format written by [`Self::split_key_material_bytes`] and
+    /// reconstruct.
+    ///
+    /// Returns `ThresholdNotMet` below the threshold and `SerializationError`
+    /// for malformed input — never a sentinel value that a caller could mistake
+    /// for a recovered secret.
+    pub fn reconstruct_key_material_bytes(bytes: &[u8]) -> Result<Vec<u8>, IdentityError> {
+        if bytes.len() < 5 {
+            return Err(IdentityError::SerializationError);
+        }
+        let count = bytes[0] as usize;
+        let mut width_bytes = [0u8; 4];
+        width_bytes.copy_from_slice(&bytes[1..5]);
+        let width = u32::from_le_bytes(width_bytes) as usize;
+
+        if count == 0 || width == 0 {
+            return Err(IdentityError::SerializationError);
+        }
+        let expected = 5 + count * (1 + width);
+        if bytes.len() != expected {
+            return Err(IdentityError::SerializationError);
+        }
+
+        let mut shares = Vec::with_capacity(count);
+        let mut off = 5;
+        for _ in 0..count {
+            let index = bytes[off];
+            off += 1;
+            shares.push(HtssShare {
+                index,
+                value: bytes[off..off + width].to_vec(),
+            });
+            off += width;
+        }
+
+        Self::reconstruct_key_material(&shares)
+    }
+
     /// Derive one sharing-polynomial coefficient from the secret.
     ///
     /// SHAKE-256 over a domain separator, the secret, a caller nonce, and the

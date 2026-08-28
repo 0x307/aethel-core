@@ -211,3 +211,60 @@ fn deprecated_path_truncates_a_full_width_u64() {
     );
     assert_eq!(recovered, secret % 8_380_417);
 }
+
+// ── The byte-oriented boundary the WASM exports wrap ──────────────────────────
+//
+// These exercise the exact logic behind `htss_split` / `htss_reconstruct`. The
+// exports are `#[cfg(feature = "wasm")]` thin wrappers over these functions,
+// deliberately, so the artifact's boundary is reachable by native tests.
+
+#[test]
+fn wire_format_round_trips_key_material() {
+    let key = [0x9Eu8; 32];
+    let wire = SecretSharer::split_key_material_bytes(&key, NONCE).expect("split");
+    let recovered = SecretSharer::reconstruct_key_material_bytes(&wire).expect("reconstruct");
+    assert_eq!(recovered, key);
+}
+
+#[test]
+fn wire_format_below_threshold_is_an_error() {
+    let key = [0x42u8; 32];
+    let wire = SecretSharer::split_key_material_bytes(&key, NONCE).expect("split");
+
+    // Rebuild the wire payload carrying only two of the five shares.
+    let width = u32::from_le_bytes(wire[1..5].try_into().unwrap()) as usize;
+    let mut two = Vec::new();
+    two.push(2u8);
+    two.extend_from_slice(&(width as u32).to_le_bytes());
+    two.extend_from_slice(&wire[5..5 + 2 * (1 + width)]);
+
+    assert_eq!(
+        SecretSharer::reconstruct_key_material_bytes(&two),
+        Err(IdentityError::ThresholdNotMet),
+        "two shares must be an error at the byte boundary too, not an empty-vec \
+         sentinel a caller could mistake for a secret"
+    );
+}
+
+#[test]
+fn wire_format_rejects_truncated_and_oversized_input() {
+    let key = [0x11u8; 32];
+    let wire = SecretSharer::split_key_material_bytes(&key, NONCE).expect("split");
+
+    assert_eq!(
+        SecretSharer::reconstruct_key_material_bytes(&wire[..wire.len() - 1]),
+        Err(IdentityError::SerializationError)
+    );
+
+    let mut oversized = wire.clone();
+    oversized.push(0);
+    assert_eq!(
+        SecretSharer::reconstruct_key_material_bytes(&oversized),
+        Err(IdentityError::SerializationError)
+    );
+
+    assert_eq!(
+        SecretSharer::reconstruct_key_material_bytes(&[]),
+        Err(IdentityError::SerializationError)
+    );
+}
