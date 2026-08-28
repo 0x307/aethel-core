@@ -83,20 +83,35 @@ mod tests {
 
     // ── InvalidInputLength: driven through checked_project_at_context ──────────
 
+    // Fresh per-projection randomness for the error term e_τ. In tests a fixed
+    // 32-byte value is fine; in production this MUST be freshly sampled.
+    const RHO: [u8; 32] = [0x5au8; 32];
+
     #[test]
     fn invalid_input_length_from_a_short_secret() {
-        // One byte short of the required 32-byte seed.
+        // One byte short of the required 32-byte seed (randomness is valid, so
+        // the failure is unambiguously about the secret length).
         let short_secret = [0u8; 31];
-        let result = checked_project_at_context(&short_secret, b"context");
+        let result = checked_project_at_context(&short_secret, b"context", &RHO);
+        assert_eq!(result.err(), Some(IdentityError::InvalidInputLength));
+    }
+
+    #[test]
+    fn invalid_input_length_from_short_randomness() {
+        // A valid secret but under-length randomness must also be rejected:
+        // silently proceeding would seed e_τ from too little entropy.
+        let secret = [0x42u8; 32];
+        let short_rho = [0u8; 31];
+        let result = checked_project_at_context(&secret, b"context", &short_rho);
         assert_eq!(result.err(), Some(IdentityError::InvalidInputLength));
     }
 
     #[test]
     fn checked_project_at_context_succeeds_with_a_valid_secret() {
         // The validation isn't just rejecting everything — a correctly-sized
-        // secret must actually produce a projection.
+        // secret and randomness must actually produce a projection.
         let secret = [0x42u8; 32];
-        assert!(checked_project_at_context(&secret, b"context").is_ok());
+        assert!(checked_project_at_context(&secret, b"context", &RHO).is_ok());
     }
 
     // ── SerializationError: driven through EphemeralProjection::from_bytes ─────
@@ -111,7 +126,7 @@ mod tests {
     #[test]
     fn ephemeral_projection_round_trips_through_bytes() {
         let secret = [0x99u8; 32];
-        let projection = checked_project_at_context(&secret, b"round-trip").unwrap();
+        let projection = checked_project_at_context(&secret, b"round-trip", &RHO).unwrap();
         let bytes = projection.to_bytes();
         let decoded =
             EphemeralProjection::from_bytes(&bytes).expect("well-formed bytes must decode");

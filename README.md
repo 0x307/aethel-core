@@ -106,6 +106,70 @@ predates the typed WIT world — see that file for how the two relate). `puf_enr
 `puf_reconstruct` are WASM exports only when built with `--features puf`; they are not part of
 the WIT world either way.
 
+## The WASM Component (L1 boundary)
+
+`aethel-core` builds as a **WebAssembly Component Model component** implementing the
+`aethel:core` world declared in [`wit/aethel-core.wit`](wit/aethel-core.wit). This is the
+artifact every language binding embeds — one shared component, never per-language crypto.
+
+```bash
+cargo build --release --target wasm32-unknown-unknown   --no-default-features --features component
+wasm-tools component new   target/wasm32-unknown-unknown/release/aethel_core.wasm   -o aethel_core.component.wasm
+```
+
+Verify what you built exposes the declared world:
+
+```bash
+wasm-tools validate aethel_core.component.wasm
+wasm-tools component wit aethel_core.component.wasm
+```
+
+### Reproducing the published artifact
+
+Two builds of the same source commit produce byte-identical output. The expected hash is
+checked into [`component.sha256`](component.sha256) and enforced in CI, so you do not have to
+take our word for what the binary contains:
+
+```bash
+sha256sum aethel_core.component.wasm
+cat component.sha256
+```
+
+**The canonical build platform is CI**, and the hash in `component.sha256` is the one produced
+there: `ubuntu-latest`, Rust 1.97.0, wasm-tools 1.258.0, as pinned in
+`.github/workflows/component.yml`. Reproduce it on that platform and you get the same bytes;
+CI proves this on every push by building twice from a clean target directory and comparing.
+
+Building on a different OS will produce a **different hash** — this is not a
+platform-independent guarantee, and we would rather say so than let you discover it. A
+Windows build of this exact commit differs from the Linux one, because Rust embeds
+platform-specific paths and links a different `std`. If your hash does not match and you are
+not on the canonical platform, that is expected; if it does not match and you *are*, the
+artifact was not built from this source.
+
+### Component status per operation
+
+| Operation | Status |
+|---|---|
+| `plp-project-at-context` | Implemented |
+| `plp-prove-identity` | Implemented |
+| `plp-verify` | Implemented |
+| `saap-prove` | Implemented |
+| `saap-verify` | **Always returns `ok(false)`** — denies rather than pretends; see below |
+| `htss-split` | Implemented (fixed internal nonce, see `src/component.rs`) |
+| `htss-reconstruct` | Implemented |
+
+`saap-verify` is not wired to the corrected verifier because that needs a public key
+`t = A_τ·sk`, which this signature has no parameter to carry and which — with the current
+prover, having no error term — is an exact linear image of the secret and unsafe to publish.
+The specification anchors verification on the PLP projection `b_τ = A_τ·s + e_τ`, whose noise
+makes it publishable; building that is tracked as P3-11. A verifier that cannot verify soundly
+denies. **Do not read `ok(false)` from this operation as "this proof is invalid."**
+
+The separate `wasm` feature still produces the older `wasm-bindgen` core module with a flat
+pointer/length ABI. It is not a component, its exports are untyped, and it is retained only
+for existing callers.
+
 ## Building
 
 ### Prerequisites
@@ -154,9 +218,13 @@ use aethel_core::plp::{MasterIdentity, Prover, Verifier};
 let seed = [0x11u8; 32];
 let identity = MasterIdentity::from_seed(&seed);
 
-// Project at context τ (ephemeral, context-bound)
+// Project at context τ (ephemeral, context-bound).
+// `randomness` MUST be at least 32 bytes of fresh, secret entropy, sampled anew
+// per projection. It seeds the error term that makes the projection an M-LWE
+// sample rather than an exact linear image of the secret. τ MUST be single-use.
 let tau = b"session_context_2026";
-let projection = identity.project_at_context(tau);
+let randomness = [0x22u8; 32]; // demo value; sample fresh in real use
+let projection = identity.project_at_context(tau, &randomness);
 
 // Prove ownership
 let proof = Prover::prove_identity(&identity, &projection, &seed);

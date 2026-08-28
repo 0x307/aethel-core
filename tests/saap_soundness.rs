@@ -108,7 +108,7 @@ fn plp_rejects_the_analogous_forgery() {
     // The forger is allowed to know the public projection — that is the point
     // of a public key. It has no access to the master secret.
     let identity = MasterIdentity::from_seed(&[0x11u8; 32]);
-    let projection = identity.project_at_context(b"context-under-attack");
+    let projection = identity.project_at_context(b"context-under-attack", &[0xa5u8; 32]);
 
     // Same free choices as the SAAP forgery: zero commitment, zero response,
     // challenge recomputed the way the verifier will recompute it.
@@ -152,7 +152,7 @@ fn test_secret_key() -> VectorK {
 #[test]
 fn honest_proof_satisfies_the_verification_equation() {
     let sk = test_secret_key();
-    let proof = saap::saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk);
+    let proof = saap::saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk, &[0x7cu8; 32]);
     let public_key = saap::saap_public_key(TAU, &sk);
 
     assert_eq!(
@@ -177,7 +177,7 @@ fn corrected_verifier_rejects_the_forgery() {
 #[test]
 fn corrected_verifier_rejects_a_proof_from_another_context() {
     let sk = test_secret_key();
-    let proof = saap::saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk);
+    let proof = saap::saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk, &[0x7cu8; 32]);
 
     // Same identity, different context: derive the public key for the context
     // the verifier actually cares about.
@@ -193,7 +193,7 @@ fn corrected_verifier_rejects_a_proof_from_another_context() {
 #[test]
 fn corrected_verifier_rejects_a_tampered_response() {
     let sk = test_secret_key();
-    let mut proof = saap::saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk);
+    let mut proof = saap::saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk, &[0x7cu8; 32]);
     let public_key = saap::saap_public_key(TAU, &sk);
 
     proof.z.vec[0].coeffs[0] = proof.z.vec[0].coeffs[0].wrapping_add(1);
@@ -220,7 +220,7 @@ fn corrected_verifier_rejects_a_tampered_response() {
 #[test]
 fn disclosed_attributes_are_bound_into_the_challenge() {
     let sk = test_secret_key();
-    let mut proof = saap::saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk);
+    let mut proof = saap::saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk, &[0x7cu8; 32]);
     let public_key = saap::saap_public_key(TAU, &sk);
 
     // Sanity: the untampered proof verifies.

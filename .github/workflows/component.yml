@@ -1,0 +1,80 @@
+name: component
+
+# P5-03: the L1 boundary is one artifact embedded by every language. Shipping a
+# compiled binary inside a source package is only defensible if anyone can
+# rebuild it and get the same bytes, so this job builds the component twice from
+# a clean target directory and fails if the two differ.
+#
+# It also fails if the built hash does not match the one checked into
+# `component.sha256`, which is what makes that file a claim rather than a note.
+#
+# The hash is platform-specific: this runner is the canonical build platform.
+# A build of the same commit on Windows or macOS produces different bytes, because
+# rustc embeds platform paths and links a different std. That was caught by this
+# job's first run - the checked-in hash had come from a Windows build - and is
+# documented in the README rather than papered over.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  component:
+    name: build, validate and reproduce the component
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-tools
+        run: cargo install wasm-tools --version 1.258.0 --locked
+
+      - name: Build the component
+        run: |
+          cargo build --release --target wasm32-unknown-unknown \
+            --no-default-features --features component --locked
+          wasm-tools component new \
+            target/wasm32-unknown-unknown/release/aethel_core.wasm \
+            -o build1.component.wasm
+
+      - name: The component must validate and expose the declared world
+        run: |
+          wasm-tools validate build1.component.wasm
+          wasm-tools component wit build1.component.wasm > embedded.wit
+          # Every operation the world declares must appear in the artifact.
+          for op in plp-project-at-context plp-prove-identity plp-verify \
+                    saap-prove saap-verify htss-split htss-reconstruct; do
+            grep -q "$op" embedded.wit || { echo "MISSING from component: $op"; exit 1; }
+          done
+          grep -q "identity-error" embedded.wit || { echo "identity-error absent"; exit 1; }
+
+      - name: Two builds of the same commit must be byte-identical
+        run: |
+          rm -rf target/wasm32-unknown-unknown/release
+          cargo build --release --target wasm32-unknown-unknown \
+            --no-default-features --features component --locked
+          wasm-tools component new \
+            target/wasm32-unknown-unknown/release/aethel_core.wasm \
+            -o build2.component.wasm
+          if ! cmp -s build1.component.wasm build2.component.wasm; then
+            echo "NOT REPRODUCIBLE: two builds of the same source differ"
+            sha256sum build1.component.wasm build2.component.wasm
+            exit 1
+          fi
+          echo "reproducible: $(sha256sum build1.component.wasm)"
+
+      - name: The built hash must match the one checked into the repo
+        run: |
+          built=$(sha256sum build1.component.wasm | cut -d' ' -f1)
+          declared=$(cut -d' ' -f1 component.sha256)
+          if [ "$built" != "$declared" ]; then
+            echo "hash mismatch"
+            echo "  built:    $built"
+            echo "  declared: $declared (component.sha256)"
+            echo "If this change is intended, update component.sha256."
+            exit 1
+          fi
+          echo "hash matches component.sha256: $built"

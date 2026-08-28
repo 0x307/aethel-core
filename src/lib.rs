@@ -99,6 +99,10 @@ pub mod sdk;
 /// Rust-side mirror of the `aethel:core` WIT world's `identity-error` variant.
 pub mod identity_error;
 
+/// WebAssembly Component Model adapter implementing the `aethel:core` WIT world.
+#[cfg(feature = "component")]
+pub mod component;
+
 // ── Re-exports of public API types ───────────────────────────────────────────
 
 pub use plp::{EphemeralProjection, MasterIdentity, Prover, Verifier, ZkIdentityProof};
@@ -171,14 +175,17 @@ use wasm_bindgen::prelude::*;
 /// Returns serialized [`EphemeralProjection`] as bytes.
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
-pub fn plp_project_at_context(seed: &[u8], tau: &[u8]) -> Vec<u8> {
-    if seed.len() < 32 {
+pub fn plp_project_at_context(seed: &[u8], tau: &[u8], randomness: &[u8]) -> Vec<u8> {
+    // `randomness` MUST be >=32 bytes of fresh, secret entropy: it seeds the
+    // error term e_tau that makes b_tau an M-LWE sample rather than an exact
+    // linear image of the secret. Fail closed on short randomness.
+    if seed.len() < 32 || randomness.len() < 32 {
         return alloc::vec![];
     }
     let mut seed_arr = [0u8; 32];
     seed_arr.copy_from_slice(&seed[..32]);
     let identity = MasterIdentity::from_seed(&seed_arr);
-    let proj = identity.project_at_context(tau);
+    let proj = identity.project_at_context(tau, randomness);
     // Serialize: tau(32) + matrix_a coeffs(256*4) + public_b coeffs(256*4)
     let mut out = alloc::vec![0u8; 32 + 256 * 4 + 256 * 4];
     out[..32].copy_from_slice(&proj.tau);
@@ -205,7 +212,11 @@ pub fn plp_prove_identity(seed: &[u8], tau: &[u8]) -> Vec<u8> {
     let mut seed_arr = [0u8; 32];
     seed_arr.copy_from_slice(&seed[..32]);
     let identity = MasterIdentity::from_seed(&seed_arr);
-    let proj = identity.project_at_context(tau);
+    // The proof is independent of e_tau (the verifier's approximate check
+    // absorbs c·e_tau), so proving needs only A_tau and tau — no fresh
+    // randomness and no real b_tau. It verifies against whatever b_tau the
+    // caller published via plp_project_at_context.
+    let proj = plp::EphemeralProjection::for_proving(tau);
     let proof = Prover::prove_identity(&identity, &proj, &seed_arr);
     // Serialize: commitment_w(256*4) + challenge_c(256*4) + response_z(256*4)
     let mut out = alloc::vec![0u8; 256 * 4 * 3];
@@ -292,8 +303,16 @@ pub fn saap_prove_wasm(
     disclosure_mask: u64,
     tau: &[u8],
     secret_key_bytes: &[u8],
+    randomness: &[u8],
 ) -> Vec<u8> {
     use saap::{saap_prove, VectorK as SaapVectorK};
+
+    // `randomness` MUST be >=32 bytes of fresh, secret entropy: it seeds the
+    // sigma-protocol mask r that hides sk in z = r + c·sk. Fail closed on short
+    // randomness rather than emitting a proof with a weak mask.
+    if randomness.len() < 32 {
+        return alloc::vec![];
+    }
 
     // Deserialize secret key from bytes
     let mut sk = SaapVectorK::zero();
@@ -309,7 +328,7 @@ pub fn saap_prove_wasm(
         }
     }
 
-    let proof = saap_prove(credential, disclosure_mask, tau, &sk);
+    let proof = saap_prove(credential, disclosure_mask, tau, &sk, randomness);
 
     // Serialize proof: context_tag(32) + disclosure_mask(8) + attributes(64) +
     //                  challenge(256*4) + z(4*256*4) + commitment_hash(32) + commitment_w(4*256*4)
@@ -336,116 +355,62 @@ pub fn saap_prove_wasm(
     out
 }
 
-/// Verify a SAAP proof.
+/// Verify a SAAP proof. **Currently rejects everything, by design.**
 ///
-/// **Still calls the deprecated, unsound verifier.** The corrected verification
-/// (`saap::verify_saap_proof_against`) requires a public key `t = A_τ · sk`,
-/// and this export has no parameter to receive one — the WIT world declares
-/// `saap-verify: func(proof, tau) -> result<bool, identity-error>`, which admits
-/// no public key either. Fixing the export therefore requires deciding what the
-/// public statement is and reshaping the WIT signature to carry it. Tracked in
-/// P3-10 (0X3-78); do not treat this export as sound in the meantime.
+/// This export previously called a verifier that accepted proofs forged with no
+/// secret key. It now fails closed rather than attesting to something false: a
+/// verifier that cannot verify soundly must deny, not allow.
+///
+/// It is not wired to the corrected `saap::verify_saap_proof_against` because
+/// that requires a public key `t = A_τ · sk`, and with the current prover `t` is
+/// an exact linear image of the secret — publishing it would leak `sk` to linear
+/// algebra. Adding a public-key parameter here would push callers toward doing
+/// exactly that. The RFC's design anchors verification on `b_τ = A_τ·s + e_τ`,
+/// the PLP projection, whose error term makes it safe to publish; building that
+/// is P3-11 (0X3-79), and this export gets wired to it there.
+///
+/// Native callers who need SAAP verification today should use
+/// `saap::verify_saap_proof_against` directly and treat `t` as test-only.
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
-#[allow(deprecated)]
-pub fn saap_verify_wasm(proof_bytes: &[u8], _tau: &[u8]) -> bool {
-    use saap::{SaapProof, VectorK as SaapVectorK, Polynomial as SaapPoly, verify_saap_proof};
-
-    // Minimum size check
-    let min_size = 32 + 8 + 64 + 256 * 4 + 4 * 256 * 4 + 32 + 4 * 256 * 4;
-    if proof_bytes.len() < min_size {
-        return false;
-    }
-
-    let mut proof = SaapProof::zero();
-    let mut offset = 0usize;
-
-    proof.context_tag.copy_from_slice(&proof_bytes[offset..offset + 32]);
-    offset += 32;
-
-    let mut mask_bytes = [0u8; 8];
-    mask_bytes.copy_from_slice(&proof_bytes[offset..offset + 8]);
-    proof.disclosure_mask = u64::from_le_bytes(mask_bytes);
-    offset += 8;
-
-    for i in 0..saap::MAX_ATTRIBUTES {
-        let mut v = [0u8; 8];
-        v.copy_from_slice(&proof_bytes[offset..offset + 8]);
-        proof.attributes.values[i] = u64::from_le_bytes(v);
-        offset += 8;
-    }
-
-    for i in 0..saap::RING_N {
-        let mut bytes = [0u8; 4];
-        bytes.copy_from_slice(&proof_bytes[offset..offset + 4]);
-        proof.challenge.coeffs[i] = i32::from_le_bytes(bytes);
-        offset += 4;
-    }
-
-    for k in 0..saap::MODULE_K {
-        for n in 0..saap::RING_N {
-            let mut bytes = [0u8; 4];
-            bytes.copy_from_slice(&proof_bytes[offset..offset + 4]);
-            proof.z.vec[k].coeffs[n] = i32::from_le_bytes(bytes);
-            offset += 4;
-        }
-    }
-
-    proof.commitment_hash.copy_from_slice(&proof_bytes[offset..offset + 32]);
-    offset += 32;
-
-    for k in 0..saap::MODULE_K {
-        for n in 0..saap::RING_N {
-            let mut bytes = [0u8; 4];
-            bytes.copy_from_slice(&proof_bytes[offset..offset + 4]);
-            proof.commitment_w.vec[k].coeffs[n] = i32::from_le_bytes(bytes);
-            offset += 4;
-        }
-    }
-
-    // Build dummy matrix and attribute commitments for verification
-    let matrix_a = [SaapVectorK::zero(); saap::MODULE_K];
-    let attr_commits = [SaapPoly::zero(); saap::MAX_ATTRIBUTES];
-
-    verify_saap_proof(&proof, &matrix_a, &attr_commits).is_ok()
+pub fn saap_verify_wasm(_proof_bytes: &[u8], _tau: &[u8]) -> bool {
+    false
 }
 
-/// Split a secret into HTSS shares.
+/// Split key material into HTSS shares.
 ///
-/// Returns serialized `Vec<(u8, u64)>` shares as bytes.
+/// `secret` is arbitrary-length key material, not a `u64` — the previous
+/// signature took a `u64` and shared only `secret % MODULUS_Q` (~23 bits),
+/// silently discarding the rest.
+///
+/// `nonce` separates independent sharings of the same secret. It is **not**
+/// required to be secret: the sharing polynomial's coefficients derive from the
+/// secret itself, so the threshold property does not depend on the nonce being
+/// unguessable. (The previous export's `seed` parameter did carry that weight,
+/// which is why one share plus the seed recovered the secret.)
+///
+/// Returns the wire format documented on
+/// [`htss::SecretSharer::split_key_material_bytes`], or an empty vector on
+/// invalid input.
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
-pub fn htss_split(secret: u64, seed: u64) -> Vec<u8> {
-    use htss::SecretSharer;
-    let shares = SecretSharer::split_secret(secret, 3, 5, seed);
-    let mut out = alloc::vec![0u8; shares.len() * 9];
-    for (i, &(id, val)) in shares.iter().enumerate() {
-        out[i * 9] = id;
-        out[i * 9 + 1..i * 9 + 9].copy_from_slice(&val.to_le_bytes());
-    }
-    out
+pub fn htss_split(secret: &[u8], nonce: &[u8]) -> Vec<u8> {
+    htss::SecretSharer::split_key_material_bytes(secret, nonce).unwrap_or_default()
 }
 
-/// Reconstruct a secret from HTSS shares.
+/// Reconstruct key material from HTSS shares.
 ///
-/// `shares_bytes`: serialized shares from `htss_split`
+/// `shares_bytes`: the wire format produced by [`htss_split`].
+///
+/// Returns an empty vector when reconstruction fails — below threshold, or
+/// malformed input. Empty is unambiguous here in a way the previous export's
+/// return value was not: that one returned `u64` and yielded `0` below
+/// threshold, which is indistinguishable from having recovered the secret `0`.
+/// A caller must still treat empty as failure and never as a secret.
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
-pub fn htss_reconstruct(shares_bytes: &[u8]) -> u64 {
-    use htss::SecretSharer;
-    if shares_bytes.len() < 9 * 3 {
-        return 0;
-    }
-    let num_shares = shares_bytes.len() / 9;
-    let mut shares = alloc::vec![];
-    for i in 0..num_shares {
-        let id = shares_bytes[i * 9];
-        let mut val_bytes = [0u8; 8];
-        val_bytes.copy_from_slice(&shares_bytes[i * 9 + 1..i * 9 + 9]);
-        let val = u64::from_le_bytes(val_bytes);
-        shares.push((id, val));
-    }
-    SecretSharer::reconstruct_secret(&shares)
+pub fn htss_reconstruct(shares_bytes: &[u8]) -> Vec<u8> {
+    htss::SecretSharer::reconstruct_key_material_bytes(shares_bytes).unwrap_or_default()
 }
 
 /// Enroll a PUF SRAM response.

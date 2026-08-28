@@ -41,6 +41,7 @@ bincode = { version = "1.3", default-features = false }
 
 # WASM bindings (optional, enabled by `wasm` feature)
 wasm-bindgen = { version = "0.2", optional = true }
+wit-bindgen = { version = "0.60", default-features = false, features = ["realloc", "macros", "bitflags"], optional = true }
 
 # ── Dev dependencies ──────────────────────────────────────────────────────────
 
@@ -96,6 +97,16 @@ wasm = [
 # enclave: Enables constant-time enclave execution paths and volatile zeroization
 # Activates the fixed-iteration rejection sampling loop and CMOV selection
 enclave = []
+
+# component: Builds the WebAssembly Component Model adapter in `src/component.rs`,
+# implementing the `aethel:core` WIT world with its declared types. Separate from
+# `wasm` (which is the wasm-bindgen cdylib and a *core module*, not a component).
+# Non-default: it pulls wit-bindgen, and the default build of a crypto crate
+# should not carry a binding generator it does not use.
+component = [
+    "dep:wit-bindgen",
+    "std",
+]
 
 # puf: Enables the SRAM PUF + BCH(1023,512,55) fuzzy extractor module (research,
 # out of scope for the aethel:core WIT world). Non-default: excluded from the
