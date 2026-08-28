@@ -7,6 +7,12 @@ name: component
 #
 # It also fails if the built hash does not match the one checked into
 # `component.sha256`, which is what makes that file a claim rather than a note.
+#
+# The hash is platform-specific: this runner is the canonical build platform.
+# A build of the same commit on Windows or macOS produces different bytes, because
+# rustc embeds platform paths and links a different std. That was caught by this
+# job's first run - the checked-in hash had come from a Windows build - and is
+# documented in the README rather than papered over.
 
 on:
   push:

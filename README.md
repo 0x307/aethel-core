@@ -135,9 +135,17 @@ sha256sum aethel_core.component.wasm
 cat component.sha256
 ```
 
-If those differ, the artifact was not built from this source. Requires the toolchain pinned in
-`.github/workflows/component.yml` (currently Rust 1.97.0, wasm-tools 1.258.0) — a different
-toolchain will produce different bytes.
+**The canonical build platform is CI**, and the hash in `component.sha256` is the one produced
+there: `ubuntu-latest`, Rust 1.97.0, wasm-tools 1.258.0, as pinned in
+`.github/workflows/component.yml`. Reproduce it on that platform and you get the same bytes;
+CI proves this on every push by building twice from a clean target directory and comparing.
+
+Building on a different OS will produce a **different hash** — this is not a
+platform-independent guarantee, and we would rather say so than let you discover it. A
+Windows build of this exact commit differs from the Linux one, because Rust embeds
+platform-specific paths and links a different `std`. If your hash does not match and you are
+not on the canonical platform, that is expected; if it does not match and you *are*, the
+artifact was not built from this source.
 
 ### Component status per operation
 
