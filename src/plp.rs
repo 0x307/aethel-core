@@ -59,47 +59,7 @@ pub const REJECTION_THRESHOLD: i32 = GAMMA1 - BETA;
 // Precomputed zeta table: ZETA[i] = ζ^(bitrev(i)) mod q for i in 0..128
 // This is the standard Dilithium/Kyber NTT twiddle factor layout.
 
-const ZETA: [u32; 128] = [
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-];
 
-// Precomputed NTT zeta table (Dilithium-style, bit-reversed order)
-// Generated from: zeta_table[i] = pow(1753, bitrev7(i), Q) for i in 0..128
-// where bitrev7 reverses the 7 least significant bits.
-// These are the actual Dilithium reference values for q=8380417.
-const NTT_ZETAS: [i32; 128] = [
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-];
 
 // ── Polynomial type ───────────────────────────────────────────────────────────
 
@@ -251,102 +211,120 @@ fn bit_reverse(mut x: usize, bits: usize) -> usize {
 /// In-place forward NTT over Z_q for a polynomial of degree N=256.
 /// Uses Cooley-Tukey with ζ = 1753 (primitive 512th root of unity mod q).
 /// The NTT operates on the negacyclic ring Z_q[X]/(X^256 + 1).
-pub fn ntt_forward(poly: &mut Poly) {
-    let q = Q as u64;
-    // ζ = 1753 is a primitive 512th root of unity mod q
-    // For negacyclic NTT of length 256, we use ζ as the twiddle base
-    let zeta: u64 = 1753;
-    let n = N; // 256
+/// Primitive 512th root of unity mod q.
+///
+/// ψ^256 ≡ -1 (mod q), which is exactly what makes a transform over
+/// R_q = Z_q[X]/(X^256 + 1) possible. The ring is **negacyclic**: the previous
+/// implementation ran a cyclic NTT and used ψ as though it were a 256th root,
+/// so `ntt_inverse(ntt_forward(x)) != x` and `poly_mul_ntt` disagreed with
+/// `mul_schoolbook` on every coefficient (P3-14 / 0X3-84).
+const PSI: u64 = 1753;
 
-    // Bit-reverse permutation
-    let log2n = 8; // log2(256) = 8
-    for i in 0..n {
-        let j = bit_reverse(i, log2n);
+/// Standard cyclic radix-2 NTT: bit-reverse, then decimation-in-time.
+///
+/// Kept separate from the negacyclic wrappers so the ψ-weighting that makes the
+/// transform negacyclic is visible at the call site rather than folded into the
+/// butterflies.
+fn cyclic_ntt(a: &mut [u64; N], root: u64, q: u64) {
+    for i in 0..N {
+        let j = bit_reverse(i, 8);
         if i < j {
-            poly.coeffs.swap(i, j);
+            a.swap(i, j);
         }
     }
 
-    // Cooley-Tukey butterfly
     let mut len = 1usize;
-    let mut k = n / 2; // twiddle step
-    while len < n {
-        // twiddle = ζ^(n/(2*len)) for standard NTT
-        // For negacyclic: twiddle = ζ^(n/len) at each level
-        let twiddle_exp = (n / (2 * len)) as u64;
-        let w = pow_mod(zeta, twiddle_exp, q);
-        let mut wn = 1u64;
-        for j in 0..len {
-            for i in (j..n).step_by(2 * len) {
-                let u = poly.coeffs[i] as u64;
-                let v = poly.coeffs[i + len] as u64 * wn % q;
-                poly.coeffs[i] = ((u + v) % q) as u32;
-                poly.coeffs[i + len] = ((u + q - v) % q) as u32;
+    while len < N {
+        let w_len = pow_mod(root, (N / (2 * len)) as u64, q);
+        let mut base = 0usize;
+        while base < N {
+            let mut w = 1u64;
+            for j in 0..len {
+                let u = a[base + j];
+                let v = a[base + j + len] * w % q;
+                a[base + j] = (u + v) % q;
+                a[base + j + len] = (u + q - v) % q;
+                w = w * w_len % q;
             }
-            wn = wn * w % q;
+            base += 2 * len;
         }
         len *= 2;
-        k /= 2;
     }
-    let _ = k;
 }
 
-/// In-place inverse NTT over Z_q.
+/// In-place forward negacyclic NTT over R_q = Z_q[X]/(X^256 + 1).
+///
+/// Weights each coefficient by ψ^i, then runs a cyclic NTT with ω = ψ². The
+/// weighting is what turns the cyclic transform into a negacyclic one.
+///
+/// Verified against [`Poly::mul_schoolbook`] by
+/// `ntt_and_schoolbook_multiplication_agree`, and for self-inversion by
+/// `ntt_forward_and_inverse_round_trip`.
+pub fn ntt_forward(poly: &mut Poly) {
+    let q = Q as u64;
+    let omega = PSI * PSI % q;
+
+    let mut a = [0u64; N];
+    let mut psi_pow = 1u64;
+    for i in 0..N {
+        a[i] = (poly.coeffs[i] as u64) * psi_pow % q;
+        psi_pow = psi_pow * PSI % q;
+    }
+
+    cyclic_ntt(&mut a, omega, q);
+
+    for i in 0..N {
+        poly.coeffs[i] = a[i] as u32;
+    }
+}
+
+/// In-place inverse negacyclic NTT over R_q.
+///
+/// Runs the cyclic transform with ω⁻¹, scales by n⁻¹, then removes the ψ^i
+/// weighting applied by [`ntt_forward`].
 pub fn ntt_inverse(poly: &mut Poly) {
     let q = Q as u64;
-    let zeta: u64 = 1753;
-    let n = N;
+    let omega = PSI * PSI % q;
+    let omega_inv = pow_mod(omega, q - 2, q);
+    let psi_inv = pow_mod(PSI, q - 2, q);
+    let n_inv = pow_mod(N as u64, q - 2, q);
 
-    // Bit-reverse permutation
-    let log2n = 8;
-    for i in 0..n {
-        let j = bit_reverse(i, log2n);
-        if i < j {
-            poly.coeffs.swap(i, j);
-        }
+    let mut a = [0u64; N];
+    for i in 0..N {
+        a[i] = poly.coeffs[i] as u64;
     }
 
-    // Gentleman-Sande butterfly (inverse)
-    let mut len = n / 2;
-    while len >= 1 {
-        let twiddle_exp = (n / (2 * len)) as u64;
-        // Inverse twiddle = ζ^(-twiddle_exp) = ζ^(q-1-twiddle_exp)
-        let inv_twiddle_exp = (q - 1 - twiddle_exp % (q - 1)) % (q - 1);
-        let w = pow_mod(zeta, inv_twiddle_exp, q);
-        let mut wn = 1u64;
-        for j in 0..len {
-            for i in (j..n).step_by(2 * len) {
-                let u = poly.coeffs[i] as u64;
-                let v = poly.coeffs[i + len] as u64;
-                poly.coeffs[i] = ((u + v) % q) as u32;
-                poly.coeffs[i + len] = ((u + q - v) % q * wn % q) as u32;
-            }
-            wn = wn * w % q;
-        }
-        len /= 2;
-    }
+    cyclic_ntt(&mut a, omega_inv, q);
 
-    // Multiply by n^{-1} mod q
-    let n_inv = pow_mod(n as u64, q - 2, q); // Fermat's little theorem
-    for c in poly.coeffs.iter_mut() {
-        *c = (*c as u64 * n_inv % q) as u32;
+    let mut psi_inv_pow = 1u64;
+    for i in 0..N {
+        poly.coeffs[i] = (a[i] * n_inv % q * psi_inv_pow % q) as u32;
+        psi_inv_pow = psi_inv_pow * psi_inv % q;
     }
 }
 
-/// Polynomial multiplication via NTT: a * b mod (X^N + 1, q).
+/// Negacyclic polynomial multiplication via the NTT.
+///
+/// Equivalent to [`Poly::mul_schoolbook`] and asserted so by
+/// `ntt_and_schoolbook_multiplication_agree`. That equivalence is the whole
+/// contract of this function: a fast path that returns different answers from
+/// the reference is worse than no fast path.
 pub fn poly_mul_ntt(a: &Poly, b: &Poly) -> Poly {
+    let q = Q as u64;
     let mut fa = *a;
     let mut fb = *b;
     ntt_forward(&mut fa);
     ntt_forward(&mut fb);
-    // Pointwise multiply in NTT domain
+
     let mut fc = Poly::zero();
     for i in 0..N {
-        fc.coeffs[i] = mul_mod(fa.coeffs[i], fb.coeffs[i]);
+        fc.coeffs[i] = ((fa.coeffs[i] as u64) * (fb.coeffs[i] as u64) % q) as u32;
     }
+
     ntt_inverse(&mut fc);
     fc
 }
+
 
 // ── SHAKE-256 matrix generation ───────────────────────────────────────────────
 
@@ -729,8 +707,19 @@ impl Prover {
         for iter in 0u8..16 {
             // 1. Sample masking polynomial y ~ uniform [-γ₁, γ₁]
             let mut hasher = Shake256::default();
-            hasher.update(b"AETHEL_MASK_V1");
+            hasher.update(b"AETHEL_MASK_V2");
             hasher.update(seed);
+            // Bind the context. Without τ here, the mask is a function of
+            // (seed, iter) alone, so two proofs of the same identity at
+            // different contexts share y while their challenges differ:
+            //
+            //   z₁ = y + c₁·s,  z₂ = y + c₂·s  ⇒  z₁ − z₂ = (c₁ − c₂)·s
+            //
+            // which recovers s outright. That was demonstrated against 64/64
+            // sampled identities before this line existed (P3-15 / 0X3-85).
+            // Deterministic masks are fine — Dilithium and RFC 6979 both use
+            // them — but only when the derivation binds what is being proven.
+            hasher.update(&proj.tau);
             hasher.update(&[iter]);
             let mut xof = hasher.finalize_xof();
             let mut y = sample_mask_from_xof(&mut xof);
@@ -972,7 +961,6 @@ mod tests {
     /// indistinguishable from broken arithmetic, and would be a test that cannot
     /// fail rather than a test that passed.
     #[test]
-    #[ignore = "blocked on the NTT defect - this control currently fails because                 the NTT is broken, not because the recovery logic is wrong"]
     fn the_recovery_machinery_works_when_a_mask_is_genuinely_shared() {
         let identity = MasterIdentity::from_seed(&test_seed());
         let proj = identity.project_at_context(b"ctx", &test_rho());
@@ -1014,7 +1002,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "blocked on the NTT defect: ring division needs a working NTT, and                 ntt_forward/ntt_inverse do not round-trip. Un-ignore once                 ntt_forward_and_inverse_round_trip passes - until then a result                 from this test means nothing either way."]
     fn two_proofs_at_different_contexts_do_not_leak_the_secret() {
         // The mask depends on (seed, iter). Rejection sampling means two
         // contexts often accept at DIFFERENT iterations, in which case the mask
