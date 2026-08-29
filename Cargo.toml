@@ -68,6 +68,13 @@ wasm-bindgen-test = "0.3"
 # SHAKE-256-derived) but it's still pulled in for every `cargo test`,
 # including `wasm-pack test`. Pin it directly with "js" so wasm32 test builds
 # compile; on native this target block simply doesn't apply.
+# wasmtime is a HOST runtime: it needs mmap and cannot compile for
+# wasm32-unknown-unknown. Scoping it away from wasm32 keeps `wasm-pack test`
+# working, which is the job that proves zeroization happens in WASM linear
+# memory - losing that to gain the execution proof would be a bad trade.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+wasmtime = { version = "34.0.2", default-features = false, features = ["runtime", "component-model", "cranelift"] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
 
@@ -107,6 +114,13 @@ component = [
     "dep:wit-bindgen",
     "std",
 ]
+
+# component-tests: Runs the host-side execution proof in
+# `tests/component_execution.rs`, which loads the built component in wasmtime
+# and checks it against the native API. Non-default because it needs
+# `aethel_core.component.wasm` to exist already (the `component` CI job builds
+# it first) and because wasmtime is a heavy dev-dependency.
+component-tests = []
 
 # puf: Enables the SRAM PUF + BCH(1023,512,55) fuzzy extractor module (research,
 # out of scope for the aethel:core WIT world). Non-default: excluded from the
