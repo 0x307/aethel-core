@@ -1052,10 +1052,14 @@ mod tests {
             }
         }
 
+        // Diagnostic output only where std exists: this module is also compiled
+        // no_std for the wasm32 test target.
+        #[cfg(feature = "std")]
         std::eprintln!(
             "mask-reuse sweep: {}/{} pairs leaked a small-norm secret (first: {:?})",
             recoveries, attempts, first_hit
         );
+        let _ = &first_hit;
 
         assert_eq!(
             recoveries, 0,
