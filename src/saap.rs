@@ -332,14 +332,25 @@ fn derive_saap_matrix(tau: &[u8]) -> [VectorK; MODULE_K] {
 /// the disclosure mask, so two proofs of one credential under one τ disclosing
 /// different attribute sets shared `r` and leaked `sk` via `z₁ − z₂ = (c₁−c₂)·sk`.
 /// Both are closed by sampling `r` from fresh `rho` here.
-fn sample_saap_masking_vector(rho: &[u8], nonce: u8) -> VectorK {
+/// Sample the sigma-protocol masking vector.
+///
+/// `rho` is caller-supplied fresh randomness and is the primary defence. `tau`
+/// is bound as well so that a caller who *reuses* `rho` across two contexts
+/// still cannot be attacked: without it, two proofs sharing `rho` but under
+/// different contexts share `r` while their challenges differ, and
+/// `z1 - z2 = (c1 - c2)*sk` recovers the secret key. That exact attack was
+/// demonstrated against PLP, which had no fresh randomness at all
+/// (P3-15 / 0X3-85); binding tau here makes the same mistake unreachable
+/// through this path regardless of caller behaviour.
+fn sample_saap_masking_vector(rho: &[u8], tau: &[u8; 32], nonce: u8) -> VectorK {
     let mut r = VectorK::zero();
     let range = 2 * PARAM_GAMMA1 as u32 + 1;
 
     for k in 0..MODULE_K {
         let mut hasher = Shake256::default();
-        hasher.update(b"AETHEL_SAAP_MASK_V2");
+        hasher.update(b"AETHEL_SAAP_MASK_V3");
         hasher.update(rho);
+        hasher.update(tau);
         hasher.update(&[nonce, k as u8]);
         let mut xof = hasher.finalize_xof();
 
@@ -403,7 +414,7 @@ pub fn saap_prove(
     // 4. Fixed 16-iteration rejection sampling loop
     for iter in 0u8..16 {
         // Sample masking vector r ← S_{γ₁}^k
-        let mut r = sample_saap_masking_vector(rho, iter);
+        let mut r = sample_saap_masking_vector(rho, &context_tag, iter);
 
         // Compute commitment w = A · r
         let mut w = VectorK::zero();
@@ -458,7 +469,7 @@ pub fn saap_prove(
     }
 
     // Fallback: return last candidate (all 16 iterations rejected — negligible probability)
-    let mut r = sample_saap_masking_vector(rho, 0);
+    let mut r = sample_saap_masking_vector(rho, &context_tag, 0);
     let mut w = VectorK::zero();
     for i in 0..MODULE_K {
         for j in 0..MODULE_K {

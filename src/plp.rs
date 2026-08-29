@@ -59,47 +59,7 @@ pub const REJECTION_THRESHOLD: i32 = GAMMA1 - BETA;
 // Precomputed zeta table: ZETA[i] = ζ^(bitrev(i)) mod q for i in 0..128
 // This is the standard Dilithium/Kyber NTT twiddle factor layout.
 
-const ZETA: [u32; 128] = [
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-];
 
-// Precomputed NTT zeta table (Dilithium-style, bit-reversed order)
-// Generated from: zeta_table[i] = pow(1753, bitrev7(i), Q) for i in 0..128
-// where bitrev7 reverses the 7 least significant bits.
-// These are the actual Dilithium reference values for q=8380417.
-const NTT_ZETAS: [i32; 128] = [
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-    1753, 1753, 1753, 1753, 1753, 1753, 1753, 1753,
-];
 
 // ── Polynomial type ───────────────────────────────────────────────────────────
 
@@ -251,102 +211,120 @@ fn bit_reverse(mut x: usize, bits: usize) -> usize {
 /// In-place forward NTT over Z_q for a polynomial of degree N=256.
 /// Uses Cooley-Tukey with ζ = 1753 (primitive 512th root of unity mod q).
 /// The NTT operates on the negacyclic ring Z_q[X]/(X^256 + 1).
-pub fn ntt_forward(poly: &mut Poly) {
-    let q = Q as u64;
-    // ζ = 1753 is a primitive 512th root of unity mod q
-    // For negacyclic NTT of length 256, we use ζ as the twiddle base
-    let zeta: u64 = 1753;
-    let n = N; // 256
+/// Primitive 512th root of unity mod q.
+///
+/// ψ^256 ≡ -1 (mod q), which is exactly what makes a transform over
+/// R_q = Z_q[X]/(X^256 + 1) possible. The ring is **negacyclic**: the previous
+/// implementation ran a cyclic NTT and used ψ as though it were a 256th root,
+/// so `ntt_inverse(ntt_forward(x)) != x` and `poly_mul_ntt` disagreed with
+/// `mul_schoolbook` on every coefficient (P3-14 / 0X3-84).
+const PSI: u64 = 1753;
 
-    // Bit-reverse permutation
-    let log2n = 8; // log2(256) = 8
-    for i in 0..n {
-        let j = bit_reverse(i, log2n);
+/// Standard cyclic radix-2 NTT: bit-reverse, then decimation-in-time.
+///
+/// Kept separate from the negacyclic wrappers so the ψ-weighting that makes the
+/// transform negacyclic is visible at the call site rather than folded into the
+/// butterflies.
+fn cyclic_ntt(a: &mut [u64; N], root: u64, q: u64) {
+    for i in 0..N {
+        let j = bit_reverse(i, 8);
         if i < j {
-            poly.coeffs.swap(i, j);
+            a.swap(i, j);
         }
     }
 
-    // Cooley-Tukey butterfly
     let mut len = 1usize;
-    let mut k = n / 2; // twiddle step
-    while len < n {
-        // twiddle = ζ^(n/(2*len)) for standard NTT
-        // For negacyclic: twiddle = ζ^(n/len) at each level
-        let twiddle_exp = (n / (2 * len)) as u64;
-        let w = pow_mod(zeta, twiddle_exp, q);
-        let mut wn = 1u64;
-        for j in 0..len {
-            for i in (j..n).step_by(2 * len) {
-                let u = poly.coeffs[i] as u64;
-                let v = poly.coeffs[i + len] as u64 * wn % q;
-                poly.coeffs[i] = ((u + v) % q) as u32;
-                poly.coeffs[i + len] = ((u + q - v) % q) as u32;
+    while len < N {
+        let w_len = pow_mod(root, (N / (2 * len)) as u64, q);
+        let mut base = 0usize;
+        while base < N {
+            let mut w = 1u64;
+            for j in 0..len {
+                let u = a[base + j];
+                let v = a[base + j + len] * w % q;
+                a[base + j] = (u + v) % q;
+                a[base + j + len] = (u + q - v) % q;
+                w = w * w_len % q;
             }
-            wn = wn * w % q;
+            base += 2 * len;
         }
         len *= 2;
-        k /= 2;
     }
-    let _ = k;
 }
 
-/// In-place inverse NTT over Z_q.
+/// In-place forward negacyclic NTT over R_q = Z_q[X]/(X^256 + 1).
+///
+/// Weights each coefficient by ψ^i, then runs a cyclic NTT with ω = ψ². The
+/// weighting is what turns the cyclic transform into a negacyclic one.
+///
+/// Verified against [`Poly::mul_schoolbook`] by
+/// `ntt_and_schoolbook_multiplication_agree`, and for self-inversion by
+/// `ntt_forward_and_inverse_round_trip`.
+pub fn ntt_forward(poly: &mut Poly) {
+    let q = Q as u64;
+    let omega = PSI * PSI % q;
+
+    let mut a = [0u64; N];
+    let mut psi_pow = 1u64;
+    for i in 0..N {
+        a[i] = (poly.coeffs[i] as u64) * psi_pow % q;
+        psi_pow = psi_pow * PSI % q;
+    }
+
+    cyclic_ntt(&mut a, omega, q);
+
+    for i in 0..N {
+        poly.coeffs[i] = a[i] as u32;
+    }
+}
+
+/// In-place inverse negacyclic NTT over R_q.
+///
+/// Runs the cyclic transform with ω⁻¹, scales by n⁻¹, then removes the ψ^i
+/// weighting applied by [`ntt_forward`].
 pub fn ntt_inverse(poly: &mut Poly) {
     let q = Q as u64;
-    let zeta: u64 = 1753;
-    let n = N;
+    let omega = PSI * PSI % q;
+    let omega_inv = pow_mod(omega, q - 2, q);
+    let psi_inv = pow_mod(PSI, q - 2, q);
+    let n_inv = pow_mod(N as u64, q - 2, q);
 
-    // Bit-reverse permutation
-    let log2n = 8;
-    for i in 0..n {
-        let j = bit_reverse(i, log2n);
-        if i < j {
-            poly.coeffs.swap(i, j);
-        }
+    let mut a = [0u64; N];
+    for i in 0..N {
+        a[i] = poly.coeffs[i] as u64;
     }
 
-    // Gentleman-Sande butterfly (inverse)
-    let mut len = n / 2;
-    while len >= 1 {
-        let twiddle_exp = (n / (2 * len)) as u64;
-        // Inverse twiddle = ζ^(-twiddle_exp) = ζ^(q-1-twiddle_exp)
-        let inv_twiddle_exp = (q - 1 - twiddle_exp % (q - 1)) % (q - 1);
-        let w = pow_mod(zeta, inv_twiddle_exp, q);
-        let mut wn = 1u64;
-        for j in 0..len {
-            for i in (j..n).step_by(2 * len) {
-                let u = poly.coeffs[i] as u64;
-                let v = poly.coeffs[i + len] as u64;
-                poly.coeffs[i] = ((u + v) % q) as u32;
-                poly.coeffs[i + len] = ((u + q - v) % q * wn % q) as u32;
-            }
-            wn = wn * w % q;
-        }
-        len /= 2;
-    }
+    cyclic_ntt(&mut a, omega_inv, q);
 
-    // Multiply by n^{-1} mod q
-    let n_inv = pow_mod(n as u64, q - 2, q); // Fermat's little theorem
-    for c in poly.coeffs.iter_mut() {
-        *c = (*c as u64 * n_inv % q) as u32;
+    let mut psi_inv_pow = 1u64;
+    for i in 0..N {
+        poly.coeffs[i] = (a[i] * n_inv % q * psi_inv_pow % q) as u32;
+        psi_inv_pow = psi_inv_pow * psi_inv % q;
     }
 }
 
-/// Polynomial multiplication via NTT: a * b mod (X^N + 1, q).
+/// Negacyclic polynomial multiplication via the NTT.
+///
+/// Equivalent to [`Poly::mul_schoolbook`] and asserted so by
+/// `ntt_and_schoolbook_multiplication_agree`. That equivalence is the whole
+/// contract of this function: a fast path that returns different answers from
+/// the reference is worse than no fast path.
 pub fn poly_mul_ntt(a: &Poly, b: &Poly) -> Poly {
+    let q = Q as u64;
     let mut fa = *a;
     let mut fb = *b;
     ntt_forward(&mut fa);
     ntt_forward(&mut fb);
-    // Pointwise multiply in NTT domain
+
     let mut fc = Poly::zero();
     for i in 0..N {
-        fc.coeffs[i] = mul_mod(fa.coeffs[i], fb.coeffs[i]);
+        fc.coeffs[i] = ((fa.coeffs[i] as u64) * (fb.coeffs[i] as u64) % q) as u32;
     }
+
     ntt_inverse(&mut fc);
     fc
 }
+
 
 // ── SHAKE-256 matrix generation ───────────────────────────────────────────────
 
@@ -729,8 +707,19 @@ impl Prover {
         for iter in 0u8..16 {
             // 1. Sample masking polynomial y ~ uniform [-γ₁, γ₁]
             let mut hasher = Shake256::default();
-            hasher.update(b"AETHEL_MASK_V1");
+            hasher.update(b"AETHEL_MASK_V2");
             hasher.update(seed);
+            // Bind the context. Without τ here, the mask is a function of
+            // (seed, iter) alone, so two proofs of the same identity at
+            // different contexts share y while their challenges differ:
+            //
+            //   z₁ = y + c₁·s,  z₂ = y + c₂·s  ⇒  z₁ − z₂ = (c₁ − c₂)·s
+            //
+            // which recovers s outright. That was demonstrated against 64/64
+            // sampled identities before this line existed (P3-15 / 0X3-85).
+            // Deterministic masks are fine — Dilithium and RFC 6979 both use
+            // them — but only when the derivation binds what is being proven.
+            hasher.update(&proj.tau);
             hasher.update(&[iter]);
             let mut xof = hasher.finalize_xof();
             let mut y = sample_mask_from_xof(&mut xof);
@@ -842,9 +831,241 @@ mod tests {
     }
 
     /// Fixed fresh-randomness for e_τ in tests. Production MUST sample this per
-    /// projection; a constant is fine only because these tests fix inputs.
+    /// projection.
     fn test_rho() -> [u8; 32] {
         [0xa5u8; 32]
+    }
+
+    // ── Sigma-protocol mask reuse (found 2026-08-28) ─────────────────────────
+
+    /// `prove_identity` derives its masking polynomial as
+    /// `y = sample_mask(SHAKE256("AETHEL_MASK_V1" || seed || iter))`. The
+    /// context tau does not enter, so two proofs of the same identity at two
+    /// different contexts share `y` while their challenges differ.
+    ///
+    /// That is nonce reuse in a Schnorr-style sigma protocol:
+    ///
+    /// ```text
+    /// z1 = y + c1*s ; z2 = y + c2*s ; z1 - z2 = (c1 - c2)*s
+    /// ```
+    ///
+    /// This test performs the recovery with public arithmetic and checks the
+    /// result against the PUBLIC projection. It is written to be run.
+    const ATTACK_Q: i64 = 8_380_417;
+
+    fn attack_mod_inv(a: i64) -> i64 {
+        let mut result = 1i64;
+        let mut base = a.rem_euclid(ATTACK_Q);
+        let mut exp = ATTACK_Q - 2;
+        while exp > 0 {
+            if exp & 1 == 1 { result = (result * base) % ATTACK_Q; }
+            base = (base * base) % ATTACK_Q;
+            exp >>= 1;
+        }
+        result
+    }
+
+    fn attack_centered(x: i64) -> i64 {
+        let r = x.rem_euclid(ATTACK_Q);
+        if r > ATTACK_Q / 2 { r - ATTACK_Q } else { r }
+    }
+
+    fn attack_sub(a: &Poly, b: &Poly) -> Poly {
+        let mut out = Poly::zero();
+        for i in 0..N {
+            out.coeffs[i] = (a.coeffs[i] as i64 - b.coeffs[i] as i64)
+                .rem_euclid(ATTACK_Q) as u32;
+        }
+        out
+    }
+
+    fn attack_ring_divide(num: &Poly, den: &Poly) -> Option<Poly> {
+        let mut n = *num;
+        let mut d = *den;
+        ntt_forward(&mut n);
+        ntt_forward(&mut d);
+        let mut q = Poly::zero();
+        for i in 0..N {
+            let di = d.coeffs[i] as i64 % ATTACK_Q;
+            if di == 0 { return None; }
+            let ni = n.coeffs[i] as i64 % ATTACK_Q;
+            q.coeffs[i] = ((ni * attack_mod_inv(di)) % ATTACK_Q) as u32;
+        }
+        ntt_inverse(&mut q);
+        Some(q)
+    }
+
+    /// The most basic NTT property: the inverse transform must undo the forward
+    /// one. If this fails, `poly_mul_ntt` cannot be correct and neither can
+    /// anything built on the NTT path.
+    #[test]
+    fn ntt_forward_and_inverse_round_trip() {
+        let mut original = Poly::zero();
+        for i in 0..N {
+            original.coeffs[i] = ((i * 13 + 5) % 4096) as u32;
+        }
+
+        let mut round_tripped = original;
+        ntt_forward(&mut round_tripped);
+        ntt_inverse(&mut round_tripped);
+
+        let mut mismatches = 0usize;
+        for i in 0..N {
+            if original.coeffs[i] != round_tripped.coeffs[i] {
+                mismatches += 1;
+            }
+        }
+        assert_eq!(
+            mismatches, 0,
+            "ntt_inverse(ntt_forward(x)) != x on {}/{} coefficients - the NTT              is not self-inverse",
+            mismatches, N
+        );
+    }
+
+    /// Diagnostic: do the crate's two multiplication routines agree?
+    ///
+    /// `mul_schoolbook` is what the prover and verifier use. `poly_mul_ntt` is
+    /// the NTT path. If they disagree, any analysis that mixes them - including
+    /// the mask-reuse recovery attempt above - is invalid, and so is anything
+    /// else that assumes the NTT is a drop-in for the schoolbook multiply.
+    #[test]
+    fn ntt_and_schoolbook_multiplication_agree() {
+        let mut a = Poly::zero();
+        let mut b = Poly::zero();
+        for i in 0..N {
+            a.coeffs[i] = ((i * 31 + 7) % 1000) as u32;
+            b.coeffs[i] = ((i * 17 + 3) % 1000) as u32;
+        }
+
+        let school = a.mul_schoolbook(&b);
+        let ntt = poly_mul_ntt(&a, &b);
+
+        let mut mismatches = 0usize;
+        for i in 0..N {
+            if school.coeffs[i] != ntt.coeffs[i] {
+                mismatches += 1;
+            }
+        }
+        assert_eq!(
+            mismatches, 0,
+            "mul_schoolbook and poly_mul_ntt disagree on {}/{} coefficients",
+            mismatches, N
+        );
+    }
+
+    /// Positive control for the recovery machinery above.
+    ///
+    /// Synthesises the exact algebraic situation the attack assumes — one shared
+    /// mask, two different challenges — and asserts the attack recovers the
+    /// secret. Without this, a "0 recoveries" result from the sweep is
+    /// indistinguishable from broken arithmetic, and would be a test that cannot
+    /// fail rather than a test that passed.
+    #[test]
+    fn the_recovery_machinery_works_when_a_mask_is_genuinely_shared() {
+        let identity = MasterIdentity::from_seed(&test_seed());
+        let proj = identity.project_at_context(b"ctx", &test_rho());
+
+        // A shared mask, and two distinct challenges.
+        let mut y = Poly::zero();
+        for i in 0..N {
+            y.coeffs[i] = ((i as u64 * 7919 + 13) % 100_000) as u32;
+        }
+        let c1 = hash_to_challenge(&proj.matrix_a, 1);
+        let c2 = hash_to_challenge(&proj.matrix_a, 2);
+        assert_ne!(c1.coeffs, c2.coeffs, "setup: challenges must differ");
+
+        // z = y + c*s, with s the real secret this identity holds.
+        let z1 = y.add(&c1.mul_schoolbook(&identity.secret_key));
+        let z2 = y.add(&c2.mul_schoolbook(&identity.secret_key));
+
+        let recovered = attack_ring_divide(&attack_sub(&z1, &z2), &attack_sub(&c1, &c2))
+            .expect("control: the challenge difference should be invertible");
+
+        let mut max_abs = 0i64;
+        for i in 0..N {
+            max_abs = max_abs.max(attack_centered(recovered.coeffs[i] as i64).abs());
+        }
+        assert!(
+            max_abs <= 4,
+            "the recovery machinery FAILED on a synthetic shared-mask case              (recovered infinity norm {}). The sweep's result is therefore              meaningless - fix this before drawing any conclusion from it.",
+            max_abs
+        );
+
+        // And it is really the secret, not just something small.
+        for i in 0..N {
+            assert_eq!(
+                attack_centered(recovered.coeffs[i] as i64),
+                attack_centered(identity.secret_key.coeffs[i] as i64),
+                "recovered coefficient {} does not match the real secret", i
+            );
+        }
+    }
+
+    #[test]
+    fn two_proofs_at_different_contexts_do_not_leak_the_secret() {
+        // The mask depends on (seed, iter). Rejection sampling means two
+        // contexts often accept at DIFFERENT iterations, in which case the mask
+        // differs and the attack fails. But when both accept at the same
+        // iteration - which happens by chance, not by design - the mask is
+        // shared and the secret falls out.
+        //
+        // So one sample proves nothing. Sweep, and count.
+        let mut attempts = 0usize;
+        let mut recoveries = 0usize;
+        let mut first_hit = None;
+
+        for k in 0u8..64 {
+            let seed = [k.wrapping_mul(7).wrapping_add(1); 32];
+            let identity = MasterIdentity::from_seed(&seed);
+
+            let proj1 = identity.project_at_context(b"context-one", &[0x11u8; 32]);
+            let proj2 = identity.project_at_context(b"context-two", &[0x22u8; 32]);
+
+            let p1 = Prover::prove_identity(&identity, &proj1, &seed);
+            let p2 = Prover::prove_identity(&identity, &proj2, &seed);
+
+            if p1.challenge_c.coeffs == p2.challenge_c.coeffs {
+                continue;
+            }
+            attempts += 1;
+
+            let z_diff = attack_sub(&p1.response_z, &p2.response_z);
+            let c_diff = attack_sub(&p1.challenge_c, &p2.challenge_c);
+
+            let recovered = match attack_ring_divide(&z_diff, &c_diff) {
+                Some(s) => s,
+                None => continue,
+            };
+
+            // The master secret is CBD(eta=2): every coefficient in [-2, 2].
+            // A wrong recovery is uniform over a ~2^23 field, so this is a
+            // decisive test, not a heuristic.
+            let mut max_abs = 0i64;
+            for i in 0..N {
+                max_abs = max_abs.max(attack_centered(recovered.coeffs[i] as i64).abs());
+            }
+            if max_abs <= 4 {
+                recoveries += 1;
+                if first_hit.is_none() {
+                    first_hit = Some((k, max_abs));
+                }
+            }
+        }
+
+        // Diagnostic output only where std exists: this module is also compiled
+        // no_std for the wasm32 test target.
+        #[cfg(feature = "std")]
+        std::eprintln!(
+            "mask-reuse sweep: {}/{} pairs leaked a small-norm secret (first: {:?})",
+            recoveries, attempts, first_hit
+        );
+        let _ = &first_hit;
+
+        assert_eq!(
+            recoveries, 0,
+            "MASTER SECRET RECOVERED from two proofs at different contexts, in              {}/{} sampled identities. prove_identity derives its mask from              (seed, iter) only - tau never enters - so whenever two contexts              accept at the same rejection-sampling iteration they share y, and              z1 - z2 = (c1 - c2)*s reveals the secret. Recovered polynomials              have infinity norm <= 4, matching CBD(eta=2); a wrong guess would              be uniform over a 2^23 field.",
+            recoveries, attempts
+        );
     }
 
     #[test]
