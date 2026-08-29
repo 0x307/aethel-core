@@ -61,6 +61,7 @@ static_assertions = "1.1"
 # test --node`), so the zeroization test actually executes in WASM linear
 # memory, not just on native.
 wasm-bindgen-test = "0.3"
+wasmtime = { version = "34.0.2", default-features = false, features = ["runtime", "component-model", "cranelift"] }
 
 # `rand`'s transitive `getrandom` dependency refuses to compile for
 # wasm32-unknown-unknown without the "js" feature (unrelated to anything this
@@ -107,6 +108,13 @@ component = [
     "dep:wit-bindgen",
     "std",
 ]
+
+# component-tests: Runs the host-side execution proof in
+# `tests/component_execution.rs`, which loads the built component in wasmtime
+# and checks it against the native API. Non-default because it needs
+# `aethel_core.component.wasm` to exist already (the `component` CI job builds
+# it first) and because wasmtime is a heavy dev-dependency.
+component-tests = []
 
 # puf: Enables the SRAM PUF + BCH(1023,512,55) fuzzy extractor module (research,
 # out of scope for the aethel:core WIT world). Non-default: excluded from the

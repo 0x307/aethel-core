@@ -124,6 +124,17 @@ wasm-tools validate aethel_core.component.wasm
 wasm-tools component wit aethel_core.component.wasm
 ```
 
+And that it actually runs — loading it in `wasmtime` and checking every operation
+against the native implementation:
+
+```bash
+cargo test --features component-tests --test component_execution
+```
+
+Those are different claims. Validating proves the artifact is well-formed; only the
+execution proof shows the component and the native API compute the same answers, which is
+what "one artifact embedded by every language" has to mean.
+
 ### Reproducing the published artifact
 
 Two builds of the same source commit produce byte-identical output. The expected hash is

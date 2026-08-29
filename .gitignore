@@ -2,3 +2,5 @@
 /dist/
 
 /aethel_core.component.wasm
+
+# Built by the component-tests workflow step; not committed.
