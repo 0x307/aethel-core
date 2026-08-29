@@ -61,7 +61,6 @@ static_assertions = "1.1"
 # test --node`), so the zeroization test actually executes in WASM linear
 # memory, not just on native.
 wasm-bindgen-test = "0.3"
-wasmtime = { version = "34.0.2", default-features = false, features = ["runtime", "component-model", "cranelift"] }
 
 # `rand`'s transitive `getrandom` dependency refuses to compile for
 # wasm32-unknown-unknown without the "js" feature (unrelated to anything this
@@ -69,6 +68,13 @@ wasmtime = { version = "34.0.2", default-features = false, features = ["runtime"
 # SHAKE-256-derived) but it's still pulled in for every `cargo test`,
 # including `wasm-pack test`. Pin it directly with "js" so wasm32 test builds
 # compile; on native this target block simply doesn't apply.
+# wasmtime is a HOST runtime: it needs mmap and cannot compile for
+# wasm32-unknown-unknown. Scoping it away from wasm32 keeps `wasm-pack test`
+# working, which is the job that proves zeroization happens in WASM linear
+# memory - losing that to gain the execution proof would be a bad trade.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+wasmtime = { version = "34.0.2", default-features = false, features = ["runtime", "component-model", "cranelift"] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
 
