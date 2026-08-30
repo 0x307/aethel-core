@@ -509,21 +509,30 @@ pub fn saap_prove(
 
 // ── SAAP Verifier ─────────────────────────────────────────────────────────────
 
-/// Compute the SAAP public key t = A_τ · sk for a context τ.
+/// Compute `t = A_τ · sk` for the **superseded** SAAP construction.
 ///
-/// This is the value a proof must be verified against, and the piece that was
-/// missing: the module documentation describes verification as
-/// `w' = A · z - c · t_attr`, but nothing in the crate ever computed `t_attr`,
-/// so the verifier was written as a self-consistency check instead. See P3-10
-/// (0X3-78).
+/// # This is not an anchor any more
 ///
-/// **Not yet safe to hand out as a public key.** With the current prover,
-/// `w = A·r` and `z = r + c·sk` carry no error term, so `t = A·sk` is an exact
-/// linear image of the secret: recovering `sk` from `t` is linear algebra over
-/// the ring, not an MLWE instance. Publishing `t` requires an error term in the
-/// prover (Dilithium's `t = A·s1 + s2`), which changes the proof format and the
-/// WIT world. Flagged for Ken. This function exists so verification can be
-/// implemented and tested, not so `t` can be distributed.
+/// The question this function used to raise, whether `t` could be published, is
+/// now moot rather than open. `t = A·sk` carries no error term, so it is an
+/// exact linear image of the secret and recovering `sk` from it is linear
+/// algebra over the ring rather than an M-LWE instance. It was never
+/// distributable.
+///
+/// [`crate::credential`] replaces it. That construction anchors verification on
+/// the PLP projection `b_τ = A_τ·s + e_τ`, which is an M-LWE sample and is
+/// publishable precisely because of the noise this value lacks. Nothing needs a
+/// SAAP-local public key any more.
+///
+/// Retained only so the characterisation tests in `tests/saap_soundness.rs`
+/// stay executable: they pin the defects of the superseded verifier as running
+/// code rather than prose. It disappears when they do. Not part of the shipped
+/// surface, and not reachable through the WIT world.
+#[doc(hidden)]
+#[deprecated(
+    since = "0.1.1",
+    note = "superseded by the credential module, which anchors on the PLP projection b_tau.             This value was never safe to publish and is now unnecessary."
+)]
 pub fn saap_public_key(tau: &[u8], secret_key: &VectorK) -> VectorK {
     let matrix_a = derive_saap_matrix(tau);
     let mut t = VectorK::zero();
