@@ -58,7 +58,9 @@ PROVING PHASE (Selective Disclosure):                     Holder Local Runtime
 
 ---
 
-## 2. Cryptographic Primitives: Lattice Commitment Scheme (BDLOP) — Not Implemented
+## 2. Cryptographic Primitives: Lattice Commitment Scheme (BDLOP)
+
+**Implemented** in `src/credential.rs` (`IssuerParams`, `Credential::issue`).
 
 > See the editorial note at the top of this document — the shipped `saap_prove` does not
 > construct a BDLOP commitment; it operates directly on caller-supplied credential bytes.
@@ -118,7 +120,9 @@ Vectors failing this bound check MUST be rejected and re-sampled using fresh eph
 
 ---
 
-## 4. Issuance & Blinding Mechanics (Not Implemented)
+## 4. Issuance & Blinding Mechanics
+
+**Implemented** in `src/credential.rs` (`Credential::issue`, `BlindedCredential::new`).
 
 > See the editorial note at the top of this document — no issuance or signing layer exists in the shipped crate.
 
@@ -148,7 +152,9 @@ C_j = B_{2,j} · r_blind + m_j  (mod q)  ∀j ∈ I_hidden
 
 ---
 
-## 5. Issue Algorithm (SAAP.Issue) — Not Implemented
+## 5. Issue Algorithm (SAAP.Issue)
+
+**Implemented** in `src/credential.rs` (`Credential::issue`).
 
 > See the editorial note at the top of this document.
 
@@ -180,47 +186,96 @@ Algorithm SAAP.Issue(sk_iss, A, ContextID):
 
 ## 6. Prove Algorithm (SAAP.Prove)
 
+**Implemented** in `src/credential.rs` as `credential::prove`.
+
+This section previously carried the RFC's *superseded* single-`z` sketch, the one
+immediately preceding RFC 5.6. That algorithm proved a single relation against a
+SAAP-local public key and is gone. What follows is the algorithm that is built.
+
 ```
-Algorithm SAAP.Prove(C_iss, s, M_disc, τ, rng):
-  Input:  Credential tuple C_iss = (t_attr, A, ContextID, Σ_iss)
-          Holder master secret s ∈ R_q^k
-          Disclosure bitmask M_disc ∈ {0,1}^m
-          Session context τ ∈ {0,1}^256
-          Randomness source rng
-  Output: Proof transcript π_saap = (τ, M_disc, A_S, c, z, h_commit)
+Algorithm SAAP.Prove(B_1, blinded_credential, s, projection, tau, rho, M_disc, rand):
+  Input:  Issuer parameters B_1 in R_q^(T x L)
+          Blinded credential (t_blind, r*, m)
+          Holder master secret s in R_q
+          PLP projection (A_tau, b_tau)
+          Context tau, projection randomness rho
+          Disclosure bitmask M_disc, presentation randomness
+  Output: Presentation (tau, M_disc, m_pub, c, z_r, z_m, z_s, z_e)
 
-  1. Parse disclosed subset:
-     S = { i | M_disc[i] == 1 }
+  1. Re-derive the projection error term:
+       e_tau = CBD_eta2(SHAKE256("AETHEL_ERROR_V2" || rho || tau))
+     e_tau is a witness, not a stored value. See section 6.1.
 
-  2. Sample polynomial blinding vector:
-     r_blind ← (S_γ₁)^k
+  2. Split m into m_pub and m_hidden by M_disc.
+     Slot 0 is the identity binding and is always hidden.
 
-  3. Compute blinded commitment:
-     t_blind = t_attr + B * r_blind  (mod q)
+  3. REJECTION_LOOP:
+     a. Sample short masks y_r in R_q^L, y_s in R_q, y_e in R_q, each in [-gamma1, gamma1].
+     b. Sample message masks y_m: slot 0 reuses y_s; slots 1..n are uniform over R_q.
+     c. W_1 = B_1 * y_r + (0^L || y_m)
+        W_2 = A_tau * y_s + y_e
+     d. c = HashToPoly("AETHEL_SAAP_CHALLENGE_V2" || W_1 || W_2 || b_tau
+                        || t_blind || M_disc || m_pub || tau)
+     e. z_r = y_r + c * r*
+        z_m = y_m + c * m_hidden
+        z_s = y_s + c * s
+        z_e = y_e + c * e_tau
+     f. If ||z_r||inf, ||z_s||inf or ||z_e||inf >= (gamma1 - beta):
+          wipe y and z, GOTO REJECTION_LOOP.
+        z_m for attribute slots has no bound. See section 6.2.
 
-  4. Compute commitment domain hash:
-     h_commit = SHA3-256(t_blind ∥ ContextID)
+  4. If the loop is exhausted, return an error.
+     There is no fallback. See section 6.3.
 
-  5. REJECTION_LOOP:
-     a. Sample ephemeral masking vector:
-        y ← (S_γ₁)^k  uniformly at random.
-
-     b. Compute linear commitment projection:
-        w' = A * y  (mod q)
-
-     c. Derive challenge polynomial c in R_q:
-        c = HashToPoly(h_commit ∥ τ ∥ M_disc ∥ w' ∥ "AETHEL_SAAP_CHALLENGE_V1")
-
-     d. Compute candidate response vector:
-        z = y + c * r_blind  (mod q)
-
-     e. CONSTANT-TIME REJECTION CHECK:
-        Evaluate ∥z∥_∞ against bound (γ₁ - β).
-        If ∥z∥_∞ >= (γ₁ - β), clear y, z and GOTO REJECTION_LOOP.
-
-  6. Output Proof Transcript:
-     π_saap = (τ, M_disc, A_S, c, z, h_commit)
+  5. Output (tau, M_disc, m_pub, c, z_r, z_m, z_s, z_e)
 ```
+
+### 6.1 Why `e_tau` is part of the witness
+
+RFC 5.7 reconstructs `W_2' = A_tau * z_s - c * b_tau` and expects the prover's
+`W_2`. It does not get it. Expanding with `b_tau = A_tau * s + e_tau`:
+
+```
+A_tau * z_s - c * b_tau = A_tau * (y_s + c*s) - c*(A_tau*s + e_tau)
+                        = A_tau * y_s - c * e_tau
+```
+
+The residual `-c * e_tau` cannot be tolerated by a Fiat-Shamir verifier, because
+the hash of an approximately correct commitment is not approximately the
+challenge. `plp::Verifier` avoids this by sending `W` in the proof and accepting
+a `2*beta` tolerance, which is a relaxed check.
+
+This implementation removes the residual instead. `e_tau` joins the witness with
+mask `y_e` and response `z_e`, and
+
+```
+A_tau * z_s + z_e - c * b_tau = A_tau * y_s + y_e = W_2
+```
+
+holds exactly. `e_tau` is never stored: it is a deterministic function of
+`(rho, tau)`, and `plp::project_at_context` and the prover share one derivation
+so the projection and the witness cannot drift apart.
+
+### 6.2 Why attribute masks are not short
+
+BDLOP requires only the commitment randomness to be short. Attribute values are
+not short, so a mask drawn from `[-gamma1, gamma1]` would not hide them.
+Attribute masks are drawn uniformly from all of `R_q`, which hides the message
+perfectly and needs no rejection sampling.
+
+Slot 0 is the exception: it holds the master secret `s`, which is CBD-small, and
+shares the short mask `y_s` so that `z_m[0]` and `z_s` are the same value. That
+equality is what links the two relations, and the verifier checks it.
+
+Soundness does not need the message components to be short. Extraction from two
+transcripts yields `delta_z_r = delta_c * r*` short, which is the relaxed opening
+BDLOP is proved under.
+
+### 6.3 Exhausted rejection sampling returns an error
+
+There is no fallback to the last candidate. A response that failed the norm check
+is exactly the value rejection sampling exists to withhold, and emitting one is
+how a sigma protocol leaks the secret the check was protecting.
 
 ---
 
@@ -258,7 +313,9 @@ Algorithm SAAP.Verify(τ, t_blind, m_pub, b_τ, π_SAAP):
 
 ---
 
-## 8. Full Protocol Execution Steps — Not Implemented
+## 8. Full Protocol Execution Steps
+
+**Implemented** end to end for issuance, blinding, proving and verification. The predicate step is not. See section 9.3.
 
 > See the editorial note at the top of this document — the shipped protocol uses a single
 > masking vector / response, not the three (`y_r`, `y_s`, `y_m`) shown below.
@@ -280,7 +337,9 @@ Prover P                                                               Verifier 
 
 ---
 
-## 9. Three Linked ZK Relations — Not Implemented
+## 9. Three Linked ZK Relations
+
+**Two of three implemented.** Identity linkage and credential membership are built and tested; predicate satisfaction is not. See section 9.3.
 
 > See the editorial note at the top of this document.
 
@@ -304,7 +363,15 @@ t_blind - (0 ∥ m_pub) = B_1 · r* + (0 ∥ m_hidden)  (mod q)
 
 ### 9.3 Predicate Satisfaction Relation (Range / Membership Proof)
 
-For hidden numerical attributes (e.g., Age ≥ 21), the prover proves in ZK that:
+> **NOT IMPLEMENTED.** Nothing in `aethel-core` evaluates a range or membership
+> predicate, and no function claims to. It is scoped out explicitly rather than
+> stubbed, so that no caller can mistake an unevaluated predicate for a satisfied
+> one. **A verifier cannot currently learn "age >= 21" from a SAAP presentation.**
+> Selective disclosure of whole attributes works; predicates over hidden
+> attributes do not. Tracked as follow-on work to 0X3-79.
+
+The design, for when it is built. For hidden numerical attributes (e.g., Age >= 21),
+the prover proves in ZK that:
 
 ```
 m_age - 21 = ∑_{k=0}^{v} b_k · 2^k  where b_k ∈ {0,1} ∈ R_q
@@ -327,7 +394,7 @@ A dynamic context-bound linear transformation applied to a vector commitment, pr
 **Constant-Time Rejection Sampling:**
 A deterministic, side-channel resistant execution mechanism that filters candidate lattice vectors against bound thresholds without introducing secret-dependent control-flow branches or memory access index patterns.
 
-### 10.2 SAAP.Issue Algorithm (IETF Format) — Not Implemented
+### 10.2 SAAP.Issue Algorithm (IETF Format)
 
 > See the editorial note at the top of this document.
 
@@ -401,6 +468,16 @@ Because **r_blind** is freshly sampled for every verification session, two separ
 ### 11.3 Post-Quantum Soundness
 
 The extraction hardness of hidden attributes **m_hidden** from **t_blind** reduces directly to the hardness of the Module Short Integer Solution (M-SIS_{k,l,q}) and M-LWE_{k,l,q} problems over **R_q**.
+
+**Status.** This claim now has the construction it describes. `t_blind` and `B_1`
+exist in the crate as of the credential module, so `SECURITY-PROOFS.md` Theorem
+7.1 is a statement about code that is built rather than about a design. Two
+qualifications remain, and neither is covered by the theorem:
+
+1. The opening extracted from two transcripts is a **relaxed** opening, the
+   standard notion for BDLOP, not an exact one.
+2. `aethel-core` has had **no third-party cryptographic audit**. A reduction
+   argument is not a review of the implementation that instantiates it.
 
 ### 11.4 Presentation Unlinkability
 
