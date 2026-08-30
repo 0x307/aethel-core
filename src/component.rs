@@ -262,6 +262,15 @@ impl GuestMasterIdentity for OwnedIdentity {
         })
     }
 
+    fn export_sealed(&self, key: Vec<u8>) -> Result<Vec<u8>, WitError> {
+        self.0.export_sealed(&key).map_err(Into::into)
+    }
+
+    fn import_sealed(sealed: Vec<u8>, key: Vec<u8>) -> Result<WitMasterIdentity, WitError> {
+        let identity = signing::Identity::import_sealed(&sealed, &key)?;
+        Ok(WitMasterIdentity::new(OwnedIdentity(identity)))
+    }
+
     fn prove(&self, tau: Vec<u8>) -> Result<WitZkProof, WitError> {
         let seed = self.0.plp_seed();
         let identity = plp::MasterIdentity::from_seed(seed);

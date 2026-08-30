@@ -42,6 +42,11 @@ serde = { version = "1.0", default-features = false, features = ["alloc", "deriv
 # the WIT world.
 pqc-sig = { version = "0.1.0", default-features = false }
 
+# AEAD for sealing an identity at rest. Sealing lives inside L1 for the same
+# reason signing does: the SDK cannot carry a cipher without breaking "one
+# artifact, adding a language never adds crypto".
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+
 # RNG abstraction. pqc-sig takes a caller-supplied RNG rather than reaching for
 # OsRng, which is what lets key generation be deterministic over caller entropy
 # in a component with no ambient randomness.
@@ -103,6 +108,7 @@ std = [
     "serde/std",
     "zeroize/std",
     "pqc-sig/std",
+    "chacha20poly1305/std",
 ]
 
 # wasm: WebAssembly target with wasm-bindgen bindings

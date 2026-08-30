@@ -835,3 +835,204 @@ fn hidden_attributes_are_not_published_by_the_component() {
         );
     }
 }
+
+// ── Sealed persistence through the component (P5-04 / 0X3-54) ────────────────
+//
+// Without this an identity dies with the process that made it, which is not an
+// identity in any useful sense. These tests exercise sealing through the built
+// artifact, because the secret never leaves the component and so neither the
+// sealing nor the opening can be checked from outside it.
+
+const SEAL_KEY: &[u8] = b"a sealing key of thirty-two byte";
+
+/// An identity sealed, reopened, and still able to sign under its own key.
+///
+/// Comparing public keys alone would pass for an implementation that restored
+/// the public half and lost the private one, so the signature is the real check.
+#[test]
+fn a_sealed_identity_round_trips_through_the_component() {
+    let (mut store, bindings) = instantiate();
+    let api = bindings.aethel_core_identity().master_identity();
+
+    let original = api
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+    let original_pk = api.call_public_key(&mut store, original).expect("host call");
+
+    let sealed = api
+        .call_export_sealed(&mut store, original, SEAL_KEY)
+        .expect("host call")
+        .expect("seal");
+
+    let reopened = api
+        .call_import_sealed(&mut store, &sealed, SEAL_KEY)
+        .expect("host call")
+        .expect("open");
+    let reopened_pk = api.call_public_key(&mut store, reopened).expect("host call");
+
+    assert_eq!(original_pk, reopened_pk, "the reopened identity is a different one");
+
+    let message = b"signed after being reopened";
+    let signature = api
+        .call_sign(&mut store, reopened, message)
+        .expect("host call")
+        .expect("sign");
+
+    assert!(
+        bindings
+            .aethel_core_identity()
+            .call_verify_signature(&mut store, &original_pk, message, &signature)
+            .expect("host call")
+            .expect("verify"),
+        "a signature from the reopened identity did not verify under the original key"
+    );
+}
+
+/// Positive control. An `import-sealed` that ignored its input and regenerated
+/// from a constant would pass the round trip above.
+#[test]
+fn two_sealed_identities_stay_distinct_through_the_component() {
+    let (mut store, bindings) = instantiate();
+    let api = bindings.aethel_core_identity().master_identity();
+
+    let first = api
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+    let second = api
+        .call_generate(&mut store, b"a completely different entropy!!")
+        .expect("host call")
+        .expect("generate");
+
+    let first_sealed = api
+        .call_export_sealed(&mut store, first, SEAL_KEY)
+        .expect("host call")
+        .expect("seal");
+    let second_sealed = api
+        .call_export_sealed(&mut store, second, SEAL_KEY)
+        .expect("host call")
+        .expect("seal");
+
+    assert_ne!(first_sealed, second_sealed, "two identities sealed to the same bytes");
+
+    let a = api
+        .call_import_sealed(&mut store, &first_sealed, SEAL_KEY)
+        .expect("host call")
+        .expect("open");
+    let b = api
+        .call_import_sealed(&mut store, &second_sealed, SEAL_KEY)
+        .expect("host call")
+        .expect("open");
+
+    let a_pk = api.call_public_key(&mut store, a).expect("host call");
+    let b_pk = api.call_public_key(&mut store, b).expect("host call");
+    assert_ne!(a_pk, b_pk, "two sealed identities reopened as the same identity");
+    assert_eq!(
+        a_pk,
+        api.call_public_key(&mut store, first).expect("host call"),
+        "the wrong identity came back"
+    );
+}
+
+/// The wrong key must not open it, and a tampered blob must not either.
+#[test]
+fn a_sealed_identity_resists_the_wrong_key_and_tampering() {
+    let (mut store, bindings) = instantiate();
+    let api = bindings.aethel_core_identity().master_identity();
+
+    let identity = api
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+    let sealed = api
+        .call_export_sealed(&mut store, identity, SEAL_KEY)
+        .expect("host call")
+        .expect("seal");
+
+    assert!(
+        api.call_import_sealed(&mut store, &sealed, b"a different sealing key, 32 byte")
+            .expect("host call")
+            .is_err(),
+        "a sealed identity opened under the wrong key"
+    );
+
+    // Tamper in each region of the blob: version, nonce, ciphertext.
+    for index in [0usize, 5, sealed.len() - 1] {
+        let mut tampered = sealed.clone();
+        tampered[index] ^= 0x01;
+        assert!(
+            api.call_import_sealed(&mut store, &tampered, SEAL_KEY)
+                .expect("host call")
+                .is_err(),
+            "a blob with byte {index} flipped still opened"
+        );
+    }
+}
+
+/// The sealed blob must not carry the identity in the clear. Checked at the
+/// boundary, because this is the byte string a caller writes to disk.
+#[test]
+fn the_sealed_blob_does_not_carry_the_identity_in_the_clear() {
+    let (mut store, bindings) = instantiate();
+    let api = bindings.aethel_core_identity().master_identity();
+
+    let entropy = b"deterministic entropy for tests!";
+    let identity = api
+        .call_generate(&mut store, entropy)
+        .expect("host call")
+        .expect("generate");
+    let sealed = api
+        .call_export_sealed(&mut store, identity, SEAL_KEY)
+        .expect("host call")
+        .expect("seal");
+
+    assert!(
+        !sealed.windows(entropy.len()).any(|w| w == entropy.as_slice()),
+        "the generation entropy appears verbatim in the sealed blob"
+    );
+
+    // The public key is not secret, but it should not be sitting in there
+    // either: a sealed identity that advertises whose it is defeats the point.
+    let pk = api.call_public_key(&mut store, identity).expect("host call");
+    assert!(
+        !sealed.windows(32).any(|w| w == &pk[..32]),
+        "the public key appears in the sealed blob, making it identifiable at rest"
+    );
+}
+
+/// A reopened identity is usable for everything, not only signing: it must
+/// project and prove exactly as the original does.
+#[test]
+fn a_reopened_identity_projects_identically() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+    let api = identity.master_identity();
+
+    let original = api
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+    let sealed = api
+        .call_export_sealed(&mut store, original, SEAL_KEY)
+        .expect("host call")
+        .expect("seal");
+    let reopened = api
+        .call_import_sealed(&mut store, &sealed, SEAL_KEY)
+        .expect("host call")
+        .expect("open");
+
+    let a = api
+        .call_project_at_context(&mut store, original, b"ctx", &[0x5Au8; 32])
+        .expect("host call")
+        .expect("project");
+    let b = api
+        .call_project_at_context(&mut store, reopened, b"ctx", &[0x5Au8; 32])
+        .expect("host call")
+        .expect("project");
+
+    assert_eq!(
+        a.public_b, b.public_b,
+        "the reopened identity projects to a different value"
+    );
+}
