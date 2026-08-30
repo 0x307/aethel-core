@@ -36,9 +36,6 @@ zeroize = { version = "1.7", default-features = false, features = ["zeroize_deri
 # Serialization for proof transcript encoding/decoding
 serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
 
-# Binary encoding for proof serialization
-bincode = { version = "1.3", default-features = false }
-
 # FIPS 204 ML-DSA signatures. Signing lives inside L1: the charter's "one
 # artifact, adding a language never adds crypto" rule means an SDK cannot carry
 # its own signature library, so aethel-core carries it and exposes it through
@@ -84,7 +81,7 @@ wasm-bindgen-test = "0.3"
 # working, which is the job that proves zeroization happens in WASM linear
 # memory - losing that to gain the execution proof would be a bad trade.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-wasmtime = { version = "34.0.2", default-features = false, features = ["runtime", "component-model", "cranelift"] }
+wasmtime = { version = "48.0.1", default-features = false, features = ["runtime", "component-model", "cranelift"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
