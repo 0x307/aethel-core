@@ -26,6 +26,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.85.0
+        with:
+          targets: wasm32-unknown-unknown
       # MSRV is a promise about what a *consumer* compiles: the library and the
       # dependencies it pulls in. It is not a promise about our own test tooling.
       # `--all-targets` pulls dev-dependencies, and wasmtime, used only by the
@@ -35,7 +37,11 @@ jobs:
       # The library is built in both configurations a consumer can select, so
       # the floor is still checked against everything that actually ships.
       - run: cargo build --locked
-      - run: cargo build --locked --no-default-features
+      # The component is what actually ships as L1, so the floor is checked
+      # against it too. `--no-default-features` is only meaningful for wasm32:
+      # on a host target a no_std build has no allocator or panic handler and
+      # cannot link, which is why it was never built that way.
+      - run: cargo build --locked --no-default-features --features component --target wasm32-unknown-unknown
 
   # P3-02: proves identity generation works fully offline by denying the
   # capability at the boundary (a real network namespace with no interface),
