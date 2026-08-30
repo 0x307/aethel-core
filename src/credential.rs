@@ -236,18 +236,58 @@ impl IssuerParams {
 
 // ── Attribute encoding ───────────────────────────────────────────────────────
 
-/// Encode an attribute value as a constant polynomial.
+/// Bits carried per coefficient when encoding an attribute.
 ///
-/// Values must be below `q`. A larger value is refused rather than reduced,
-/// because a silently wrapped attribute would still produce a verifying proof
-/// for the wrong value.
+/// 16, not the 22 that would fit: `mod_q` reduces to a *centred* range, so any
+/// limb above `q/2` (about 4.19 million) comes back negative and decodes to the
+/// wrong value. A 22-bit limb can reach 4,194,303 and cross that line; a 16-bit
+/// limb tops out at 65,535 and cannot.
+const ATTRIBUTE_LIMB_BITS: u32 = 16;
+
+/// Coefficients used per attribute. Four 16-bit limbs carry exactly 64 bits.
+const ATTRIBUTE_LIMBS: usize = 4;
+
+/// Encode an attribute value across low-order coefficients.
+///
+/// A single coefficient would cap attributes at `q`, about 8.38 million, which
+/// is smaller than it sounds: a date of birth written `19900101`, a unix
+/// timestamp, or an account number all exceed it. Rather than refuse those or,
+/// worse, reduce them modulo `q` and produce a verifying proof of the wrong
+/// value, the value is split into three 22-bit limbs.
+///
+/// Both the issuer and the verifier encode from the same `u64`, so no decoding
+/// is needed and the two sides cannot disagree about the representation.
+///
+/// The relation is linear, so a multi-coefficient message costs nothing: the
+/// commitment, the responses and the verification equation are unchanged.
 fn encode_attribute(value: u64) -> Result<Polynomial, IdentityError> {
-    if value >= PARAM_Q as u64 {
-        return Err(IdentityError::InvalidInputLength);
-    }
     let mut p = Polynomial::zero();
-    p.coeffs[0] = mod_q(value as i64);
+    let mask = (1u64 << ATTRIBUTE_LIMB_BITS) - 1;
+    for limb in 0..ATTRIBUTE_LIMBS {
+        let chunk = (value >> (ATTRIBUTE_LIMB_BITS * limb as u32)) & mask;
+        p.coeffs[limb] = mod_q(chunk as i64);
+    }
     Ok(p)
+}
+
+/// Recover an attribute value from its encoding.
+///
+/// The inverse of [`encode_attribute`], and the reason the limbs must stay
+/// below `q/2`: this reads them back as non-negative values.
+fn decode_attribute(p: &Polynomial) -> u64 {
+    let mut value = 0u64;
+    for limb in 0..ATTRIBUTE_LIMBS {
+        let coeff = p.coeffs[limb];
+        // Centred representation: a limb is never negative by construction, but
+        // read defensively rather than assume it.
+        let chunk = if coeff < 0 {
+            (coeff as i64 + PARAM_Q as i64) as u64
+        } else {
+            coeff as u64
+        };
+        value |= chunk << (ATTRIBUTE_LIMB_BITS * limb as u32);
+    }
+    value
 }
 
 // ── Credential ───────────────────────────────────────────────────────────────
@@ -498,7 +538,7 @@ pub fn prove(
     let mut disclosed_values = [0u64; CRED_ATTRIBUTES];
     for i in 0..CRED_ATTRIBUTES {
         if disclosed & (1 << i) != 0 {
-            disclosed_values[i] = m_pub[i + 1].coeffs[0] as u64;
+            disclosed_values[i] = decode_attribute(&m_pub[i + 1]);
         }
     }
 
@@ -1069,18 +1109,51 @@ mod tests {
         ));
     }
 
+    /// Attributes larger than `q` must work, because the values people actually
+    /// put in credentials are larger than `q`. A single-coefficient encoding
+    /// capped them at about 8.38 million, which excludes any date written
+    /// `YYYYMMDD` and any unix timestamp.
     #[test]
-    fn an_attribute_at_or_above_q_is_refused() {
+    fn attributes_larger_than_q_round_trip() {
         let params = IssuerParams::from_seed(ISSUER_SEED);
         let id = identity(0x42);
-        let mut values = attrs();
-        values[0] = PARAM_Q as u64;
+
+        let big = [
+            PARAM_Q as u64,      // exactly the old limit
+            19_900_101,          // a date of birth
+            1_767_225_600,       // a unix timestamp
+            u32::MAX as u64,
+            u64::MAX,
+            0,
+            1,
+            123_456_789_012,
+        ];
+
+        let cred = Credential::issue(&params, &id, &big, ISSUE_R).expect("issue");
+        let blinded = BlindedCredential::new(&params, &cred, BLIND_R).expect("blind");
+        let proj = id.project_at_context(b"big-attributes", RHO);
+
+        // Disclose everything, so every value has to survive encoding on both
+        // the prover's and the verifier's side.
+        let p = prove(&params, &blinded, &id, &proj, b"big-attributes", RHO, 0xFF, PRES_R)
+            .expect("prove");
         assert!(
-            matches!(
-                Credential::issue(&params, &id, &values, ISSUE_R),
-                Err(IdentityError::InvalidInputLength)
-            ),
-            "an attribute that cannot round-trip was accepted"
+            verify(&params, &p, blinded.commitment(), &proj, b"big-attributes").expect("verify"),
+            "a credential with large attributes failed to verify"
+        );
+        assert_eq!(p.disclosed_values, big, "large attribute values did not survive");
+    }
+
+    /// Two values that differ only above the old single-coefficient limit must
+    /// encode differently. Otherwise the wider encoding would be decorative and
+    /// they would collide exactly as they did before.
+    #[test]
+    fn values_differing_above_the_old_limit_do_not_collide() {
+        let a = encode_attribute(19_900_101).expect("encode");
+        let b = encode_attribute(19_900_101 + PARAM_Q as u64).expect("encode");
+        assert_ne!(
+            a.coeffs, b.coeffs,
+            "two values a multiple of q apart encoded identically"
         );
     }
 
