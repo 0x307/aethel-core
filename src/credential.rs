@@ -687,6 +687,40 @@ pub fn verify(
     Ok(mismatch == 0)
 }
 
+/// Flatten polynomials into one coefficient list.
+///
+/// The component surface carries these as a flat `list<s32>` rather than nested
+/// lists, because the dimensions are fixed by the parameter set and a nested
+/// list would let a caller supply a ragged one.
+pub fn flatten(polys: &[Polynomial]) -> Vec<i32> {
+    let mut out = Vec::with_capacity(polys.len() * RING_N);
+    for p in polys {
+        out.extend_from_slice(&p.coeffs);
+    }
+    out
+}
+
+/// Rebuild exactly `K` polynomials from a flat coefficient list.
+///
+/// A wrong length is an error rather than a truncation or a zero-fill: a
+/// silently reshaped vector would still produce a verification answer, and it
+/// would be the wrong one.
+pub fn unflatten<const K: usize>(flat: &[i32]) -> Result<[Polynomial; K], IdentityError> {
+    if flat.len() != K * RING_N {
+        return Err(IdentityError::InvalidInputLength);
+    }
+    let mut out = [Polynomial::zero(); K];
+    for (k, poly) in out.iter_mut().enumerate() {
+        poly.coeffs.copy_from_slice(&flat[k * RING_N..(k + 1) * RING_N]);
+    }
+    Ok(out)
+}
+
+/// The blinded commitment, as the component carries it.
+pub fn commitment_flat(blinded: &BlindedCredential) -> Vec<i32> {
+    flatten(blinded.commitment())
+}
+
 /// Serialise a presentation, for tests that need to inspect the wire form.
 pub fn presentation_bytes(p: &SaapPresentation) -> Vec<u8> {
     let mut out = Vec::new();

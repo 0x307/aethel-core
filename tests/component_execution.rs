@@ -194,8 +194,16 @@ fn htss_round_trips_and_reports_threshold_not_met() {
     }
 }
 
-/// `saap-verify` is documented as denying unconditionally until P3-11. Pin that,
-/// so the day it starts returning `ok(true)` is a day someone notices.
+/// `saap-verify`, the **superseded** operation, still denies unconditionally.
+///
+/// This is no longer "SAAP does not work". P3-11 landed the real construction
+/// and it is exercised below through `credential.present` and
+/// `saap-verify-presentation`, which do verify honest presentations. This
+/// operation is the old single-relation surface kept for compatibility, and it
+/// must keep failing closed: it has no way to be sound, so `ok(false)` is the
+/// only honest answer it can give.
+///
+/// Pinned so the day it starts returning `ok(true)` is a day someone notices.
 #[test]
 fn saap_verify_denies_as_documented() {
     let (mut store, bindings) = instantiate();
@@ -414,5 +422,416 @@ fn the_resource_enforces_the_randomness_floor() {
         Err(aethel::core::types::IdentityError::InvalidInputLength) => {}
         Err(other) => panic!("expected invalid-input-length, got {other:?}"),
         Ok(_) => panic!("31 bytes of randomness was accepted"),
+    }
+}
+
+// ── SAAP selective disclosure through the component (P3-11 / 0X3-79) ─────────
+//
+// Until this landed, `saap-verify` through the artifact returned `ok(false)` for
+// every input, including honest proofs, and `saap_verify_denies_as_documented`
+// above pinned that. The credential surface is the construction that replaces
+// it. These tests exercise it end to end through the built component, because
+// "the WIT declares a credential resource" and "selective disclosure works" are
+// different claims.
+
+const ISSUER_SEED: &[u8] = b"issuer seed for the test suite!!";
+const ISSUE_R: &[u8] = b"issuance randomness for tests!!!";
+const BLIND_R: &[u8] = b"blinding randomness for tests!!!";
+const PRES_R: &[u8] = b"presentation randomness tests!!!";
+const PROJ_R: &[u8] = b"projection randomness for tests!";
+const ATTRS: [u64; 8] = [31, 1990, 7, 42, 100, 5, 9, 12345];
+
+/// Disclose attribute 0 only.
+fn disclose_first() -> exports::aethel::core::identity::DisclosureAttributes {
+    exports::aethel::core::identity::DisclosureAttributes::ATTRIBUTE0
+}
+
+/// An identity can be issued a credential and present it, and the presentation
+/// verifies. This is selective disclosure actually working through the L1
+/// artifact for the first time.
+#[test]
+fn a_credential_can_be_issued_and_presented_through_the_component() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+    let ids = identity.master_identity();
+    let creds = identity.credential();
+
+    let holder = ids
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+
+    let cred = creds
+        .call_issue(&mut store, holder, ISSUER_SEED, &ATTRS, ISSUE_R)
+        .expect("host call")
+        .expect("issue");
+
+    let presentation = creds
+        .call_present(
+            &mut store,
+            cred,
+            holder,
+            b"context-alpha",
+            PROJ_R,
+            disclose_first(),
+            BLIND_R,
+            PRES_R,
+        )
+        .expect("host call")
+        .expect("present");
+
+    let projection = ids
+        .call_project_at_context(&mut store, holder, b"context-alpha", PROJ_R)
+        .expect("host call")
+        .expect("project");
+
+    let verified = identity
+        .call_saap_verify_presentation(
+            &mut store,
+            ISSUER_SEED,
+            &presentation,
+            &projection,
+            b"context-alpha",
+        )
+        .expect("host call")
+        .expect("verify");
+
+    assert!(
+        verified,
+        "an honestly issued and presented credential failed to verify through the component"
+    );
+    assert_eq!(
+        presentation.disclosed_values[0], ATTRS[0],
+        "the disclosed attribute did not survive the round trip"
+    );
+}
+
+/// Positive control for the test above. A verifier that returned `true`
+/// unconditionally would pass it, and that is precisely the failure mode the
+/// old `saap-verify` had in the opposite direction.
+#[test]
+fn a_presentation_fails_against_another_identity_through_the_component() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+    let ids = identity.master_identity();
+    let creds = identity.credential();
+
+    let holder = ids
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+    let stranger = ids
+        .call_generate(&mut store, b"a completely different entropy!!")
+        .expect("host call")
+        .expect("generate");
+
+    let cred = creds
+        .call_issue(&mut store, holder, ISSUER_SEED, &ATTRS, ISSUE_R)
+        .expect("host call")
+        .expect("issue");
+    let presentation = creds
+        .call_present(
+            &mut store,
+            cred,
+            holder,
+            b"context-alpha",
+            PROJ_R,
+            disclose_first(),
+            BLIND_R,
+            PRES_R,
+        )
+        .expect("host call")
+        .expect("present");
+
+    let stranger_projection = ids
+        .call_project_at_context(&mut store, stranger, b"context-alpha", PROJ_R)
+        .expect("host call")
+        .expect("project");
+
+    let verified = identity
+        .call_saap_verify_presentation(
+            &mut store,
+            ISSUER_SEED,
+            &presentation,
+            &stranger_projection,
+            b"context-alpha",
+        )
+        .expect("host call")
+        .expect("verify");
+
+    assert!(
+        !verified,
+        "a presentation verified against a different identity's projection"
+    );
+}
+
+/// Rewriting a disclosed attribute must invalidate the presentation, through the
+/// component and not only natively.
+#[test]
+fn rewriting_a_disclosed_attribute_is_caught_through_the_component() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+    let ids = identity.master_identity();
+    let creds = identity.credential();
+
+    let holder = ids
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+    let cred = creds
+        .call_issue(&mut store, holder, ISSUER_SEED, &ATTRS, ISSUE_R)
+        .expect("host call")
+        .expect("issue");
+    let mut presentation = creds
+        .call_present(
+            &mut store,
+            cred,
+            holder,
+            b"context-alpha",
+            PROJ_R,
+            disclose_first(),
+            BLIND_R,
+            PRES_R,
+        )
+        .expect("host call")
+        .expect("present");
+
+    let projection = ids
+        .call_project_at_context(&mut store, holder, b"context-alpha", PROJ_R)
+        .expect("host call")
+        .expect("project");
+
+    presentation.disclosed_values[0] += 1;
+
+    let verified = identity
+        .call_saap_verify_presentation(
+            &mut store,
+            ISSUER_SEED,
+            &presentation,
+            &projection,
+            b"context-alpha",
+        )
+        .expect("host call")
+        .expect("verify");
+
+    assert!(!verified, "a rewritten disclosed attribute still verified");
+}
+
+/// A presentation must not be able to certify its own context. The verifier
+/// supplies tau and the presentation has to agree with it. This is the check
+/// P3-10 found missing on the old verifier, so it is pinned at the boundary.
+#[test]
+fn a_presentation_cannot_certify_its_own_context() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+    let ids = identity.master_identity();
+    let creds = identity.credential();
+
+    let holder = ids
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+    let cred = creds
+        .call_issue(&mut store, holder, ISSUER_SEED, &ATTRS, ISSUE_R)
+        .expect("host call")
+        .expect("issue");
+    let presentation = creds
+        .call_present(
+            &mut store,
+            cred,
+            holder,
+            b"context-alpha",
+            PROJ_R,
+            disclose_first(),
+            BLIND_R,
+            PRES_R,
+        )
+        .expect("host call")
+        .expect("present");
+
+    let projection = ids
+        .call_project_at_context(&mut store, holder, b"context-alpha", PROJ_R)
+        .expect("host call")
+        .expect("project");
+
+    let verified = identity
+        .call_saap_verify_presentation(
+            &mut store,
+            ISSUER_SEED,
+            &presentation,
+            &projection,
+            b"context-beta",
+        )
+        .expect("host call")
+        .expect("verify");
+
+    assert!(
+        !verified,
+        "a presentation made for context-alpha verified under context-beta"
+    );
+}
+
+/// A credential presented under an issuer that never issued it must fail.
+#[test]
+fn a_presentation_fails_under_a_different_issuer() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+    let ids = identity.master_identity();
+    let creds = identity.credential();
+
+    let holder = ids
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+    let cred = creds
+        .call_issue(&mut store, holder, ISSUER_SEED, &ATTRS, ISSUE_R)
+        .expect("host call")
+        .expect("issue");
+    let presentation = creds
+        .call_present(
+            &mut store,
+            cred,
+            holder,
+            b"context-alpha",
+            PROJ_R,
+            disclose_first(),
+            BLIND_R,
+            PRES_R,
+        )
+        .expect("host call")
+        .expect("present");
+
+    let projection = ids
+        .call_project_at_context(&mut store, holder, b"context-alpha", PROJ_R)
+        .expect("host call")
+        .expect("project");
+
+    let verified = identity
+        .call_saap_verify_presentation(
+            &mut store,
+            b"a different issuer seed entirely",
+            &presentation,
+            &projection,
+            b"context-alpha",
+        )
+        .expect("host call")
+        .expect("verify");
+
+    assert!(
+        !verified,
+        "a presentation verified under an issuer that never issued it"
+    );
+}
+
+/// Two presentations of the same credential must not be linkable by their
+/// blinded commitment, which is the property fresh blinding exists to provide.
+#[test]
+fn two_presentations_of_one_credential_are_not_linkable() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+    let ids = identity.master_identity();
+    let creds = identity.credential();
+
+    let holder = ids
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+    let cred = creds
+        .call_issue(&mut store, holder, ISSUER_SEED, &ATTRS, ISSUE_R)
+        .expect("host call")
+        .expect("issue");
+
+    let first = creds
+        .call_present(
+            &mut store,
+            cred,
+            holder,
+            b"context-one",
+            PROJ_R,
+            disclose_first(),
+            b"blinding for presentation one!!!",
+            PRES_R,
+        )
+        .expect("host call")
+        .expect("present");
+    let second = creds
+        .call_present(
+            &mut store,
+            cred,
+            holder,
+            b"context-two",
+            PROJ_R,
+            disclose_first(),
+            b"blinding for presentation two!!!",
+            PRES_R,
+        )
+        .expect("host call")
+        .expect("present");
+
+    assert_ne!(
+        first.t_blind, second.t_blind,
+        "two presentations of one credential reused the same blinded commitment"
+    );
+    assert_ne!(
+        first.challenge, second.challenge,
+        "two presentations reused the same challenge"
+    );
+
+    // Both must still verify, or "unlinkable" was bought by breaking them.
+    for (p, tau) in [(&first, &b"context-one"[..]), (&second, &b"context-two"[..])] {
+        let projection = ids
+            .call_project_at_context(&mut store, holder, tau, PROJ_R)
+            .expect("host call")
+            .expect("project");
+        assert!(
+            identity
+                .call_saap_verify_presentation(&mut store, ISSUER_SEED, p, &projection, tau)
+                .expect("host call")
+                .expect("verify"),
+            "an unlinkable presentation stopped verifying"
+        );
+    }
+}
+
+/// A hidden attribute must not be published in the disclosed values.
+#[test]
+fn hidden_attributes_are_not_published_by_the_component() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+    let ids = identity.master_identity();
+    let creds = identity.credential();
+
+    let holder = ids
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+    let cred = creds
+        .call_issue(&mut store, holder, ISSUER_SEED, &ATTRS, ISSUE_R)
+        .expect("host call")
+        .expect("issue");
+    let presentation = creds
+        .call_present(
+            &mut store,
+            cred,
+            holder,
+            b"context-alpha",
+            PROJ_R,
+            disclose_first(),
+            BLIND_R,
+            PRES_R,
+        )
+        .expect("host call")
+        .expect("present");
+
+    assert_eq!(presentation.disclosed_values[0], ATTRS[0], "slot 0 was disclosed");
+    for slot in 1..8 {
+        assert_eq!(
+            presentation.disclosed_values[slot], 0,
+            "undisclosed slot {slot} was published"
+        );
+        assert_ne!(
+            presentation.disclosed_values[slot], ATTRS[slot],
+            "undisclosed slot {slot} leaked its value"
+        );
     }
 }
