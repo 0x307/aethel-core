@@ -94,6 +94,25 @@ interface identity {
 
     /// Prove ownership of this identity at context tau.
     prove: func(tau: list<u8>) -> result<zk-identity-proof, identity-error>;
+
+    /// Seal this identity so it can be stored and loaded again.
+    ///
+    /// `key` MUST be at least 32 bytes of high-entropy key material: a key from
+    /// an OS keychain, an HSM, or a stored random value. It is NOT a password.
+    /// A human-chosen password needs a slow, memory-hard KDF to survive offline
+    /// guessing, and this component does not provide one. Run a real password
+    /// KDF first and pass its output here.
+    ///
+    /// Deterministic: sealing the same identity under the same key twice yields
+    /// identical bytes.
+    export-sealed: func(key: list<u8>) -> result<list<u8>, identity-error>;
+
+    /// Open a sealed identity.
+    ///
+    /// Returns `err` for a blob that is malformed, truncated, of an unknown
+    /// version, or sealed under a different key. Those are deliberately
+    /// indistinguishable to the caller.
+    import-sealed: static func(sealed: list<u8>, key: list<u8>) -> result<master-identity, identity-error>;
   }
 
   /// A SAAP presentation: selective disclosure over an issued credential,
