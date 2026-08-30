@@ -57,13 +57,14 @@ use exports::aethel::core::attestation::{
 };
 use exports::aethel::core::identity::{
     EphemeralProjection as WitProjection, Guest as IdentityGuest,
+    GuestMasterIdentity, MasterIdentity as WitMasterIdentity,
     ZkIdentityProof as WitZkProof,
 };
 use exports::aethel::core::secret_sharing::{Guest as SecretSharingGuest, HtssShare as WitShare};
 use aethel::core::types::IdentityError as WitError;
 
 use crate::identity_error::IdentityError;
-use crate::{htss, plp, saap};
+use crate::{htss, plp, saap, signing};
 
 /// The `htss-split` WIT signature carries no nonce parameter, but
 /// [`htss::SecretSharer::split_key_material`] takes one to separate independent
@@ -162,6 +163,73 @@ impl IdentityGuest for Component {
         // could not be parsed is `err`. The previous export returned a bare
         // `bool` and could not tell a caller which had happened.
         Ok(plp::Verifier::verify(&proj, &zk))
+    }
+
+    type MasterIdentity = OwnedIdentity;
+
+    fn verify_signature(
+        public_key: Vec<u8>,
+        message: Vec<u8>,
+        signature: Vec<u8>,
+    ) -> Result<bool, WitError> {
+        signing::verify(&public_key, &message, &signature).map_err(Into::into)
+    }
+}
+
+/// The component-side owner of a [`signing::Identity`].
+///
+/// The secret key lives in here for the lifetime of the resource handle and has
+/// no route out: the WIT exposes `public-key`, `sign`, `project-at-context` and
+/// `prove`, and none of them returns key material. That is the charter's
+/// "no private key material crosses out of L1" expressed as a type rather than
+/// as a convention.
+pub struct OwnedIdentity(signing::Identity);
+
+impl GuestMasterIdentity for OwnedIdentity {
+    fn generate(entropy: Vec<u8>) -> Result<WitMasterIdentity, WitError> {
+        let identity = signing::Identity::generate(&entropy)?;
+        Ok(WitMasterIdentity::new(OwnedIdentity(identity)))
+    }
+
+    fn public_key(&self) -> Vec<u8> {
+        self.0.public_key()
+    }
+
+    fn sign(&self, message: Vec<u8>) -> Result<Vec<u8>, WitError> {
+        self.0.sign(&message).map_err(Into::into)
+    }
+
+    fn project_at_context(
+        &self,
+        tau: Vec<u8>,
+        randomness: Vec<u8>,
+    ) -> Result<WitProjection, WitError> {
+        // Same bound as the free function: short randomness collapses the
+        // projection to an exact linear image of the secret.
+        if randomness.len() < 32 {
+            return Err(WitError::InvalidInputLength);
+        }
+        let identity = plp::MasterIdentity::from_seed(self.0.plp_seed());
+        let proj = identity.project_at_context(&tau, &randomness);
+
+        Ok(WitProjection {
+            tau: proj.tau.to_vec(),
+            matrix_a: proj.matrix_a.coeffs().to_vec(),
+            public_b: proj.public_b.coeffs().to_vec(),
+        })
+    }
+
+    fn prove(&self, tau: Vec<u8>) -> Result<WitZkProof, WitError> {
+        let seed = self.0.plp_seed();
+        let identity = plp::MasterIdentity::from_seed(seed);
+        let proj = plp::EphemeralProjection::for_proving(&tau);
+        let proof = plp::Prover::prove_identity(&identity, &proj, seed);
+
+        Ok(WitZkProof {
+            commitment_w: proof.commitment_w.coeffs().to_vec(),
+            challenge_c: proof.challenge_c.coeffs().to_vec(),
+            response_z: proof.response_z.coeffs().to_vec(),
+        })
     }
 }
 

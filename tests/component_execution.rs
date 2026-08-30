@@ -225,3 +225,194 @@ fn saap_verify_denies_as_documented() {
          P3-11 (0X3-79) anchors it on b_tau — if it was wired up, delete this test"
     );
 }
+
+// ── master-identity resource (P5-04 / 0X3-54) ────────────────────────────────
+//
+// The free functions above take `secret: list<u8>`, so the caller holds the
+// master secret and it crosses the boundary on every call. The resource exists
+// so it does not: the secret is derived inside the component and only the
+// public key, signatures, projections and proofs come out. These tests exercise
+// that through the artifact, because "the WIT declares a resource" and "the
+// resource works" are different claims and this crate has been bitten by the
+// gap between them before.
+
+/// Generate an identity inside the component and get a public key out.
+#[test]
+fn an_identity_can_be_generated_inside_the_component() {
+    let (mut store, bindings) = instantiate();
+    let api = bindings.aethel_core_identity().master_identity();
+
+    let id = api
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+
+    let pk = api.call_public_key(&mut store, id).expect("host call");
+    assert!(!pk.is_empty(), "an identity was generated with an empty public key");
+}
+
+/// Entropy below the 32-byte floor is refused with a typed error.
+#[test]
+fn short_entropy_is_refused_by_the_component() {
+    let (mut store, bindings) = instantiate();
+    let api = bindings.aethel_core_identity().master_identity();
+
+    match api.call_generate(&mut store, b"too short").expect("host call") {
+        Err(aethel::core::types::IdentityError::InvalidInputLength) => {}
+        Err(other) => panic!("expected invalid-input-length, got {other:?}"),
+        Ok(_) => panic!("9 bytes of entropy produced an identity"),
+    }
+}
+
+/// Sign and verify round-trip entirely through the component.
+#[test]
+fn sign_and_verify_round_trip_through_the_component() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+    let api = identity.master_identity();
+
+    let id = api
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+    let pk = api.call_public_key(&mut store, id).expect("host call");
+
+    let message = b"the message that was actually signed";
+    let sig = api
+        .call_sign(&mut store, id, message)
+        .expect("host call")
+        .expect("sign");
+
+    let ok = identity
+        .call_verify_signature(&mut store, &pk, message, &sig)
+        .expect("host call")
+        .expect("verify");
+    assert!(ok, "an honestly produced signature failed to verify");
+}
+
+/// Positive control for the test above. If `verify-signature` returned `true`
+/// unconditionally, the round trip would pass and prove nothing.
+#[test]
+fn a_tampered_message_and_a_wrong_key_both_fail_verification() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+    let api = identity.master_identity();
+
+    let signer = api
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+    let other = api
+        .call_generate(&mut store, b"a completely different entropy!!")
+        .expect("host call")
+        .expect("generate");
+
+    let signer_pk = api.call_public_key(&mut store, signer).expect("host call");
+    let other_pk = api.call_public_key(&mut store, other).expect("host call");
+    assert_ne!(signer_pk, other_pk, "two entropies produced the same key");
+
+    let message = b"transfer 10 to alice";
+    let sig = api
+        .call_sign(&mut store, signer, message)
+        .expect("host call")
+        .expect("sign");
+
+    let tampered = identity
+        .call_verify_signature(&mut store, &signer_pk, b"transfer 99 to alice", &sig)
+        .expect("host call")
+        .expect("verify");
+    assert!(!tampered, "a signature verified against a message it was not made over");
+
+    let wrong_key = identity
+        .call_verify_signature(&mut store, &other_pk, message, &sig)
+        .expect("host call")
+        .expect("verify");
+    assert!(!wrong_key, "a signature verified under a key that did not produce it");
+}
+
+/// Generation is deterministic over its entropy, and distinct entropy gives a
+/// distinct identity. Both halves are needed: the first alone would pass for an
+/// implementation that ignored entropy entirely.
+#[test]
+fn generation_is_deterministic_and_entropy_dependent() {
+    let (mut store, bindings) = instantiate();
+    let api = bindings.aethel_core_identity().master_identity();
+
+    let gen = |store: &mut Store<()>, entropy: &[u8]| {
+        let id = api
+            .call_generate(&mut *store, entropy)
+            .expect("host call")
+            .expect("generate");
+        api.call_public_key(&mut *store, id).expect("host call")
+    };
+
+    let a = gen(&mut store, b"deterministic entropy for tests!");
+    let b = gen(&mut store, b"deterministic entropy for tests!");
+    let c = gen(&mut store, b"a completely different entropy!!");
+
+    assert_eq!(a, b, "the same entropy produced two different identities");
+    assert_ne!(a, c, "different entropy produced the same identity");
+}
+
+/// The resource can project and prove, so an identity generated inside the
+/// component is usable for PLP without the secret ever coming out.
+#[test]
+fn a_generated_identity_projects_and_proves() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+    let api = identity.master_identity();
+
+    let id = api
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+
+    let projection = api
+        .call_project_at_context(&mut store, id, b"context-one", &[0x5Au8; 32])
+        .expect("host call")
+        .expect("project");
+
+    let proof = api
+        .call_prove(&mut store, id, b"context-one")
+        .expect("host call")
+        .expect("prove");
+
+    let verified = identity
+        .call_plp_verify(&mut store, &projection, &proof)
+        .expect("host call")
+        .expect("verify");
+    assert!(verified, "a proof from a generated identity failed to verify");
+
+    // Two contexts must not produce the same projection, or "unlinkable across
+    // contexts" would be vacuous.
+    let other = api
+        .call_project_at_context(&mut store, id, b"context-two", &[0x5Au8; 32])
+        .expect("host call")
+        .expect("project");
+    assert_ne!(
+        projection.public_b, other.public_b,
+        "two contexts produced the same projection"
+    );
+}
+
+/// Short randomness must be refused on the resource too, not only on the free
+/// function. A bound enforced on one path and not the other is not a bound.
+#[test]
+fn the_resource_enforces_the_randomness_floor() {
+    let (mut store, bindings) = instantiate();
+    let api = bindings.aethel_core_identity().master_identity();
+
+    let id = api
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+
+    match api
+        .call_project_at_context(&mut store, id, b"ctx", &[0u8; 31])
+        .expect("host call")
+    {
+        Err(aethel::core::types::IdentityError::InvalidInputLength) => {}
+        Err(other) => panic!("expected invalid-input-length, got {other:?}"),
+        Ok(_) => panic!("31 bytes of randomness was accepted"),
+    }
+}
