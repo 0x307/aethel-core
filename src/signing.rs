@@ -447,6 +447,9 @@ mod tests {
 #[cfg(test)]
 mod seal_tests {
     use super::*;
+    // `vec!` is not in scope under `--no-default-features --features wasm`,
+    // where the crate is `no_std`. The wasm job builds the tests too.
+    use alloc::vec;
 
     const ENTROPY: &[u8; 32] = b"deterministic entropy for tests!";
     const KEY: &[u8; 32] = b"a sealing key of thirty-two byte";
