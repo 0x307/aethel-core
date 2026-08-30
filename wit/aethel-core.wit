@@ -12,10 +12,26 @@ interface types {
     invalid-attribute-commitment,
     threshold-not-met,
   }
+
+  /// Named disclosure slots. Never a raw bitmask on the wire.
+  ///
+  /// Lives here rather than in `attestation` because both that interface and
+  /// the credential surface in `identity` need it, and a type used by two
+  /// interfaces belongs to neither.
+  flags disclosure-attributes {
+    attribute0,
+    attribute1,
+    attribute2,
+    attribute3,
+    attribute4,
+    attribute5,
+    attribute6,
+    attribute7,
+  }
 }
 
 interface identity {
-  use types.{identity-error};
+  use types.{identity-error, disclosure-attributes};
 
   /// A context-bound projection of a master identity at context τ.
   record ephemeral-projection {
@@ -80,6 +96,69 @@ interface identity {
     prove: func(tau: list<u8>) -> result<zk-identity-proof, identity-error>;
   }
 
+  /// A SAAP presentation: selective disclosure over an issued credential,
+  /// anchored on the holder's PLP projection.
+  ///
+  /// Polynomial vectors are flattened into a single list of coefficients
+  /// rather than nested lists, because the dimensions are fixed by the
+  /// parameter set and a nested list would let a caller supply a ragged one.
+  record saap-presentation {
+    /// The context this presentation was made for.
+    tau: list<u8>,
+    /// Which attribute slots are disclosed.
+    disclosed: disclosure-attributes,
+    /// Values of the disclosed slots. Hidden slots read zero and mean nothing.
+    disclosed-values: list<u64>,
+    /// The blinded credential commitment, fresh for this presentation.
+    t-blind: list<s32>,
+    /// Fiat-Shamir challenge.
+    challenge: list<s32>,
+    /// Response for the commitment randomness.
+    z-r: list<s32>,
+    /// Response for the message slots.
+    z-m: list<s32>,
+    /// Response for the identity secret.
+    z-s: list<s32>,
+    /// Response for the projection error term.
+    z-e: list<s32>,
+  }
+
+  /// A credential issued over an identity.
+  ///
+  /// Holds the commitment randomness and the attribute values, so it is secret
+  /// material and stays inside the component for the same reason
+  /// `master-identity` does. Issue once, present many times.
+  ///
+  /// It sits in this interface rather than in `attestation` because it borrows
+  /// a `master-identity`, and keeping both resources in one interface avoids a
+  /// cross-interface resource dependency for no gain.
+  resource credential {
+    /// Issue a credential binding `attributes` to the holder's identity.
+    ///
+    /// The holder's master secret occupies a reserved slot and is never
+    /// disclosable. It is what ties the credential to one identity: a
+    /// presentation can only be produced by someone who also satisfies the
+    /// identity-linkage relation for the same secret.
+    issue: static func(holder: borrow<master-identity>, issuer-seed: list<u8>, attributes: list<u64>, issuance-randomness: list<u8>) -> result<credential, identity-error>;
+
+    /// Produce a presentation disclosing the selected attributes.
+    ///
+    /// `blinding-randomness` MUST be fresh per presentation: it is what makes
+    /// two showings of the same credential unlinkable. `projection-randomness`
+    /// is the same value used to build the holder's projection at this context,
+    /// and is needed to re-derive the projection error term as a witness.
+    present: func(holder: borrow<master-identity>, tau: list<u8>, projection-randomness: list<u8>, disclosed: disclosure-attributes, blinding-randomness: list<u8>, presentation-randomness: list<u8>) -> result<saap-presentation, identity-error>;
+  }
+
+  /// Verify a SAAP presentation against a holder's projection.
+  ///
+  /// `tau` is supplied by the verifier and must match the one carried in the
+  /// presentation. A presentation is not allowed to certify its own context.
+  ///
+  /// Returns `ok(false)` for a well-formed presentation that does not verify,
+  /// and `err` only for input that cannot be processed.
+  saap-verify-presentation: func(issuer-seed: list<u8>, presentation: saap-presentation, projection: ephemeral-projection, tau: list<u8>) -> result<bool, identity-error>;
+
   /// Verify an ML-DSA-65 signature.
   ///
   /// A free function, not a method: verification needs only public material, so
@@ -92,19 +171,7 @@ interface identity {
 }
 
 interface attestation {
-  use types.{identity-error};
-
-  /// Named disclosure slots — never a raw bitmask on the wire.
-  flags disclosure-attributes {
-    attribute0,
-    attribute1,
-    attribute2,
-    attribute3,
-    attribute4,
-    attribute5,
-    attribute6,
-    attribute7,
-  }
+  use types.{identity-error, disclosure-attributes};
 
   /// A SAAP selective-disclosure proof.
   record saap-proof {

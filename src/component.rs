@@ -56,15 +56,16 @@ use exports::aethel::core::attestation::{
     DisclosureAttributes, Guest as AttestationGuest, SaapProof as WitSaapProof,
 };
 use exports::aethel::core::identity::{
-    EphemeralProjection as WitProjection, Guest as IdentityGuest,
-    GuestMasterIdentity, MasterIdentity as WitMasterIdentity,
+    Credential as WitCredential, EphemeralProjection as WitProjection, Guest as IdentityGuest,
+    GuestCredential, GuestMasterIdentity, MasterIdentity as WitMasterIdentity,
+    MasterIdentityBorrow, SaapPresentation as WitSaapPresentation,
     ZkIdentityProof as WitZkProof,
 };
 use exports::aethel::core::secret_sharing::{Guest as SecretSharingGuest, HtssShare as WitShare};
 use aethel::core::types::IdentityError as WitError;
 
 use crate::identity_error::IdentityError;
-use crate::{htss, plp, saap, signing};
+use crate::{credential, htss, plp, saap, signing};
 
 /// The `htss-split` WIT signature carries no nonce parameter, but
 /// [`htss::SecretSharer::split_key_material`] takes one to separate independent
@@ -166,6 +167,48 @@ impl IdentityGuest for Component {
     }
 
     type MasterIdentity = OwnedIdentity;
+    type Credential = OwnedCredential;
+
+    fn saap_verify_presentation(
+        issuer_seed: Vec<u8>,
+        presentation: WitSaapPresentation,
+        projection: WitProjection,
+        tau: Vec<u8>,
+    ) -> Result<bool, WitError> {
+        // A presentation is not allowed to certify its own context. The verifier
+        // supplies tau and the presentation must agree with it, which is the
+        // check P3-10 found missing on the old verifier.
+        if presentation.tau != tau {
+            return Ok(false);
+        }
+
+        let proj = projection_from_wit(&projection)?;
+        let t_blind = credential::unflatten::<{ credential::CRED_T }>(&presentation.t_blind)?;
+
+        if presentation.disclosed_values.len() != credential::CRED_ATTRIBUTES {
+            return Err(WitError::InvalidInputLength);
+        }
+        let mut disclosed_values = [0u64; credential::CRED_ATTRIBUTES];
+        disclosed_values.copy_from_slice(&presentation.disclosed_values);
+
+        let mut tau_padded = [0u8; 32];
+        let len = tau.len().min(32);
+        tau_padded[..len].copy_from_slice(&tau[..len]);
+
+        let native = credential::SaapPresentation {
+            tau: tau_padded,
+            disclosed: presentation.disclosed.bits(),
+            disclosed_values,
+            challenge: credential::unflatten::<1>(&presentation.challenge)?[0],
+            z_r: credential::unflatten::<{ credential::CRED_L }>(&presentation.z_r)?,
+            z_m: credential::unflatten::<{ credential::CRED_SLOTS }>(&presentation.z_m)?,
+            z_s: credential::unflatten::<1>(&presentation.z_s)?[0],
+            z_e: credential::unflatten::<1>(&presentation.z_e)?[0],
+        };
+
+        let params = credential::IssuerParams::from_seed(&issuer_seed);
+        credential::verify(&params, &native, &t_blind, &proj, &tau).map_err(Into::into)
+    }
 
     fn verify_signature(
         public_key: Vec<u8>,
@@ -361,3 +404,84 @@ impl SecretSharingGuest for Component {
 }
 
 export!(Component);
+
+/// The component-side owner of an issued credential.
+///
+/// The commitment randomness and the attribute values live in here for the
+/// lifetime of the handle and have no route out. `present` is the only method,
+/// and it returns disclosed values, a fresh blinded commitment and the
+/// responses, none of which is key material.
+///
+/// The issuer seed is kept alongside the credential because presenting needs
+/// the same `B_1` the credential was issued under, and asking the caller to
+/// supply it again on every presentation would be one more thing to get wrong.
+pub struct OwnedCredential {
+    credential: credential::Credential,
+    issuer_seed: Vec<u8>,
+}
+
+impl GuestCredential for OwnedCredential {
+    fn issue(
+        holder: MasterIdentityBorrow<'_>,
+        issuer_seed: Vec<u8>,
+        attributes: Vec<u64>,
+        issuance_randomness: Vec<u8>,
+    ) -> Result<WitCredential, WitError> {
+        if attributes.len() != credential::CRED_ATTRIBUTES {
+            return Err(WitError::InvalidInputLength);
+        }
+        let mut values = [0u64; credential::CRED_ATTRIBUTES];
+        values.copy_from_slice(&attributes);
+
+        let identity = plp::MasterIdentity::from_seed(holder.get::<OwnedIdentity>().0.plp_seed());
+        let params = credential::IssuerParams::from_seed(&issuer_seed);
+        let cred =
+            credential::Credential::issue(&params, &identity, &values, &issuance_randomness)?;
+
+        Ok(WitCredential::new(OwnedCredential { credential: cred, issuer_seed }))
+    }
+
+    fn present(
+        &self,
+        holder: MasterIdentityBorrow<'_>,
+        tau: Vec<u8>,
+        projection_randomness: Vec<u8>,
+        disclosed: DisclosureAttributes,
+        blinding_randomness: Vec<u8>,
+        presentation_randomness: Vec<u8>,
+    ) -> Result<WitSaapPresentation, WitError> {
+        if projection_randomness.len() < 32 {
+            return Err(WitError::InvalidInputLength);
+        }
+
+        let identity = plp::MasterIdentity::from_seed(holder.get::<OwnedIdentity>().0.plp_seed());
+        let projection = identity.project_at_context(&tau, &projection_randomness);
+
+        let params = credential::IssuerParams::from_seed(&self.issuer_seed);
+        let blinded =
+            credential::BlindedCredential::new(&params, &self.credential, &blinding_randomness)?;
+
+        let presentation = credential::prove(
+            &params,
+            &blinded,
+            &identity,
+            &projection,
+            &tau,
+            &projection_randomness,
+            disclosed.bits(),
+            &presentation_randomness,
+        )?;
+
+        Ok(WitSaapPresentation {
+            tau,
+            disclosed,
+            disclosed_values: presentation.disclosed_values.to_vec(),
+            t_blind: credential::commitment_flat(&blinded),
+            challenge: presentation.challenge.coeffs.to_vec(),
+            z_r: credential::flatten(&presentation.z_r),
+            z_m: credential::flatten(&presentation.z_m),
+            z_s: presentation.z_s.coeffs.to_vec(),
+            z_e: presentation.z_e.coeffs.to_vec(),
+        })
+    }
+}
