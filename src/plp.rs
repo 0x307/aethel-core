@@ -332,6 +332,32 @@ pub fn poly_mul_ntt(a: &Poly, b: &Poly) -> Poly {
 ///
 /// A_τ ← SHAKE-256("AETHEL_PLP_CTX_V1" ∥ τ)
 /// Each coefficient is sampled by reading 3 bytes and rejection-sampling mod q.
+/// Re-derive the ephemeral error `e_τ` from the projection randomness.
+///
+/// `e_τ` is a deterministic function of `(rho, tau)`, which is what lets a
+/// prover recover it without it ever being stored: `project_at_context` wipes
+/// its copy immediately, and anything needing `e_τ` as a witness derives it
+/// again from the same inputs.
+///
+/// SAAP's identity-linkage relation needs exactly that. Proving knowledge of
+/// `s` alone against `b_τ = A_τ·s + e_τ` cannot close the verification equation,
+/// because `A_τ·z_s − c·b_τ` leaves a residual `−c·e_τ`. Treating `e_τ` as part
+/// of the witness removes the residual instead of tolerating it.
+///
+/// Bound to τ as well as rho, so an accidentally reused rho still yields a
+/// distinct `e_τ` per context. Freshness of rho remains the primary guarantee.
+///
+/// This is the single definition. `project_at_context` calls it too, so the
+/// projection and the proof witness cannot drift apart.
+pub(crate) fn derive_error_tau(rho: &[u8], tau: &[u8]) -> Poly {
+    let mut hasher = Shake256::default();
+    hasher.update(b"AETHEL_ERROR_V2");
+    hasher.update(rho);
+    hasher.update(tau);
+    let mut xof = hasher.finalize_xof();
+    sample_cbd_eta2_from_xof(&mut xof)
+}
+
 pub fn derive_context_matrix_k1(tau: &[u8]) -> Poly {
     let mut hasher = Shake256::default();
     hasher.update(b"AETHEL_PLP_CTX_V1");
@@ -470,6 +496,15 @@ pub struct MasterIdentity {
 }
 
 impl MasterIdentity {
+    /// The master secret, for in-crate use only.
+    ///
+    /// `pub(crate)` deliberately: SAAP's identity-linkage relation needs `s` as
+    /// a witness, and it must reach that code without becoming reachable from
+    /// outside the crate. No public API returns this.
+    pub(crate) fn secret(&self) -> &Poly {
+        &self.secret_key
+    }
+
     /// Create a new master identity from a 32-byte seed.
     ///
     /// Uses SHAKE-256("AETHEL_MASTER_KEY_V1" ∥ seed) to derive s via CBD η=2.
@@ -512,15 +547,7 @@ impl MasterIdentity {
         let matrix_a = derive_context_matrix_k1(tau);
 
         // Generate ephemeral error e_τ ← CBD η=2 from fresh secret randomness.
-        // Bound to τ as well, so an accidentally-reused rho still yields a
-        // distinct e_τ per context (defence in depth; freshness of rho is the
-        // primary guarantee).
-        let mut hasher = Shake256::default();
-        hasher.update(b"AETHEL_ERROR_V2");
-        hasher.update(rho);
-        hasher.update(tau);
-        let mut xof = hasher.finalize_xof();
-        let mut e_tau = sample_cbd_eta2_from_xof(&mut xof);
+        let mut e_tau = derive_error_tau(rho, tau);
 
         // b_τ = A_τ · s + e_τ
         let public_b = matrix_a.mul_schoolbook(&self.secret_key).add(&e_tau);

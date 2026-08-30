@@ -84,6 +84,8 @@ pub mod htss;
 pub mod saap;
 pub mod signing;
 
+pub mod credential;
+
 /// Enclave constant-time rejection sampling and CBD η=2 sampler.
 pub mod sampling;
 
