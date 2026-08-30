@@ -43,6 +43,52 @@ interface identity {
 
   /// Verify a ZK identity proof against a projection.
   plp-verify: func(projection: ephemeral-projection, proof: zk-identity-proof) -> result<bool, identity-error>;
+
+  /// An identity whose secret key material never leaves the component.
+  ///
+  /// The free functions above take `secret: list<u8>`, which means the caller
+  /// holds the master secret and it crosses this boundary on every call. That
+  /// contradicts the charter's "no private key material crosses out of L1", and
+  /// there was no way to *create* an identity at all: `plp-project-at-context`
+  /// can only project a secret someone else already generated.
+  ///
+  /// This resource is the answer to both. The secret is derived inside the
+  /// component and stays here; only the public key, projections and proofs come
+  /// out.
+  resource master-identity {
+    /// Derive an identity from caller-supplied entropy.
+    ///
+    /// Requires at least 32 bytes. The entropy is NOT the key: it is stretched
+    /// through SHAKE-256 with domain separation, and the ML-DSA-65 signing key
+    /// and the PLP master seed are derived from that stream. Deterministic, so
+    /// the same entropy always yields the same identity.
+    generate: static func(entropy: list<u8>) -> result<master-identity, identity-error>;
+
+    /// The ML-DSA-65 public key. Safe to publish, and the only key material
+    /// that crosses this boundary.
+    public-key: func() -> list<u8>;
+
+    /// Sign a message. FIPS 204 deterministic variant, so no randomness is
+    /// needed at call time.
+    sign: func(message: list<u8>) -> result<list<u8>, identity-error>;
+
+    /// Project this identity at context tau. See `plp-project-at-context` for
+    /// what `randomness` must be.
+    project-at-context: func(tau: list<u8>, randomness: list<u8>) -> result<ephemeral-projection, identity-error>;
+
+    /// Prove ownership of this identity at context tau.
+    prove: func(tau: list<u8>) -> result<zk-identity-proof, identity-error>;
+  }
+
+  /// Verify an ML-DSA-65 signature.
+  ///
+  /// A free function, not a method: verification needs only public material, so
+  /// requiring a `master-identity` would imply the verifier holds a secret it
+  /// neither needs nor can have.
+  ///
+  /// Returns `ok(false)` for a well-formed signature that does not verify, and
+  /// `err` only for input that cannot be parsed.
+  verify-signature: func(public-key: list<u8>, message: list<u8>, signature: list<u8>) -> result<bool, identity-error>;
 }
 
 interface attestation {

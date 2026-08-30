@@ -82,6 +82,7 @@ pub mod htss;
 
 /// Selective Attribute Attestation Protocol (SAAP) verification engine.
 pub mod saap;
+pub mod signing;
 
 /// Enclave constant-time rejection sampling and CBD η=2 sampler.
 pub mod sampling;
