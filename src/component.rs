@@ -3,7 +3,7 @@
 //! This is the L1 boundary the charter describes: **one artifact, embedded by
 //! every language, never per-language crypto.** No cryptography is implemented
 //! here — every function in this module converts between the WIT-declared types
-//! and the native API, and calls into `plp`, `saap` or `htss`.
+//! and the native API, and calls into `plp`, `credential` or `htss`.
 //!
 //! ## Why this exists separately from the `wasm` feature
 //!
@@ -27,19 +27,21 @@
 //!   -o aethel_core.component.wasm
 //! ```
 //!
-//! ## Operations that are not implemented, and deny rather than pretend
+//! ## Removed: the `attestation` interface
 //!
-//! `saap-verify` **always returns `ok(false)`**. It is not wired to
-//! [`saap::verify_saap_proof_against`] because that requires a public key
-//! `t = A_τ·sk`, which the WIT signature `saap-verify(proof, tau)` has no
-//! parameter to carry, and which with the current prover is an exact linear
-//! image of the secret (no error term) and therefore unsafe to publish at all.
-//! The RFC anchors verification on `b_τ = A_τ·s + e_τ`, whose noise makes it
-//! publishable; building that is P3-11 (0X3-79).
-//!
-//! A verifier that cannot verify soundly must deny, not allow. Denying is not
-//! the same as being correct, and callers must not read `ok(false)` from this
-//! operation as "this proof is invalid".
+//! The WIT world used to export a second, single-relation SAAP surface
+//! (`attestation.saap-prove` / `saap-verify`) alongside `identity`'s
+//! three-relation flow. It is gone: `saap-prove` built proofs over
+//! `saap::saap_public_key`, which that function's own doc comment says "was
+//! never safe to publish" (no error term — an exact linear image of the
+//! secret), and `saap-verify` could only ever return `ok(false)` because
+//! there was no sound way to check a proof against that key. P3-11 (0X3-79)
+//! built the real construction anchored on `b_τ = A_τ·s + e_τ`, exposed as
+//! `identity.saap-verify-presentation`, which is the only supported SAAP
+//! verification path now. `src/saap.rs` stays in the crate only because
+//! `tests/saap_soundness.rs` and `tests/randomness_is_secret.rs` pin its
+//! historical defects as executable characterisation tests; none of it is
+//! reachable through the WIT world any more.
 
 #![allow(clippy::needless_range_loop)]
 
@@ -52,20 +54,17 @@ wit_bindgen::generate!({
     world: "aethel-core",
 });
 
-use exports::aethel::core::attestation::{
-    DisclosureAttributes, Guest as AttestationGuest, SaapProof as WitSaapProof,
-};
 use exports::aethel::core::identity::{
-    Credential as WitCredential, EphemeralProjection as WitProjection, Guest as IdentityGuest,
-    GuestCredential, GuestMasterIdentity, MasterIdentity as WitMasterIdentity,
-    MasterIdentityBorrow, SaapPresentation as WitSaapPresentation,
-    ZkIdentityProof as WitZkProof,
+    Credential as WitCredential, DisclosureAttributes, EphemeralProjection as WitProjection,
+    Guest as IdentityGuest, GuestCredential, GuestMasterIdentity,
+    MasterIdentity as WitMasterIdentity, MasterIdentityBorrow,
+    SaapPresentation as WitSaapPresentation, ZkIdentityProof as WitZkProof,
 };
 use exports::aethel::core::secret_sharing::{Guest as SecretSharingGuest, HtssShare as WitShare};
 use aethel::core::types::IdentityError as WitError;
 
 use crate::identity_error::IdentityError;
-use crate::{credential, htss, plp, saap, signing};
+use crate::{credential, htss, plp, signing};
 
 /// The `htss-split` WIT signature carries no nonce parameter, but
 /// [`htss::SecretSharer::split_key_material`] takes one to separate independent
@@ -314,76 +313,6 @@ fn zk_proof_from_wit(p: &WitZkProof) -> Result<plp::ZkIdentityProof, WitError> {
         challenge_c: poly_from_coeffs(&p.challenge_c)?,
         response_z: poly_from_coeffs(&p.response_z)?,
     })
-}
-
-// ── attestation ───────────────────────────────────────────────────────────────
-
-impl AttestationGuest for Component {
-    fn saap_prove(
-        credential: Vec<u8>,
-        disclosed: DisclosureAttributes,
-        tau: Vec<u8>,
-        secret_key: Vec<u8>,
-        randomness: Vec<u8>,
-    ) -> Result<WitSaapProof, WitError> {
-        // The named flags are the interface; the bitmask stays an implementation
-        // detail below this boundary. The WIT is explicit that a raw mask must
-        // never appear on the wire.
-        let mask = disclosed.bits() as u64;
-
-        // `randomness` seeds the sigma mask r that hides sk in z = r + c·sk;
-        // reject short randomness rather than emit a weakly-masked proof.
-        if randomness.len() < 32 {
-            return Err(WitError::InvalidInputLength);
-        }
-
-        let sk = saap_secret_key_from_bytes(&secret_key)?;
-        let proof = saap::saap_prove(&credential, mask, &tau, &sk, &randomness);
-
-        Ok(WitSaapProof {
-            context_tag: proof.context_tag.to_vec(),
-            disclosed,
-            attributes: proof.attributes.values.to_vec(),
-            challenge: proof.challenge.coeffs.to_vec(),
-            response_z: flatten_vector_k(&proof.z),
-            commitment_hash: proof.commitment_hash.to_vec(),
-            commitment_w: flatten_vector_k(&proof.commitment_w),
-        })
-    }
-
-    /// **Always returns `ok(false)`.** See this module's header: the corrected
-    /// verifier needs a public key this signature cannot carry, and the only
-    /// public key the current prover admits leaks the secret. Denying is the
-    /// safe failure; it is not a statement about the proof.
-    fn saap_verify(_proof: WitSaapProof, _tau: Vec<u8>) -> Result<bool, WitError> {
-        Ok(false)
-    }
-}
-
-fn saap_secret_key_from_bytes(bytes: &[u8]) -> Result<saap::VectorK, WitError> {
-    let expected = saap::MODULE_K * saap::RING_N * 4;
-    if bytes.len() != expected {
-        return Err(WitError::InvalidInputLength);
-    }
-    let mut sk = saap::VectorK::zero();
-    let mut off = 0;
-    for k in 0..saap::MODULE_K {
-        for n in 0..saap::RING_N {
-            let mut b = [0u8; 4];
-            b.copy_from_slice(&bytes[off..off + 4]);
-            sk.vec[k].coeffs[n] = i32::from_le_bytes(b);
-            off += 4;
-        }
-    }
-    Ok(sk)
-}
-
-fn flatten_vector_k(v: &saap::VectorK) -> Vec<i32> {
-    let mut out = Vec::with_capacity(saap::MODULE_K * saap::RING_N);
-    for k in 0..saap::MODULE_K {
-        out.extend_from_slice(&v.vec[k].coeffs);
-    }
-    out
 }
 
 // ── secret-sharing ────────────────────────────────────────────────────────────

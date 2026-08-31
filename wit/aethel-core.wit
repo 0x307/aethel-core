@@ -14,10 +14,6 @@ interface types {
   }
 
   /// Named disclosure slots. Never a raw bitmask on the wire.
-  ///
-  /// Lives here rather than in `attestation` because both that interface and
-  /// the credential surface in `identity` need it, and a type used by two
-  /// interfaces belongs to neither.
   flags disclosure-attributes {
     attribute0,
     attribute1,
@@ -147,10 +143,6 @@ interface identity {
   /// Holds the commitment randomness and the attribute values, so it is secret
   /// material and stays inside the component for the same reason
   /// `master-identity` does. Issue once, present many times.
-  ///
-  /// It sits in this interface rather than in `attestation` because it borrows
-  /// a `master-identity`, and keeping both resources in one interface avoids a
-  /// cross-interface resource dependency for no gain.
   resource credential {
     /// Issue a credential binding `attributes` to the holder's identity.
     ///
@@ -189,31 +181,6 @@ interface identity {
   verify-signature: func(public-key: list<u8>, message: list<u8>, signature: list<u8>) -> result<bool, identity-error>;
 }
 
-interface attestation {
-  use types.{identity-error, disclosure-attributes};
-
-  /// A SAAP selective-disclosure proof.
-  record saap-proof {
-    context-tag: list<u8>,
-    disclosed: disclosure-attributes,
-    attributes: list<u64>,
-    challenge: list<s32>,
-    response-z: list<s32>,
-    commitment-hash: list<u8>,
-    commitment-w: list<s32>,
-  }
-
-  /// Prove selective attribute disclosure.
-  ///
-  /// `randomness` MUST be at least 32 bytes of fresh, secret entropy, distinct
-  /// per proof: it seeds the sigma-protocol mask r that hides the secret key in
-  /// the response z = r + c·sk.
-  saap-prove: func(credential: list<u8>, disclosed: disclosure-attributes, tau: list<u8>, secret-key: list<u8>, randomness: list<u8>) -> result<saap-proof, identity-error>;
-
-  /// Verify a SAAP selective disclosure proof.
-  saap-verify: func(proof: saap-proof, tau: list<u8>) -> result<bool, identity-error>;
-}
-
 interface secret-sharing {
   use types.{identity-error};
 
@@ -234,6 +201,5 @@ world aethel-core {
   import types;
 
   export identity;
-  export attestation;
   export secret-sharing;
 }

@@ -94,8 +94,7 @@ integration tests + 1 doctest, all passing on default features):
 package aethel:core@0.1.0;
 
 world aethel-core {
-  export identity;       // plp-project-at-context, plp-prove-identity, plp-verify
-  export attestation;    // saap-prove, saap-verify
+  export identity;       // plp-*, master-identity, credential, saap-verify-presentation
   export secret-sharing; // htss-split, htss-reconstruct
 }
 ```
