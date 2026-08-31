@@ -224,10 +224,32 @@ impl SecretSharer {
     ///
     /// Returns `ThresholdNotMet` below the threshold rather than a wrong answer.
     /// [`Self::reconstruct_secret`] interpolates through however many points it
-    /// is given and returns silently; this refuses to.
+    /// is given; this is the entry point that decides which point sets are
+    /// admissible in the first place.
+    ///
+    /// # Why the shares are validated as a *set*
+    ///
+    /// Lagrange interpolation is only defined over distinct evaluation points.
+    /// Given two shares carrying the same index, every basis polynomial for
+    /// those two points has a zero denominator, so both terms drop out and the
+    /// interpolation answers from whatever points remain: a value that is not
+    /// the shared secret. Because the payload's length prefix is recovered from
+    /// that same wrong value, the resulting `len` is usually implausible and the
+    /// call fails as `SerializationError` by accident. That accident is not a
+    /// guard. A caller who chooses the share values can make the length prefix
+    /// decode, and reconstruction then returns `Ok(attacker-chosen bytes)`. The
+    /// index-uniqueness check below is what actually forecloses it.
+    ///
+    /// The cardinality ceiling is the same argument from the other side. The
+    /// scheme issues `TOTAL_SHARES` shares, so a longer list cannot be a valid
+    /// share set whatever it contains, and interpolation is O(k**2) per limb, so
+    /// accepting an unbounded one is quadratic work on unauthenticated input.
     pub fn reconstruct_key_material(shares: &[HtssShare]) -> Result<Vec<u8>, IdentityError> {
         if shares.len() < THRESHOLD_K {
             return Err(IdentityError::ThresholdNotMet);
+        }
+        if shares.len() > TOTAL_SHARES {
+            return Err(IdentityError::InvalidShareSet);
         }
 
         let width = shares[0].value.len();
@@ -237,6 +259,17 @@ impl SecretSharer {
         if shares.iter().any(|s| s.value.len() != width || s.index == 0) {
             return Err(IdentityError::SerializationError);
         }
+
+        // Index uniqueness. `index` is a `u8`, so a fixed 256-entry stack table
+        // decides it in one pass with no allocation and no sort.
+        let mut seen = [false; 256];
+        for share in shares {
+            if seen[share.index as usize] {
+                return Err(IdentityError::InvalidShareSet);
+            }
+            seen[share.index as usize] = true;
+        }
+
         let limb_count = width / LIMB_EVAL_BYTES;
 
         let mut payload = Vec::with_capacity(limb_count * LIMB_BYTES);
@@ -251,7 +284,7 @@ impl SecretSharer {
                 })
                 .collect();
 
-            let limb = Self::reconstruct_secret(&points);
+            let limb = Self::reconstruct_secret(&points)?;
             payload.push((limb & 0xFF) as u8);
             payload.push(((limb >> 8) & 0xFF) as u8);
         }
@@ -452,7 +485,7 @@ impl SecretSharer {
         if shares.len() < THRESHOLD_K {
             return Err(IdentityError::ThresholdNotMet);
         }
-        Ok(Self::reconstruct_secret(shares))
+        Self::reconstruct_secret(shares)
     }
 
     /// Reconstruct the secret from at least `k` shares using Lagrange interpolation.
@@ -461,7 +494,12 @@ impl SecretSharer {
     /// holding `≥ THRESHOLD_K` shares is, by definition, authorized to
     /// recover it (that's what distinguishes reconstruction from a leak via
     /// a sub-threshold share, which [`ZkProofSegment`]'s doc comment covers).
-    pub fn reconstruct_secret(shares: &[(u8, u64)]) -> u64 {
+    ///
+    /// Returns `InvalidShareSet` if the points are not interpolable. For
+    /// distinct indices in `1..q` they always are, so this is a defence in
+    /// depth rather than a case a correct caller meets. See
+    /// [`Self::mod_inverse`] for why it is reported rather than absorbed.
+    pub fn reconstruct_secret(shares: &[(u8, u64)]) -> Result<u64, IdentityError> {
         let q = MODULUS_Q as i64;
         let mut secret = 0i64;
         for i in 0..shares.len() {
@@ -478,15 +516,28 @@ impl SecretSharer {
                     den = ((den % q) * ((xi - xj % q + q) % q)) % q;
                 }
             }
-            let den_inv = Self::mod_inverse(den, q);
+            let den_inv = Self::mod_inverse(den, q).ok_or(IdentityError::InvalidShareSet)?;
             let lagrange = (num % q * den_inv % q) % q;
             let term = (yi % q * lagrange % q) % q;
             secret = (secret + term) % q;
         }
-        ((secret % q) + q) as u64 % MODULUS_Q
+        Ok(((secret % q) + q) as u64 % MODULUS_Q)
     }
 
-    fn mod_inverse(a: i64, m: i64) -> i64 {
+    /// Modular inverse of `a` mod `m`, or `None` when `a` has none.
+    ///
+    /// `None` rather than the `0` sentinel this returned before. Zero is a value
+    /// the extended Euclidean algorithm can legitimately be asked about and is
+    /// never a legitimate inverse, so a `0` return was indistinguishable from
+    /// success; multiplying by it turned "there is no inverse" into "this
+    /// Lagrange term contributes nothing", which is the mechanism that let a
+    /// share set with a repeated index reconstruct to a wrong secret inside an
+    /// `Ok`.
+    ///
+    /// The uniqueness check in [`Self::reconstruct_key_material`] is what makes
+    /// the failing case unreachable. This is the second line, so a future caller
+    /// that does reach it gets an error rather than a plausible number.
+    fn mod_inverse(a: i64, m: i64) -> Option<i64> {
         let mut t = 0i64; let mut newt = 1i64;
         let mut r = m; let mut newr = a % m;
         while newr != 0 {
@@ -494,9 +545,9 @@ impl SecretSharer {
             let temp_t = t - quotient * newt; t = newt; newt = temp_t;
             let temp_r = r - quotient * newr; r = newr; newr = temp_r;
         }
-        if r > 1 { return 0; }
+        if r > 1 { return None; }
         if t < 0 { t += m; }
-        t
+        Some(t)
     }
 }
 
@@ -578,6 +629,33 @@ impl Default for HypercubeNetwork {
 
 #[cfg(test)]
 mod tests {
+    /// `mod_inverse` must report "no inverse exists" rather than returning it.
+    ///
+    /// Zero has no inverse mod q. The function used to return `0` for that,
+    /// which is also a perfectly ordinary value to multiply by, so the caller
+    /// could not tell the two apart and a Lagrange term with a zero denominator
+    /// silently evaluated to nothing. That is what turned a share set with a
+    /// repeated index into a wrong secret inside an `Ok`.
+    #[test]
+    fn mod_inverse_reports_a_non_invertible_input() {
+        assert_eq!(
+            SecretSharer::mod_inverse(0, MODULUS_Q as i64),
+            None,
+            "zero has no inverse mod q, and saying so with 0 is indistinguishable from success"
+        );
+    }
+
+    /// The negative test above is only meaningful if the function still computes
+    /// real inverses.
+    #[test]
+    fn mod_inverse_still_inverts() {
+        let q = MODULUS_Q as i64;
+        for a in [1i64, 2, 3, 7, 1234, q - 1] {
+            let inv = SecretSharer::mod_inverse(a, q).expect("a non-zero residue mod a prime is invertible");
+            assert_eq!((a * inv).rem_euclid(q), 1, "mod_inverse({a}) is not an inverse");
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -587,7 +665,8 @@ mod tests {
         let shares = SecretSharer::split_secret(secret, THRESHOLD_K, HYPERCUBE_DIM, seed);
         assert_eq!(shares.len(), HYPERCUBE_DIM);
         // Reconstruct from first 3 shares
-        let reconstructed = SecretSharer::reconstruct_secret(&shares[0..THRESHOLD_K]);
+        let reconstructed = SecretSharer::reconstruct_secret(&shares[0..THRESHOLD_K])
+            .expect("distinct indices interpolate");
         assert_eq!(reconstructed, secret);
     }
 

@@ -7,6 +7,48 @@ adheres to the breaking-change and deprecation rules in
 [`STABILITY.md`](./STABILITY.md) rather than strict SemVer prior to `1.0.0` — see that
 document for what counts as breaking inside `0.x`.
 
+## [Unreleased]
+
+### Fixed
+
+- **`htss-reconstruct` now validates the shares as a set.** Lagrange
+  interpolation is only defined over distinct evaluation points, and the
+  operation checked share count, width, width uniformity and `index != 0` but
+  never that the indices were distinct. Two shares carrying the same index give
+  that point's basis polynomials a zero denominator, so those terms dropped out
+  and the interpolation answered from whatever points remained: a value that is
+  not the shared secret. Most such inputs then failed the payload's length-prefix
+  sanity check and surfaced as `serialization-error`, which looks like a guard
+  and is not one. A caller choosing the share values can make the length prefix
+  decode, at which point the operation returned `ok(attacker-chosen bytes)`.
+
+  The share list is now rejected as `invalid-share-set` if any index repeats, or
+  if it carries more shares than the scheme issues. The cardinality bound also
+  closes a work multiplier: interpolation is quadratic in the share count, and
+  the list arrives unauthenticated.
+
+  `SecretSharer::mod_inverse` returns `Option<i64>` instead of a `0` sentinel.
+  Zero is never a valid inverse but is an ordinary value to multiply by, so the
+  sentinel was indistinguishable from success and is the mechanism that turned a
+  degenerate denominator into a silently wrong secret. The uniqueness check is
+  the fix; this is the second line.
+
+### Added (breaking)
+
+- **`identity-error` gains an eighth case, `invalid-share-set`,** appended last.
+  A WIT `variant` is ordinal-encoded, so the new case is added at the end of the
+  list: inserting anywhere else silently renumbers every case after it for
+  callers compiled against an earlier version of this world. Callers that match
+  `identity-error` exhaustively must add an arm. Five of the eight cases now have
+  producers; the three `RESERVED` cases are unchanged.
+
+### Changed (breaking)
+
+- **`SecretSharer::reconstruct_secret` returns `Result<u64, IdentityError>`**
+  rather than `u64`, so a non-interpolable point set is reported rather than
+  absorbed. Native Rust callers only; the WIT surface already returned a
+  `result`.
+
 ## [0.1.5] - 2026-08-31
 
 ### Fixed

@@ -151,6 +151,112 @@ fn malformed_shares_are_rejected() {
     );
 }
 
+// ── The share list must be a valid *set* ──────────────────────────────────────
+
+/// Encode `secret` the way `split_key_material` lays out its payload:
+/// `len(u32 LE) || secret`, zero-padded to a whole number of 2-byte limbs, each
+/// limb widened to a little-endian `u32` evaluation.
+///
+/// Used to build a share whose evaluations *are* the payload, which is what
+/// makes the forgery below land on decodable bytes instead of garbage.
+fn payload_shaped_value(secret: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&(secret.len() as u32).to_le_bytes());
+    payload.extend_from_slice(secret);
+    while payload.len() % 2 != 0 {
+        payload.push(0);
+    }
+    let mut value = Vec::new();
+    for limb in payload.chunks(2) {
+        let v = limb[0] as u32 | ((limb[1] as u32) << 8);
+        value.extend_from_slice(&v.to_le_bytes());
+    }
+    value
+}
+
+/// Two shares carrying the same *valid* index, at matching width, must be
+/// refused.
+///
+/// This is the case a duplicate-index probe has to construct to find anything.
+/// Duplicating index 0 is caught by the existing `index != 0` check and
+/// duplicating at mismatched widths is caught by the uniformity check, so both
+/// are rejected for reasons that have nothing to do with the duplicate and tell
+/// you nothing about whether duplicates are handled.
+#[test]
+fn a_repeated_share_index_is_refused() {
+    let key = [0x42u8; 32];
+    let shares = SecretSharer::split_key_material(&key, NONCE).expect("split");
+
+    let repeated = vec![shares[0].clone(), shares[0].clone(), shares[1].clone()];
+    assert_eq!(
+        SecretSharer::reconstruct_key_material(&repeated),
+        Err(IdentityError::InvalidShareSet),
+        "a share set with a repeated evaluation index was accepted"
+    );
+}
+
+/// The reason a repeated index is a soundness bug and not just an oddity: it
+/// lets a caller who never held a share choose what comes out.
+///
+/// With indices `[1, 1, 2]`, the two basis polynomials for index 1 both have a
+/// zero denominator and drop out, so each limb reconstructs to the *raw* value
+/// carried by the index-2 share. Shaping that share's value like a payload makes
+/// the length prefix decode, and the old code returned `Ok(fabricated bytes)`.
+///
+/// Rejecting on an implausible length prefix, which is what the old code did for
+/// most inputs, is an accident of the payload encoding rather than a guard, and
+/// this input is the demonstration.
+#[test]
+fn a_repeated_index_cannot_forge_a_reconstruction() {
+    let fabricated = b"ATTACKER".to_vec();
+    let forged_value = payload_shaped_value(&fabricated);
+    let width = forged_value.len();
+
+    let shares = vec![
+        HtssShare { index: 1, value: vec![0xAA; width] },
+        HtssShare { index: 1, value: vec![0xBB; width] },
+        HtssShare { index: 2, value: forged_value },
+    ];
+
+    let result = SecretSharer::reconstruct_key_material(&shares);
+    assert_ne!(
+        result.as_deref(),
+        Ok(fabricated.as_slice()),
+        "a share set with a repeated index reconstructed to attacker-chosen bytes"
+    );
+    assert_eq!(result, Err(IdentityError::InvalidShareSet));
+}
+
+/// More shares than the scheme issues is not a valid share set whatever the
+/// values are, and interpolation is quadratic in the count, so an unbounded list
+/// is also a work multiplier on unauthenticated input.
+#[test]
+fn more_shares_than_the_scheme_issues_are_refused() {
+    let key = [0x11u8; 32];
+    let shares = SecretSharer::split_key_material(&key, NONCE).expect("split");
+    assert_eq!(shares.len(), 5, "test setup: a 3-of-5 split");
+
+    // Six well-formed shares: the five real ones plus one more with a distinct,
+    // in-range index, so the only thing wrong with the set is its cardinality.
+    let mut oversized = shares.clone();
+    oversized.push(HtssShare { index: 6, value: shares[0].value.clone() });
+
+    assert_eq!(
+        SecretSharer::reconstruct_key_material(&oversized),
+        Err(IdentityError::InvalidShareSet)
+    );
+}
+
+/// The bound rejects nothing legitimate: all five issued shares still
+/// reconstruct.
+#[test]
+fn the_full_issued_share_set_still_reconstructs() {
+    let key = [0x33u8; 48];
+    let shares = SecretSharer::split_key_material(&key, NONCE).expect("split");
+    let recovered = SecretSharer::reconstruct_key_material(&shares).expect("reconstruct");
+    assert_eq!(recovered, key, "the cardinality bound rejected a valid full share set");
+}
+
 // ── Characterisation of the deprecated u64 path ───────────────────────────────
 
 /// Pins the threshold break in the deprecated path: `derive_coeff` is a pure,
@@ -202,7 +308,7 @@ fn deprecated_one_share_plus_seed_recovers_the_secret() {
 fn deprecated_path_truncates_a_full_width_u64() {
     let secret: u64 = 0x0123_4567_89AB_CDEF;
     let shares = SecretSharer::split_secret(secret, 3, 5, 0xDEAD_BEEF);
-    let recovered = SecretSharer::reconstruct_secret(&shares[..3]);
+    let recovered = SecretSharer::reconstruct_secret(&shares[..3]).expect("distinct indices interpolate");
 
     assert_ne!(
         recovered, secret,

@@ -222,6 +222,7 @@ fn component_error_variant_reachability() {
     //   invalid-input-length      short_entropy_is_refused_by_the_component
     //   serialization-error       plp_verify_separates_a_false_verdict_from_unparseable_input
     //   threshold-not-met         htss_round_trips_and_reports_threshold_not_met
+    //   invalid-share-set         htss_refuses_a_share_set_with_a_repeated_index
     //   rejection-sampling-failed reachable, but needs all 16 iterations to
     //                             reject, so it is exercised natively in
     //                             src/plp.rs rather than forced from here
@@ -230,11 +231,12 @@ fn component_error_variant_reachability() {
         "challenge-mismatch",
         "invalid-attribute-commitment",
     ];
-    const REACHABLE: [&str; 4] = [
+    const REACHABLE: [&str; 5] = [
         "invalid-input-length",
         "serialization-error",
         "rejection-sampling-failed",
         "threshold-not-met",
+        "invalid-share-set",
     ];
 
     let wit = std::fs::read_to_string(
@@ -424,6 +426,41 @@ fn htss_round_trips_and_reports_threshold_not_met() {
         Err(aethel::core::types::IdentityError::ThresholdNotMet) => {}
         Err(other) => panic!("expected threshold-not-met, got {:?}", other),
         Ok(_) => panic!("two shares of a 3-of-5 split reconstructed something"),
+    }
+}
+
+/// A repeated evaluation index must be refused at the WIT boundary, not
+/// interpolated through.
+///
+/// `htss-reconstruct` takes a `list<htss-share>`, and nothing in the type stops
+/// a caller sending the same index twice. Two shares at one index give the
+/// Lagrange basis polynomials for that point a zero denominator, so those terms
+/// drop out and the interpolation answers from whatever remains: a value that is
+/// not the shared secret, previously returned inside an `ok`. The native-side
+/// forgery this makes possible is pinned in
+/// `tests/htss_key_material.rs::a_repeated_index_cannot_forge_a_reconstruction`;
+/// this asserts the component boundary reports it as an error.
+#[test]
+fn htss_refuses_a_share_set_with_a_repeated_index() {
+    let (mut store, bindings) = instantiate();
+    let sharing = bindings.aethel_core_secret_sharing();
+
+    let secret = b"32-byte key material for HTSS !!".to_vec();
+    let shares = sharing
+        .call_htss_split(&mut store, &secret)
+        .expect("host call")
+        .expect("split");
+
+    // Three shares at matching width, two of them carrying the same valid
+    // index. Every other check the implementation makes passes.
+    let repeated = vec![shares[0].clone(), shares[0].clone(), shares[1].clone()];
+    match sharing
+        .call_htss_reconstruct(&mut store, &repeated)
+        .expect("host call")
+    {
+        Err(aethel::core::types::IdentityError::InvalidShareSet) => {}
+        Err(other) => panic!("expected invalid-share-set, got {:?}", other),
+        Ok(_) => panic!("a share set with a repeated index reconstructed something"),
     }
 }
 

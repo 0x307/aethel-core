@@ -5,10 +5,10 @@
 //!
 //! # Which variants a caller can actually observe
 //!
-//! Four of the seven are reachable through the component today, and are driven
+//! Five of the eight are reachable through the component today, and are driven
 //! end-to-end by tests in `tests/component_execution.rs`:
-//! `InvalidInputLength`, `SerializationError`, `ThresholdNotMet`, and
-//! `RejectionSamplingFailed`.
+//! `InvalidInputLength`, `SerializationError`, `ThresholdNotMet`,
+//! `RejectionSamplingFailed`, and `InvalidShareSet`.
 //!
 //! Three are **reserved and currently unreachable**: [`Self::NormBoundViolation`],
 //! [`Self::ChallengeMismatch`] and [`Self::InvalidAttributeCommitment`]. They
@@ -57,6 +57,18 @@ pub enum IdentityError {
     InvalidAttributeCommitment,
     /// Fewer than the threshold number of shares were supplied for reconstruction.
     ThresholdNotMet,
+    /// The supplied shares are not a valid share set: an evaluation index
+    /// appears more than once, or more shares were supplied than the scheme
+    /// issues.
+    ///
+    /// Distinct from [`Self::SerializationError`] on purpose. "This share is
+    /// malformed" and "you sent the same share twice" are different failures
+    /// with different fixes, and collapsing them is the same sentinel-flattening
+    /// this crate treats as a defect class elsewhere. Lagrange interpolation
+    /// over a repeated evaluation point is undefined; a share set carrying one
+    /// does not reconstruct to the shared secret, so it must not reconstruct at
+    /// all.
+    InvalidShareSet,
 }
 
 impl From<SaapValidationError> for IdentityError {

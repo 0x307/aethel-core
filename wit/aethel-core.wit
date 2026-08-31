@@ -4,11 +4,11 @@ interface types {
   /// Closed set of failure reasons across all aethel:core operations.
   /// A flat variant — no operation's error nests another operation's error.
   ///
-  /// Not every case has a producer today. Four do:
-  /// `invalid-input-length`, `serialization-error`, `threshold-not-met`, and
-  /// `rejection-sampling-failed`. The remaining three are reserved for the
-  /// predicate relation and are marked below; a caller written against this
-  /// world today will never observe them.
+  /// Not every case has a producer today. Five do:
+  /// `invalid-input-length`, `serialization-error`, `threshold-not-met`,
+  /// `rejection-sampling-failed`, and `invalid-share-set`. The other three are
+  /// reserved for the predicate relation and are marked below; a caller
+  /// written against this world today will never observe them.
   ///
   /// They are declared rather than omitted because adding a case to a
   /// `variant` is itself a breaking change for callers that match
@@ -40,6 +40,16 @@ interface types {
     invalid-attribute-commitment,
     /// Fewer than the threshold number of shares were supplied.
     threshold-not-met,
+    /// The supplied shares are not a valid share set: an evaluation index
+    /// appears more than once, or more shares were supplied than the scheme
+    /// issues. Lagrange interpolation over repeated points is undefined, and
+    /// answering anyway means returning a value that is not the shared secret,
+    /// so the operation refuses rather than reconstructing.
+    ///
+    /// Appended last deliberately: a `variant` is ordinal-encoded, so inserting
+    /// a case anywhere but the end silently renumbers every case after it for
+    /// callers compiled against an earlier version of this world.
+    invalid-share-set,
   }
 
   /// Named disclosure slots. Never a raw bitmask on the wire.
