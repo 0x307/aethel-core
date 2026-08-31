@@ -23,9 +23,21 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=target/wasm32-unknown-unknown/release/aethel_core.wasm");
     println!("cargo:rerun-if-changed=target/wasm32-unknown-unknown/debug/aethel_core.wasm");
+    println!("cargo:rerun-if-env-changed=AETHEL_GENERATE_DIST");
 
-    // ── Dist pipeline (always runs) ───────────────────────────────────────────
-    generate_dist_artifacts();
+    // ── Dist pipeline (opt-in only) ───────────────────────────────────────────
+    //
+    // `dist/` is gitignored and excluded from the published package — it's a
+    // local dev convenience, never something a build needs to produce. Running
+    // it unconditionally writes outside OUT_DIR on every build, which is what a
+    // build script must never do: `cargo publish`'s verification build correctly
+    // rejects a source tree that build.rs modified, and the same write would
+    // land inside another crate's extracted registry cache when aethel-core is
+    // pulled in as a dependency. Gated behind an explicit opt-in so a developer
+    // who wants `dist/` regenerated asks for it: `AETHEL_GENERATE_DIST=1 cargo build`.
+    if std::env::var("AETHEL_GENERATE_DIST").is_ok() {
+        generate_dist_artifacts();
+    }
 
     // Skip C compilation for:
     // - WASM targets (pure Rust implementations used)
