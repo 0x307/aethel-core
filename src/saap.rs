@@ -141,6 +141,36 @@ pub enum SaapValidationError {
 
 /// Negacyclic polynomial multiplication in R_q = Z_q[X]/(X^N + 1).
 pub fn poly_mul_negacyclic(a: &Polynomial, b: &Polynomial) -> Polynomial {
+    let pc = crate::plp::poly_mul_ntt(&to_plp_poly(a), &to_plp_poly(b));
+
+    let mut result = Polynomial::zero();
+    for i in 0..RING_N {
+        result.coeffs[i] = mod_q(pc.coeffs[i] as i64);
+    }
+    result
+}
+
+/// Convert a centered SAAP polynomial into PLP's unsigned representation.
+///
+/// SAAP carries coefficients centered in `(-q/2, q/2]` (see [`mod_q`]); PLP
+/// carries them in `[0, q)`. The NTT is PLP's, so the bridge lives here rather
+/// than making PLP aware of a second convention.
+fn to_plp_poly(p: &Polynomial) -> crate::plp::Poly {
+    let mut out = crate::plp::Poly::zero();
+    for i in 0..RING_N {
+        let c = p.coeffs[i];
+        out.coeffs[i] = if c < 0 { (c + PARAM_Q) as u32 } else { c as u32 };
+    }
+    out
+}
+
+/// Schoolbook negacyclic multiplication, retained as the reference.
+///
+/// [`poly_mul_negacyclic`] is the fast path and this is what it is checked
+/// against, by `ntt_and_schoolbook_agree_over_saap_polynomials`. Keeping the
+/// O(N^2) version is the only way that check means anything: a fast path with no
+/// independent reference is a fast path nobody can falsify.
+pub fn poly_mul_schoolbook(a: &Polynomial, b: &Polynomial) -> Polynomial {
     let mut result = Polynomial::zero();
     for i in 0..RING_N {
         for j in 0..RING_N {
@@ -1187,4 +1217,90 @@ mod roundtrip_tests {
     }
 
 
+
+    // ── NTT fast path equivalence (Q3 Fix 2) ─────────────────────────────────
+
+    /// A deterministic pseudo-random polynomial with full-range coefficients.
+    ///
+    /// Small or structured inputs would not exercise the modular reduction, and
+    /// the schoolbook path accumulates differently from the NTT path, so the
+    /// coefficients must span the whole centered range for the comparison to be
+    /// worth anything.
+    fn pseudo_random_poly(seed: u64) -> Polynomial {
+        let mut p = Polynomial::zero();
+        let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        for i in 0..RING_N {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            p.coeffs[i] = mod_q((x % (PARAM_Q as u64 * 2)) as i64 - PARAM_Q as i64);
+        }
+        p
+    }
+
+    /// The NTT fast path must agree with the schoolbook reference exactly.
+    ///
+    /// This is the whole contract of `poly_mul_negacyclic` after Q3 Fix 2. A
+    /// faster multiply that returns different answers is not an optimisation,
+    /// it is a silent break in every SAAP proof and verification, all of which
+    /// route through this one function.
+    #[test]
+    fn ntt_and_schoolbook_agree_over_saap_polynomials() {
+        for seed in 0..24u64 {
+            let a = pseudo_random_poly(seed * 2 + 1);
+            let b = pseudo_random_poly(seed * 2 + 2);
+
+            let fast = poly_mul_negacyclic(&a, &b);
+            let reference = poly_mul_schoolbook(&a, &b);
+
+            assert_eq!(
+                fast.coeffs, reference.coeffs,
+                "NTT and schoolbook disagree at seed {seed}"
+            );
+        }
+    }
+
+    /// Positive control for the test above.
+    ///
+    /// If `pseudo_random_poly` returned the same polynomial for every seed, or
+    /// the comparison were vacuous, the equivalence test would pass while
+    /// proving nothing. Distinct operands must produce distinct products.
+    #[test]
+    fn the_multiplication_agreement_check_can_fail() {
+        let a = pseudo_random_poly(1);
+        let b = pseudo_random_poly(2);
+        let c = pseudo_random_poly(3);
+
+        assert_ne!(a.coeffs, b.coeffs, "operand generator is not varying");
+        assert_ne!(
+            poly_mul_negacyclic(&a, &b).coeffs,
+            poly_mul_negacyclic(&a, &c).coeffs,
+            "different operands produced the same product, so agreement proves nothing"
+        );
+    }
+
+    /// The centered/unsigned bridge must round trip.
+    ///
+    /// SAAP centers coefficients in (-q/2, q/2]; PLP uses [0, q). Every SAAP
+    /// multiplication now crosses that boundary twice, so an error here would
+    /// corrupt results in a way that looks like a cryptographic failure rather
+    /// than a representation bug.
+    #[test]
+    fn the_centered_to_unsigned_bridge_round_trips() {
+        for seed in 0..8u64 {
+            let p = pseudo_random_poly(seed + 100);
+            let bridged = to_plp_poly(&p);
+            for i in 0..RING_N {
+                assert!(
+                    bridged.coeffs[i] < PARAM_Q as u32,
+                    "bridged coefficient outside [0, q)"
+                );
+                assert_eq!(
+                    mod_q(bridged.coeffs[i] as i64),
+                    p.coeffs[i],
+                    "round trip changed coefficient {i} at seed {seed}"
+                );
+            }
+        }
+    }
 }
