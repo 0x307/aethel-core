@@ -1037,7 +1037,10 @@ mod soundness_tests {
     #[test]
     fn saap_mask_is_fresh_per_rho_and_reproducible_given_rho() {
         let sk = test_sk();
-        let credential: Vec<u8> = (0u8..64).collect();
+        // A fixed array, not a Vec: this module is no_std and `alloc` is not
+        // imported here. The wasm job builds test targets with
+        // --no-default-features, so a Vec here fails only there.
+        let credential: [u8; 64] = core::array::from_fn(|i| i as u8);
         let tau = b"verifier-session-tau-0001";
 
         let p_a1 = saap_prove(&credential, 0b0000_0011, tau, &sk, &RHO_A);
@@ -1066,7 +1069,10 @@ mod soundness_tests {
     #[test]
     fn saap_distinct_rho_gives_distinct_masks_across_disclosures() {
         let sk = test_sk();
-        let credential: Vec<u8> = (0u8..64).collect();
+        // A fixed array, not a Vec: this module is no_std and `alloc` is not
+        // imported here. The wasm job builds test targets with
+        // --no-default-features, so a Vec here fails only there.
+        let credential: [u8; 64] = core::array::from_fn(|i| i as u8);
         let tau = b"verifier-session-tau-0001";
 
         let p1 = saap_prove(&credential, 0b0000_0001, tau, &sk, &RHO_A);
