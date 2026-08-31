@@ -146,6 +146,20 @@ const LIMB_BYTES: usize = 2;
 /// Serialized width of one limb evaluation inside a share's `value`.
 const LIMB_EVAL_BYTES: usize = 4;
 
+/// Largest secret [`SecretSharer::split_key_material`] will split.
+///
+/// The previous bound was `u32::MAX`, which is a representational limit of the
+/// payload's length prefix rather than a statement about what this operation is
+/// for. This is key material: an ML-DSA-65 signing key is a few KiB, and nothing
+/// this scheme is meant to protect is a file.
+///
+/// 64 KiB is deliberately generous against that, so the ceiling is a contract
+/// rather than a limit a legitimate caller meets. It also caps the work a single
+/// unauthenticated `htss-split` call can ask for, which matters because `secret`
+/// arrives from outside the component (see `COMPONENT_SPLIT_NONCE` in
+/// `src/component.rs`).
+const MAX_SECRET_BYTES: usize = 64 * 1024;
+
 impl SecretSharer {
     /// Split arbitrary-length key material into `TOTAL_SHARES` shares with a
     /// `THRESHOLD_K` threshold.
@@ -168,8 +182,11 @@ impl SecretSharer {
     ///
     /// **L1-internal**: `secret` and every derived intermediate are zeroized
     /// before returning. Only the shares leave.
+    ///
+    /// Refuses a secret larger than [`MAX_SECRET_BYTES`] with
+    /// `InvalidInputLength`.
     pub fn split_key_material(secret: &[u8], nonce: &[u8]) -> Result<Vec<HtssShare>, IdentityError> {
-        if secret.is_empty() || secret.len() > u32::MAX as usize {
+        if secret.is_empty() || secret.len() > MAX_SECRET_BYTES {
             return Err(IdentityError::InvalidInputLength);
         }
 
@@ -189,17 +206,22 @@ impl SecretSharer {
             })
             .collect();
 
+        // Absorbed once, here, rather than once per coefficient. See
+        // `derive_coeff_key`.
+        let mut coeff_key = Self::derive_coeff_key(secret, nonce);
+
         for limb_idx in 0..limb_count {
             let lo = payload[limb_idx * LIMB_BYTES] as u64;
             let hi = payload[limb_idx * LIMB_BYTES + 1] as u64;
             let limb_value = lo | (hi << 8);
 
-            // f(0) = limb, and the remaining coefficients come from the secret.
+            // f(0) = limb, and the remaining coefficients come from the secret,
+            // by way of the key derived from it above.
             let mut coefficients = Vec::with_capacity(THRESHOLD_K);
             coefficients.push(limb_value % MODULUS_Q);
             for coeff_idx in 1..THRESHOLD_K {
-                coefficients.push(Self::derive_coeff_from_secret(
-                    secret, nonce, limb_idx, coeff_idx,
+                coefficients.push(Self::derive_coeff_from_key(
+                    &coeff_key, limb_idx, coeff_idx,
                 ));
             }
 
@@ -216,6 +238,7 @@ impl SecretSharer {
             coefficients.zeroize();
         }
 
+        coeff_key.zeroize();
         payload.zeroize();
         Ok(shares)
     }
@@ -374,29 +397,66 @@ impl SecretSharer {
         Self::reconstruct_key_material(&shares)
     }
 
-    /// Derive one sharing-polynomial coefficient from the secret.
+    /// Absorb the secret once, into a fixed-size coefficient key.
     ///
-    /// SHAKE-256 over a domain separator, the secret, a caller nonce, and the
-    /// limb/coefficient indices. Rejection-samples into `[0, MODULUS_Q)` so the
-    /// coefficient is uniform over the field rather than biased by a modular
-    /// reduction of a wider value.
+    /// # Why this stage exists
     ///
-    /// The secret is the entropy source. That is the whole difference from
-    /// [`Self::derive_coeff`]: an attacker who does not already know the secret
-    /// cannot predict the coefficients, so shares below the threshold reveal
-    /// nothing — which is what makes the "3-of-5" claim true.
-    fn derive_coeff_from_secret(
-        secret: &[u8],
-        nonce: &[u8],
-        limb_idx: usize,
-        coeff_idx: usize,
-    ) -> u64 {
+    /// The coefficients used to be derived by absorbing the **whole secret**
+    /// into a fresh SHAKE-256 instance per coefficient. The limb loop runs
+    /// `limb_count * (THRESHOLD_K - 1)` times, which with `LIMB_BYTES = 2` and
+    /// `THRESHOLD_K = 3` is one call per byte of secret, each absorbing every
+    /// byte of secret: n**2 bytes of absorption in total. Measured, a 4x larger
+    /// input cost 14-16x the time, and a 64 KiB secret meant roughly 4.3 GB of
+    /// absorption and over ten seconds of wall clock for a single call.
+    ///
+    /// Splitting the derivation in two makes the secret-dependent work happen
+    /// exactly once and the per-coefficient work constant, so the whole split is
+    /// linear in the secret's length.
+    ///
+    /// # What it must not change
+    ///
+    /// The security property is unchanged, and deliberately so: the secret is
+    /// still the entropy source. That is the whole difference from
+    /// [`Self::derive_coeff`] and the entire justification for the "3-of-5"
+    /// claim — an attacker who does not already know the secret cannot predict
+    /// the coefficients, so shares below the threshold reveal nothing. Deriving
+    /// a key from the secret and expanding that keeps it intact: predicting any
+    /// coefficient still requires either the secret or a preimage of SHAKE-256.
+    ///
+    /// The key is secret-derived and is zeroized by the caller.
+    fn derive_coeff_key(secret: &[u8], nonce: &[u8]) -> [u8; 32] {
         let mut hasher = Shake256::default();
-        sha3::digest::Update::update(&mut hasher, b"AETHEL_HTSS_COEFF_V1");
+        sha3::digest::Update::update(&mut hasher, b"AETHEL_HTSS_COEFF_V2");
         sha3::digest::Update::update(&mut hasher, &(secret.len() as u32).to_le_bytes());
         sha3::digest::Update::update(&mut hasher, secret);
         sha3::digest::Update::update(&mut hasher, &(nonce.len() as u32).to_le_bytes());
         sha3::digest::Update::update(&mut hasher, nonce);
+        let mut xof = hasher.finalize_xof();
+
+        let mut key = [0u8; 32];
+        xof.read(&mut key);
+        key
+    }
+
+    /// Derive one sharing-polynomial coefficient from the coefficient key.
+    ///
+    /// Absorbs a fixed 32-byte key and two indices, so its cost does not depend
+    /// on the secret's length. Rejection-samples into `[0, MODULUS_Q)` so the
+    /// coefficient is uniform over the field rather than biased by a modular
+    /// reduction of a wider value — unchanged from the previous derivation, and
+    /// not the part that was slow.
+    ///
+    /// The `V2` domain separator is what makes this a different function rather
+    /// than a faster spelling of the old one. Every coefficient, and therefore
+    /// every share value, differs from what `V1` produced for the same
+    /// `(secret, nonce)`. Shares from the two derivations must not be mixed
+    /// within one reconstruction. Reconstruction itself is unaffected: it is
+    /// Lagrange interpolation over the share values and never re-derives a
+    /// coefficient, so shares produced by `V1` still reconstruct correctly.
+    fn derive_coeff_from_key(key: &[u8; 32], limb_idx: usize, coeff_idx: usize) -> u64 {
+        let mut hasher = Shake256::default();
+        sha3::digest::Update::update(&mut hasher, b"AETHEL_HTSS_COEFF_V2_EXPAND");
+        sha3::digest::Update::update(&mut hasher, key);
         sha3::digest::Update::update(&mut hasher, &(limb_idx as u64).to_le_bytes());
         sha3::digest::Update::update(&mut hasher, &(coeff_idx as u64).to_le_bytes());
         let mut xof = hasher.finalize_xof();

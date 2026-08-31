@@ -33,6 +33,23 @@ document for what counts as breaking inside `0.x`.
   degenerate denominator into a silently wrong secret. The uniqueness check is
   the fix; this is the second line.
 
+- **`htss-split` is now linear in the secret's length, not quadratic.** The
+  sharing-polynomial coefficients were derived by absorbing the entire secret
+  into a fresh SHAKE-256 instance for every coefficient, and the limb loop makes
+  one call per byte of secret, so total absorption grew as the square of the
+  input. Measured, a 4x larger secret cost 14-16x the time, and a 64 KiB secret
+  meant roughly 4.3 GB of absorption and 11.7 seconds of wall clock in a release
+  build for one call, on input that arrives unauthenticated.
+
+  The secret is now absorbed once into a 32-byte coefficient key, and each
+  coefficient is derived from that key plus its limb and coefficient indices, at
+  constant cost. The same 64 KiB split takes about 50 milliseconds.
+
+  The security property is unchanged and deliberately so: the secret is still the
+  entropy source, so an attacker who does not know it cannot predict the
+  coefficients, which is what makes shares below the threshold reveal nothing.
+  Predicting a coefficient still requires the secret or a SHAKE-256 preimage.
+
 ### Added (breaking)
 
 - **`identity-error` gains an eighth case, `invalid-share-set`,** appended last.
@@ -43,6 +60,25 @@ document for what counts as breaking inside `0.x`.
   producers; the three `RESERVED` cases are unchanged.
 
 ### Changed (breaking)
+
+- **Share values from `htss-split` have changed.** The coefficient derivation's
+  domain separator moved from `AETHEL_HTSS_COEFF_V1` to `AETHEL_HTSS_COEFF_V2`,
+  so every coefficient, and therefore every share value, differs from what the
+  previous version produced for the same secret and nonce. Shares from the two
+  derivations must not be mixed within one reconstruction.
+
+  **Reconstruction is unaffected.** `htss-reconstruct` is Lagrange interpolation
+  over the share values and never re-derives a coefficient, so a set of shares
+  issued by an earlier version still reconstructs correctly under this one. What
+  breaks is only re-splitting the same secret and expecting the old share values
+  back.
+
+- **`htss-split` refuses a secret larger than 64 KiB** with
+  `invalid-input-length`. The previous bound was `u32::MAX`, about 4 GiB, which
+  is the largest value the payload's length prefix can hold rather than a
+  statement about what the operation is for. 64 KiB is deliberately generous
+  against real key material, so the ceiling is a contract rather than a limit a
+  legitimate caller meets.
 
 - **`SecretSharer::reconstruct_secret` returns `Result<u64, IdentityError>`**
   rather than `u64`, so a non-interpolable point set is reported rather than
