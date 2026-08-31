@@ -45,8 +45,12 @@ jobs:
           wasm-tools validate build1.component.wasm
           wasm-tools component wit build1.component.wasm > embedded.wit
           # Every operation the world declares must appear in the artifact.
+          # (saap-prove / saap-verify on the old `attestation` interface were
+          # removed: superseded by saap-verify-presentation, see
+          # src/component.rs's module doc.)
           for op in plp-project-at-context plp-prove-identity plp-verify \
-                    saap-prove saap-verify htss-split htss-reconstruct; do
+                    saap-verify-presentation verify-signature \
+                    htss-split htss-reconstruct; do
             grep -q "$op" embedded.wit || { echo "MISSING from component: $op"; exit 1; }
           done
           grep -q "identity-error" embedded.wit || { echo "identity-error absent"; exit 1; }

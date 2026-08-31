@@ -194,45 +194,40 @@ fn htss_round_trips_and_reports_threshold_not_met() {
     }
 }
 
-/// `saap-verify`, the **superseded** operation, still denies unconditionally.
+/// The superseded single-relation `attestation` interface is gone from the
+/// world entirely, not merely failing closed.
 ///
-/// This is no longer "SAAP does not work". P3-11 landed the real construction
-/// and it is exercised below through `credential.present` and
-/// `saap-verify-presentation`, which do verify honest presentations. This
-/// operation is the old single-relation surface kept for compatibility, and it
-/// must keep failing closed: it has no way to be sound, so `ok(false)` is the
-/// only honest answer it can give.
-///
-/// Pinned so the day it starts returning `ok(true)` is a day someone notices.
+/// It used to export `saap-prove` / `saap-verify` built over
+/// `saap::saap_public_key`, a value that function's own doc comment says "was
+/// never safe to publish" — so `saap-verify` could only ever return
+/// `ok(false)`. P3-11 (0X3-79) built the real, soundly-verifiable
+/// construction anchored on `b_tau = A_tau*s + e_tau`, exposed below as
+/// `saap-verify-presentation`, which is now the only SAAP verification path.
+/// This test's job is purely structural: confirm the generated bindings have
+/// no `aethel_core_attestation()` accessor at all. If this fails to compile,
+/// the interface was re-added without carrying forward the reasoning above —
+/// re-read this module's header before restoring it.
 #[test]
-fn saap_verify_denies_as_documented() {
-    let (mut store, bindings) = instantiate();
-    let attestation = bindings.aethel_core_attestation();
-
-    let secret_key = vec![0u8; 4 * 256 * 4];
-    let proof = attestation
-        .call_saap_prove(
-            &mut store,
-            b"credential-block",
-            exports::aethel::core::attestation::DisclosureAttributes::ATTRIBUTE0,
-            b"ctx",
-            &secret_key,
-            &[0x42u8; 32],
-        )
-        .expect("host call")
-        .expect("prove");
-
-    let verified = attestation
-        .call_saap_verify(&mut store, &proof, b"ctx")
-        .expect("host call")
-        .expect("verify returned err");
-
+fn attestation_interface_is_not_part_of_the_world() {
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("wit/aethel-core.wit"),
+    )
+    .expect("read wit source");
     assert!(
-        !verified,
-        "saap-verify returned true. It is documented as failing closed until \
-         P3-11 (0X3-79) anchors it on b_tau — if it was wired up, delete this test"
+        !source.contains("interface attestation"),
+        "the attestation interface reappeared in wit/aethel-core.wit — see \
+         src/component.rs's module doc for why it was removed"
+    );
+    assert!(
+        !source.contains("export attestation"),
+        "attestation is exported from the world again without the interface \
+         definition being restored consistently"
     );
 }
+//
+// The positive control for "the real path still works" already exists below:
+// `a_credential_can_be_issued_and_presented_through_the_component` exercises
+// `saap-verify-presentation` end to end through this same artifact.
 
 // ── master-identity resource (P5-04 / 0X3-54) ────────────────────────────────
 //
@@ -427,12 +422,13 @@ fn the_resource_enforces_the_randomness_floor() {
 
 // ── SAAP selective disclosure through the component (P3-11 / 0X3-79) ─────────
 //
-// Until this landed, `saap-verify` through the artifact returned `ok(false)` for
-// every input, including honest proofs, and `saap_verify_denies_as_documented`
-// above pinned that. The credential surface is the construction that replaces
-// it. These tests exercise it end to end through the built component, because
-// "the WIT declares a credential resource" and "selective disclosure works" are
-// different claims.
+// Until this landed, the old `attestation.saap-verify` returned `ok(false)` for
+// every input, including honest proofs, and could not be fixed without
+// publishing an unsafe key — see `attestation_interface_is_not_part_of_the_world`
+// above for why that interface was removed rather than repaired. The credential
+// surface is the construction that replaces it. These tests exercise it end to
+// end through the built component, because "the WIT declares a credential
+// resource" and "selective disclosure works" are different claims.
 
 const ISSUER_SEED: &[u8] = b"issuer seed for the test suite!!";
 const ISSUE_R: &[u8] = b"issuance randomness for tests!!!";

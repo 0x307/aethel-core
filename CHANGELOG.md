@@ -9,6 +9,21 @@ document for what counts as breaking inside `0.x`.
 
 ## [Unreleased]
 
+### Removed (breaking)
+
+- **The `attestation` WIT interface** (`saap-prove`, `saap-verify`) is gone from
+  the world. It built proofs over a public key that was never safe to publish
+  (no error term, an exact linear image of the secret), so `saap-verify` could
+  only ever return `ok(false)`. `identity.saap-verify-presentation`, anchored
+  on the noisy PLP projection `b_τ = A_τ·s + e_τ`, is the sole supported SAAP
+  verification path now. `src/saap.rs` remains in the crate for its
+  characterisation tests only; it is not reachable through the WIT world.
+
+  **Migration:** any caller using `attestation.saap-prove`/`saap-verify` must
+  move to `identity.credential.issue`/`.present` and
+  `identity.saap-verify-presentation`, which is the construction P3-11
+  (0X3-79) actually built.
+
 ### Security
 
 - **Strengthened randomness handling in PLP and SAAP.** The projection error term
