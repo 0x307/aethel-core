@@ -174,9 +174,19 @@ fn sample_uniform(xof: &mut impl XofReader) -> Polynomial {
     let q = PARAM_Q as u32;
     let mut i = 0usize;
     while i < RING_N {
-        let mut buf = [0u8; 4];
+        // 23 bits, matching q = 2^23 - 2^13 + 1. This is the same construction
+        // `plp.rs` uses, and it must stay the same: masking wider than the
+        // modulus does not make the output more uniform, it only rejects more.
+        //
+        // This previously read 4 bytes and masked to 31 bits, then rejected
+        // anything >= q. Acceptance was q / 2^31, about 0.39%, so it drew
+        // roughly 256 samples per accepted coefficient and cost 44.6 ms to
+        // expand the 52 KB issuer matrix. At 23 bits acceptance is q / 2^23,
+        // about 99.9%.
+        let mut buf = [0u8; 3];
         xof.read(&mut buf);
-        let val = u32::from_le_bytes(buf) & 0x7FFF_FFFF;
+        let val =
+            (buf[0] as u32) | ((buf[1] as u32) << 8) | ((buf[2] as u32 & 0x7F) << 16);
         if val < q {
             p.coeffs[i] = mod_q(val as i64);
             i += 1;

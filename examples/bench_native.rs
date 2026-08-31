@@ -73,5 +73,25 @@ fn main() {
         let _ = id.project_at_context(TAU, RHO);
     });
 
+    // The component regenerates IssuerParams from the seed on EVERY call
+    // (src/component.rs:209 and :406), because the WIT carries issuer-seed
+    // rather than a prepared verifier. B_1 is CRED_T x CRED_L = 13 x 4 = 52
+    // polynomials, 52 KB, expanded via SHAKE-256. Timing verify with a hoisted
+    // IssuerParams therefore measures something the component never does.
+    println!("
+-- issuer matrix expansion, paid per call through the component --");
+    bench("IssuerParams::from_seed (52 KB)", 50, || {
+        let _ = IssuerParams::from_seed(ISSUER_SEED);
+    });
+    bench("verify INCLUDING from_seed", 50, || {
+        let fresh = IssuerParams::from_seed(ISSUER_SEED);
+        let ok = verify(&fresh, &p, blinded.commitment(), &proj, TAU).expect("verify");
+        assert!(ok);
+    });
+    bench("issue INCLUDING from_seed", 50, || {
+        let fresh = IssuerParams::from_seed(ISSUER_SEED);
+        let _ = Credential::issue(&fresh, &id, &attrs, ISSUE_R).expect("issue");
+    });
+
     println!("{}", "=".repeat(60));
 }

@@ -170,3 +170,7 @@ overflow-checks = false    # Drop runtime integer overflow checks in WASM releas
 [profile.dev]
 opt-level = 0
 debug = true
+
+[[example]]
+name = "bench_wasm_penalty"
+required-features = ["component-tests"]
