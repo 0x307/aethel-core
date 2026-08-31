@@ -107,9 +107,13 @@ jobs:
   # isolation job silently didn't execute what it claimed to). This job runs
   # it for real, under wasm32-unknown-unknown via wasm-pack + Node.
   #
-  # `--no-default-features --features wasm` matches the README's documented
-  # production WASM build, not just any feature combination that happens to
-  # compile.
+  # The `wasm` feature it used to build no longer exists: P3-13 (0X3-81)
+  # retired the wasm-bindgen export surface so there is one WebAssembly
+  # artifact, the component. `wasm-bindgen-test` survives as a TEST HARNESS,
+  # which is a different thing from those exports — the test calls the native
+  # Rust API and asserts the secret is wiped, and running it under wasm32 is
+  # what shows the wasm codegen path does not elide that write. So this job
+  # keeps doing its job, on the default feature set.
   wasm-test:
     name: wasm test (zeroization + full suite, node)
     runs-on: ubuntu-latest
@@ -120,5 +124,16 @@ jobs:
           targets: wasm32-unknown-unknown
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-      - name: Run wasm test suite (production feature set)
-        run: wasm-pack test --node -- --no-default-features --features wasm
+      - name: Run wasm test suite
+        run: wasm-pack test --node -- --no-default-features
+      # A passing run above is not by itself proof the zeroization test ran:
+      # if it were filtered out or silently skipped, the job would still be
+      # green. Name it explicitly and require it.
+      - name: The zeroization test specifically must have run in WASM
+        run: |
+          out=$(wasm-pack test --node -- --no-default-features 2>&1)
+          echo "$out"
+          echo "$out" | grep -q "zeroize_wipes_master_identity_secret_wasm" || {
+            echo "::error::zeroize_wipes_master_identity_secret_wasm did not run under wasm32 - the zeroization-in-linear-memory claim is unproven"
+            exit 1
+          }

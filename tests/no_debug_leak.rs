@@ -18,9 +18,9 @@
 //!   the storage type for `MasterIdentity`'s private `secret_key` field (and
 //!   is also used throughout `plp` for public projection/proof data, hence
 //!   the crate-wide rule below rather than a narrower one).
-//! - [`aethel_core::saap::Polynomial`] / [`aethel_core::saap::VectorK`] — `VectorK`
-//!   is the type `saap_prove`'s `secret_key` parameter uses to carry a raw
-//!   SAAP secret.
+//! `saap::Polynomial` / `saap::VectorK` carry the same guarantee, asserted in
+//! `src/saap.rs` instead: that module became crate-private in P3-10 / 0X3-78,
+//! so an integration test can no longer name its types.
 //! - [`aethel_core::sampling::Polynomial`] / [`aethel_core::sampling::VectorK`] —
 //!   `VectorK` is the type `enclave_plp_prove_fixed_time`'s `s` parameter
 //!   uses to carry a raw secret. Neither derived `Debug` before this pass
@@ -37,8 +37,6 @@ use static_assertions::assert_not_impl_any;
 
 assert_not_impl_any!(aethel_core::plp::Poly: core::fmt::Debug, core::fmt::Display);
 assert_not_impl_any!(aethel_core::plp::MasterIdentity: core::fmt::Debug, core::fmt::Display);
-assert_not_impl_any!(aethel_core::saap::Polynomial: core::fmt::Debug, core::fmt::Display);
-assert_not_impl_any!(aethel_core::saap::VectorK: core::fmt::Debug, core::fmt::Display);
 assert_not_impl_any!(aethel_core::sampling::Polynomial: core::fmt::Debug, core::fmt::Display);
 assert_not_impl_any!(aethel_core::sampling::VectorK: core::fmt::Debug, core::fmt::Display);
 

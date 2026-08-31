@@ -745,3 +745,446 @@ mod tests {
         assert_eq!(mismatch, 0, "challenge should be consistent");
     }
 }
+
+// ── Characterisation and soundness tests ────────────────────────
+//
+// Moved here from tests/saap_soundness.rs and tests/randomness_is_secret.rs
+// when this module became crate-private (P3-10 / 0X3-78). An integration test
+// cannot reach a pub(crate) module, and this module had to stop being public
+// because saap_prove's signature takes a raw u64 disclosure mask, which the
+// WIT world is explicit about never putting on the wire.
+//
+// They are kept, not deleted: they pin the superseded verifier's defects as
+// executable characterisation rather than prose, and they disappear when it
+// does.
+
+#[cfg(test)]
+#[allow(deprecated)]
+mod soundness_tests {
+    use super::*;
+
+    fn test_sk() -> VectorK {
+        let mut sk = VectorK::zero();
+        for k in 0..MODULE_K {
+            for n in 0..RING_N {
+                sk.vec[k].coeffs[n] = ((k * 31 + n * 7) % 5) as i32 - 2;
+            }
+        }
+        sk
+    }
+    use sha3::{digest::{ExtendableOutput, Update, XofReader}, Shake256};
+
+    const RHO_A: [u8; 32] = [0x11u8; 32];
+
+    const RHO_B: [u8; 32] = [0x22u8; 32];
+
+
+    /// Build a proof with no secret key, no credential, and no key material of any
+    /// kind — only public knowledge of the verification procedure.
+    ///
+    /// Strategy: every check in `verify_saap_proof` derives its expected value from
+    /// a field of the proof. So pick the free fields first, then compute the
+    /// dependent ones the same way the verifier will.
+    fn forge(context_tag: [u8; 32], disclosure_mask: u64) -> SaapProof {
+        let mut proof = SaapProof::zero();
+
+        proof.context_tag = context_tag;
+        proof.disclosure_mask = disclosure_mask;
+        proof.attributes = AttributePayload::zero();
+
+        // Free choice: the commitment vector. The verifier never checks it against
+        // A·z, because `matrix_a` is ignored. Zero is the simplest witness that the
+        // choice is unconstrained.
+        proof.commitment_w = VectorK::zero();
+
+        // Free choice: the response vector. Only its norm is checked, and the norm
+        // of zero trivially passes the bound.
+        proof.z = VectorK::zero();
+
+        // Dependent: the challenge is whatever `recompute_challenge` produces from
+        // fields we already control.
+        proof.challenge = recompute_challenge(
+            &proof.commitment_w,
+            &proof.context_tag,
+            proof.disclosure_mask,
+            &proof.attributes,
+        );
+
+        // Dependent: the commitment hash is SHAKE-256 over the commitment vector,
+        // recomputed by the verifier from the same field.
+        let mut hasher = Shake256::default();
+        hasher.update(b"AETHEL_SAAP_COMMIT_V1");
+        for poly in proof.commitment_w.vec.iter() {
+            for coeff in poly.coeffs.iter() {
+                hasher.update(&coeff.to_le_bytes());
+            }
+        }
+        let mut xof = hasher.finalize_xof();
+        xof.read(&mut proof.commitment_hash);
+
+        proof
+    }
+
+    /// Characterises the defect in the deprecated verifier, executably.
+    ///
+    /// This asserts the **known-bad** behaviour deliberately: `verify_saap_proof`
+    /// accepts a proof forged with no secret key. It is written as a passing test so
+    /// the defect is pinned rather than merely described, and so it disappears
+    /// together with the function it characterises. The correctness assertions live
+    /// in `corrected_verifier_*` above.
+    #[test]
+    #[allow(deprecated)]
+    fn deprecated_verifier_accepts_forgeries_known_defect() {
+        let matrix_a = [VectorK::zero(); MODULE_K];
+        let attr_commits = [Polynomial::zero(); MAX_ATTRIBUTES];
+
+        let proof = forge([7u8; 32], 0b0000_0011);
+
+        assert!(
+            verify_saap_proof(&proof, &matrix_a, &attr_commits).is_ok(),
+            "the deprecated verifier now rejects the forgery — if it was fixed, delete \
+             this characterisation test along with the function"
+        );
+    }
+
+    /// Positive control for the forgery methodology above.
+    ///
+    /// PLP's verifier performs the same three-step shape as SAAP's — norm bound,
+    /// Fiat-Shamir challenge consistency, verification equation — but its third
+    /// step actually uses the projection's public parameters:
+    ///
+    /// ```text
+    /// W' = A_τ · z - c · b_τ    then    ||W' - W||∞ < 2β
+    /// ```
+    ///
+    /// So the analogous forgery must fail there. If this test passes while the
+    /// SAAP forgery is accepted, the difference is in the verifiers, not in the
+    /// way these tests construct a forgery.
+    #[test]
+    fn plp_rejects_the_analogous_forgery() {
+        use crate::plp::{MasterIdentity, Poly, Verifier, ZkIdentityProof};
+
+        // The forger is allowed to know the public projection — that is the point
+        // of a public key. It has no access to the master secret.
+        let identity = MasterIdentity::from_seed(&[0x11u8; 32]);
+        let projection = identity.project_at_context(b"context-under-attack", &[0xa5u8; 32]);
+
+        // Same free choices as the SAAP forgery: zero commitment, zero response,
+        // challenge recomputed the way the verifier will recompute it.
+        let commitment_w = Poly::zero();
+        let challenge_c = crate::plp::hash_to_challenge(
+            &commitment_w,
+            u64::from_le_bytes(projection.tau[..8].try_into().unwrap()),
+        );
+        let proof = ZkIdentityProof {
+            commitment_w,
+            challenge_c,
+            response_z: Poly::zero(),
+        };
+
+        assert!(
+            !Verifier::verify(&projection, &proof),
+            "PLP accepted the same style of forgery SAAP accepts — in that case the \
+             forgery helper is what is wrong, not the SAAP verifier, and the SAAP \
+             finding must be re-derived before it is reported."
+        );
+    }
+
+    // ── The corrected verifier ────────────────────────────────────────────────────
+
+    const TAU: &[u8] = b"context-alpha";
+    const CREDENTIAL: &[u8] = b"attribute-block-0123456789abcdef";
+
+    fn test_secret_key() -> VectorK {
+        let mut sk = VectorK::zero();
+        for k in 0..MODULE_K {
+            for n in 0..RING_N {
+                sk.vec[k].coeffs[n] = (n % 5) as i32 - 2;
+            }
+        }
+        sk
+    }
+
+    /// The load-bearing test: an honestly generated proof must satisfy
+    /// `A_τ · z - c · t == w`. If this fails, the verification equation is wrong and
+    /// nothing built on it can be trusted.
+    #[test]
+    fn honest_proof_satisfies_the_verification_equation() {
+        let sk = test_secret_key();
+        let proof = saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk, &[0x7cu8; 32]);
+        let public_key = saap_public_key(TAU, &sk);
+
+        assert_eq!(
+            verify_saap_proof_against(&proof, TAU, &public_key),
+            Ok(()),
+            "an honestly generated proof failed the verification equation"
+        );
+    }
+
+    #[test]
+    fn corrected_verifier_rejects_the_forgery() {
+        let sk = test_secret_key();
+        let public_key = saap_public_key(TAU, &sk);
+        let forged = forge_for(TAU, 0b0000_0011);
+
+        assert!(
+            verify_saap_proof_against(&forged, TAU, &public_key).is_err(),
+            "the corrected verifier still accepts a proof forged with no secret key"
+        );
+    }
+
+    #[test]
+    fn corrected_verifier_rejects_a_proof_from_another_context() {
+        let sk = test_secret_key();
+        let proof = saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk, &[0x7cu8; 32]);
+
+        // Same identity, different context: derive the public key for the context
+        // the verifier actually cares about.
+        let other_tau: &[u8] = b"context-beta";
+        let public_key_beta = saap_public_key(other_tau, &sk);
+
+        assert!(
+            verify_saap_proof_against(&proof, other_tau, &public_key_beta).is_err(),
+            "a proof issued for one context verified under another"
+        );
+    }
+
+    #[test]
+    fn corrected_verifier_rejects_a_tampered_response() {
+        let sk = test_secret_key();
+        let mut proof = saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk, &[0x7cu8; 32]);
+        let public_key = saap_public_key(TAU, &sk);
+
+        proof.z.vec[0].coeffs[0] = proof.z.vec[0].coeffs[0].wrapping_add(1);
+
+        assert!(
+            verify_saap_proof_against(&proof, TAU, &public_key).is_err(),
+            "a tampered response vector still verified"
+        );
+    }
+
+    /// SAAP-SPEC.md §7 step 3 requires the Fiat-Shamir challenge to bind the
+    /// disclosed attribute values:
+    ///
+    /// ```text
+    /// c' = Hash(W_1' ∥ W_2' ∥ b_τ ∥ t_blind ∥ m_pub ∥ τ)
+    /// ```
+    ///
+    /// `recompute_challenge` hashes only `(commitment_w, τ, disclosure_mask)`. The
+    /// disclosed values ride in the transcript as `proof.attributes` and never enter
+    /// the challenge, so they can be rewritten after the fact.
+    ///
+    /// This is a gap in the corrected verifier too — fixing the verification
+    /// equation did not fix attribute binding, because the two are independent.
+    #[test]
+    fn disclosed_attributes_are_bound_into_the_challenge() {
+        let sk = test_secret_key();
+        let mut proof = saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk, &[0x7cu8; 32]);
+        let public_key = saap_public_key(TAU, &sk);
+
+        // Sanity: the untampered proof verifies.
+        assert_eq!(
+            verify_saap_proof_against(&proof, TAU, &public_key),
+            Ok(()),
+            "test setup: the honest proof should verify before tampering"
+        );
+
+        // Rewrite a disclosed attribute value. Nothing else is touched.
+        let original = proof.attributes.values[0];
+        proof.attributes.values[0] = original.wrapping_add(0xDEAD_BEEF);
+
+        assert!(
+            verify_saap_proof_against(&proof, TAU, &public_key).is_err(),
+            "a disclosed attribute value was rewritten after proof generation and the \
+             proof still verified. SAAP-SPEC.md §7 step 3 binds m_pub into the \
+             challenge; recompute_challenge does not. The verifier therefore attests \
+             to attribute values the prover never committed to, which is the property \
+             SAAP exists to provide."
+        );
+    }
+
+    /// Same construction as `forge`, parameterised by τ so it can be aimed at the
+    /// corrected verifier.
+    fn forge_for(tau: &[u8], disclosure_mask: u64) -> SaapProof {
+        let mut context_tag = [0u8; 32];
+        let len = tau.len().min(32);
+        context_tag[..len].copy_from_slice(&tau[..len]);
+        forge(context_tag, disclosure_mask)
+    }
+
+    /// Characterises the second defect in the deprecated verifier: it takes no
+    /// caller-supplied τ at all, so a proof certifies its own context. Asserted as
+    /// known-bad for the same reason as above.
+    #[test]
+    #[allow(deprecated)]
+    fn deprecated_verifier_is_self_certifying_known_defect() {
+        let matrix_a = [VectorK::zero(); MODULE_K];
+        let attr_commits = [Polynomial::zero(); MAX_ATTRIBUTES];
+
+        let proof = forge([0xAAu8; 32], 0b0000_0001);
+
+        assert!(
+            verify_saap_proof(&proof, &matrix_a, &attr_commits).is_ok(),
+            "the deprecated verifier has no τ parameter, so it cannot answer 'is this \
+             valid for MY context?' — it accepts whatever context the proof asserts \
+             about itself. The WIT world declares \
+             saap-verify(proof, tau) -> result<bool, identity-error>."
+        );
+    }
+
+    /// Fresh randomness changes the proof commitment; the same randomness reproduces
+    /// it. The commitment `w = A·r` moves with `r`, so it carries per-call entropy.
+    #[test]
+    fn saap_mask_is_fresh_per_rho_and_reproducible_given_rho() {
+        let sk = test_sk();
+        // A fixed array, not a Vec: this module is no_std and `alloc` is not
+        // imported here. The wasm job builds test targets with
+        // --no-default-features, so a Vec here fails only there.
+        let credential: [u8; 64] = core::array::from_fn(|i| i as u8);
+        let tau = b"verifier-session-tau-0001";
+
+        let p_a1 = saap_prove(&credential, 0b0000_0011, tau, &sk, &RHO_A);
+        let p_a2 = saap_prove(&credential, 0b0000_0011, tau, &sk, &RHO_A);
+        let p_b = saap_prove(&credential, 0b0000_0011, tau, &sk, &RHO_B);
+
+        let commitments_equal = |x: &SaapProof, y: &SaapProof| {
+            (0..MODULE_K).all(|i| {
+                (0..RING_N).all(|n| x.commitment_w.vec[i].coeffs[n] == y.commitment_w.vec[i].coeffs[n])
+            })
+        };
+
+        assert!(
+            commitments_equal(&p_a1, &p_a2),
+            "same rho must reproduce the same commitment"
+        );
+        assert!(
+            !commitments_equal(&p_a1, &p_b),
+            "different rho must change the commitment — r carries per-call entropy"
+        );
+    }
+
+    /// Proofs of one credential under one τ disclosing different attribute sets,
+    /// each with its own fresh `rho`, carry independent masks — their commitments
+    /// differ, so nothing links the two presentations through a shared mask.
+    #[test]
+    fn saap_distinct_rho_gives_distinct_masks_across_disclosures() {
+        let sk = test_sk();
+        // A fixed array, not a Vec: this module is no_std and `alloc` is not
+        // imported here. The wasm job builds test targets with
+        // --no-default-features, so a Vec here fails only there.
+        let credential: [u8; 64] = core::array::from_fn(|i| i as u8);
+        let tau = b"verifier-session-tau-0001";
+
+        let p1 = saap_prove(&credential, 0b0000_0001, tau, &sk, &RHO_A);
+        let p2 = saap_prove(&credential, 0b0000_0010, tau, &sk, &RHO_B);
+
+        let mut any_diff = false;
+        for i in 0..MODULE_K {
+            for n in 0..RING_N {
+                if p1.commitment_w.vec[i].coeffs[n] != p2.commitment_w.vec[i].coeffs[n] {
+                    any_diff = true;
+                }
+            }
+        }
+        assert!(
+            any_diff,
+            "commitments must differ across proofs — masks are independent per rho"
+        );
+    }
+
+}
+
+// ── P3-03: Debug/Display redaction, asserted at compile time ────────────────
+//
+// `VectorK` is the type `saap_prove`'s `secret_key` parameter uses to carry a
+// raw SAAP secret, and `Polynomial` is its component type, so neither may
+// implement `Debug`/`Display`: a derive on either would let anyone holding a
+// value format-print the raw secret with a single `{:?}`.
+//
+// `assert_not_impl_any!` expands to code that compiles only if the named type
+// does NOT implement the named traits, so re-adding a naive `#[derive(Debug)]`
+// breaks the build rather than a test run. These assertions used to live in
+// `tests/no_debug_leak.rs`; they moved here when the module became crate-private
+// and an integration test could no longer name these types.
+#[cfg(test)]
+mod no_debug_leak {
+    use static_assertions::assert_not_impl_any;
+
+    assert_not_impl_any!(super::Polynomial: core::fmt::Debug, core::fmt::Display);
+    assert_not_impl_any!(super::VectorK: core::fmt::Debug, core::fmt::Display);
+}
+
+// ── Prove/verify round-trip, moved from tests/plp_tests.rs ──────────────────
+//
+// Same reason as the blocks above: this module is crate-private since
+// P3-10 / 0X3-78, so these can no longer live in an integration test.
+#[cfg(test)]
+#[allow(deprecated)]
+mod roundtrip_tests {
+    use super::*;
+
+
+
+    /// Verify that the SAAP prover produces a proof that passes norm check.
+    #[test]
+    fn test_saap_prove_norm_bound() {
+        let mut sk = VectorK::zero();
+        for k in 0..MODULE_K {
+            for n in 0..RING_N {
+                sk.vec[k].coeffs[n] = (n % 5) as i32 - 2;
+            }
+        }
+        let credential = [0u8; 64];
+        let disclosure_mask = 0b00001111u64;
+        let tau = b"test_saap_context";
+
+        let proof = saap_prove(&credential, disclosure_mask, tau, &sk, &[0x7cu8; 32]);
+
+        // Norm bound check
+        let norm_result = verify_response_norm(&proof.z);
+        assert_eq!(norm_result, 0, "SAAP response norm should be within bound");
+    }
+
+    /// Verify that the SAAP verifier accepts a well-formed proof.
+    #[test]
+    fn test_saap_prove_verify_roundtrip() {
+        let mut sk = VectorK::zero();
+        for k in 0..MODULE_K {
+            for n in 0..RING_N {
+                sk.vec[k].coeffs[n] = (n % 5) as i32 - 2;
+            }
+        }
+        let credential = [0u8; 64];
+        let disclosure_mask = 0b00001111u64;
+        let tau = b"test_saap_context_verify";
+
+        let proof = saap_prove(&credential, disclosure_mask, tau, &sk, &[0x7cu8; 32]);
+
+        // Build dummy matrix and attribute commitments
+        let matrix_a = [VectorK::zero(); MODULE_K];
+        let attr_commits = [Polynomial::zero(); MAX_ATTRIBUTES];
+
+        let result = verify_saap_proof(&proof, &matrix_a, &attr_commits);
+        assert!(result.is_ok(), "SAAP verify should accept valid proof: {:?}", result);
+    }
+
+    /// Verify that the SAAP verifier rejects a proof with an out-of-bounds response norm.
+    #[test]
+    fn test_saap_verify_rejects_invalid_norm() {
+        let mut proof = SaapProof::zero();
+        // Set a coefficient way out of bounds
+        proof.z.vec[0].coeffs[0] = REJECTION_BOUND + 1000;
+
+        let matrix_a = [VectorK::zero(); MODULE_K];
+        let attr_commits = [Polynomial::zero(); MAX_ATTRIBUTES];
+
+        let result = verify_saap_proof(&proof, &matrix_a, &attr_commits);
+        assert_eq!(
+            result,
+            Err(SaapValidationError::NormBoundViolation),
+            "Should reject proof with out-of-bounds norm"
+        );
+    }
+
+
+}

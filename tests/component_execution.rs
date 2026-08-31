@@ -135,6 +135,239 @@ fn prove_and_verify_round_trip_inside_the_component() {
     assert!(verified, "an honestly generated proof failed to verify through the component");
 }
 
+/// `plp-verify` distinguishes "this proof is not valid" from "these bytes are
+/// not a proof" (P3-10 / 0X3-78).
+///
+/// Two different answers, and conflating them is how a caller ends up treating
+/// a parse failure as a verification result. `ok(false)` is a verdict;
+/// `err(serialization-error)` says no verdict was reached. Asserted separately
+/// so one cannot pass by accident of the other.
+#[test]
+fn plp_verify_separates_a_false_verdict_from_unparseable_input() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+
+    let secret = [0x11u8; 32];
+    let tau = b"verdict-vs-parse".to_vec();
+    let randomness = [0x77u8; 32];
+
+    let projection = identity
+        .call_plp_project_at_context(&mut store, &secret, &tau, &randomness)
+        .expect("host call")
+        .expect("projection");
+    let proof = identity
+        .call_plp_prove_identity(&mut store, &secret, &tau)
+        .expect("host call")
+        .expect("proof");
+
+    // Positive control: untampered, this proof verifies. Without it, a
+    // verifier that returned false for everything would pass the next
+    // assertion.
+    assert!(
+        identity
+            .call_plp_verify(&mut store, &projection, &proof)
+            .expect("host call")
+            .expect("verify returned err"),
+        "control: the honest proof should verify before it is tampered with"
+    );
+
+    // A well-formed proof that does not verify: ok(false), not err.
+    let mut tampered = proof.clone();
+    tampered.response_z[0] = tampered.response_z[0].wrapping_add(1);
+    match identity
+        .call_plp_verify(&mut store, &projection, &tampered)
+        .expect("host call")
+    {
+        Ok(false) => {}
+        Ok(true) => panic!("a tampered proof verified"),
+        Err(e) => panic!("a well-formed but invalid proof returned err({e:?}); it should be a verdict, ok(false)"),
+    }
+
+    // Bytes that are not a proof at all: err, not a verdict. The coefficient
+    // vector is the wrong length, so it cannot be parsed into a Poly.
+    let mut malformed = proof.clone();
+    malformed.response_z.truncate(3);
+    match identity
+        .call_plp_verify(&mut store, &projection, &malformed)
+        .expect("host call")
+    {
+        Err(aethel::core::types::IdentityError::SerializationError) => {}
+        Err(other) => panic!("expected serialization-error for unparseable input, got {other:?}"),
+        Ok(v) => panic!("unparseable input produced a verdict ok({v}) instead of err; a parse failure is not a verification result"),
+    }
+}
+
+/// Pins which `identity-error` variants the component can actually produce
+/// (P3-10 / 0X3-78).
+///
+/// Four are reachable and are exercised by tests in this file.  Three are
+/// reserved for the predicate relation and have no producer yet, which is a
+/// deliberate, documented choice rather than an oversight: adding a case to a
+/// WIT `variant` breaks callers that match exhaustively, so reserving them now
+/// means the predicate work does not force a second break.
+///
+/// The risk in reserving is that "documented as reserved" quietly becomes
+/// wrong in either direction — a producer lands and the docs still say
+/// reserved, or a reachable variant loses its last producer and nobody
+/// notices. This test is what makes that fail loudly.
+///
+/// **If you are here because this test failed:** you have changed which
+/// variants the component can return. Update the `RESERVED` markers in
+/// `wit/aethel-core.wit`, the module documentation in `src/identity_error.rs`,
+/// and the two lists below together, and add a test that reaches the newly
+/// reachable variant through the component.
+#[test]
+fn component_error_variant_reachability() {
+    // Reachable, each covered by a test in this file:
+    //   invalid-input-length      short_entropy_is_refused_by_the_component
+    //   serialization-error       plp_verify_separates_a_false_verdict_from_unparseable_input
+    //   threshold-not-met         htss_round_trips_and_reports_threshold_not_met
+    //   rejection-sampling-failed reachable, but needs all 16 iterations to
+    //                             reject, so it is exercised natively in
+    //                             src/plp.rs rather than forced from here
+    const RESERVED: [&str; 3] = [
+        "norm-bound-violation",
+        "challenge-mismatch",
+        "invalid-attribute-commitment",
+    ];
+    const REACHABLE: [&str; 4] = [
+        "invalid-input-length",
+        "serialization-error",
+        "rejection-sampling-failed",
+        "threshold-not-met",
+    ];
+
+    let wit = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("wit/aethel-core.wit"),
+    )
+    .expect("read wit source");
+
+    // The doc block for a case is the run of `///` lines directly above it, and
+    // nothing further. Walking upward and stopping at the first non-doc line is
+    // what keeps one case's marker from being read as its neighbour's.
+    fn doc_block_above<'a>(wit: &'a str, case: &str) -> &'a str {
+        let decl = wit
+            .find(&format!("
+    {case},"))
+            .unwrap_or_else(|| panic!("`{case}` is not declared as a bare variant case"));
+        let before = &wit[..decl];
+        let mut cut = before.len();
+        for line in before.lines().rev() {
+            if line.trim_start().starts_with("///") {
+                cut -= line.len() + 1;
+            } else {
+                break;
+            }
+        }
+        &before[cut..]
+    }
+
+    for case in RESERVED {
+        assert!(
+            doc_block_above(&wit, case).contains("RESERVED"),
+            "`{case}` is declared without a RESERVED marker in its own doc block.              Either it now has a producer - in which case document that, move it              from RESERVED to REACHABLE here, and add a test reaching it through              the component - or the marker was lost."
+        );
+    }
+
+    // The other half of the same claim, and the positive control for the
+    // detection above: a reachable case must NOT be marked reserved. Without
+    // this, a detector that saw "RESERVED" everywhere would satisfy the loop.
+    for case in REACHABLE {
+        assert!(
+            !doc_block_above(&wit, case).contains("RESERVED"),
+            "`{case}` is marked RESERVED but is reachable and tested. If it              genuinely lost its last producer, move it to RESERVED here and say              so in src/identity_error.rs; otherwise the marker is wrong."
+        );
+    }
+}
+
+/// The L1 boundary review's load-bearing claim, asserted rather than argued
+/// (P3-12 / 0X3-80).
+///
+/// HTSS shares are key-derived and they leave the component, which is only
+/// safe because the secret being split arrived from outside in the first
+/// place. That holds as long as a `master-identity`'s own secret has no route
+/// to `htss-split`: the resource must expose no accessor that yields raw key
+/// material for a caller to hand onward.
+///
+/// Checked against the vendored world rather than by attempting the call,
+/// because the point is that no such call can be written. If someone adds a
+/// `secret`/`export-key`/`seed` accessor to the resource, this fails and the
+/// boundary review has to be redone before it ships.
+#[test]
+fn a_master_identity_secret_has_no_route_to_htss_split() {
+    let wit = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("wit/aethel-core.wit"),
+    )
+    .expect("read wit source");
+
+    let start = wit.find("resource master-identity").expect("resource is declared");
+    let body = &wit[start..start + wit[start..].find("
+  }").expect("resource block ends")];
+
+    for forbidden in ["secret-key:", "secret:", "export-key:", "seed:", "private-key:"] {
+        assert!(
+            !body.contains(forbidden),
+            "master-identity now exposes `{forbidden}`, so raw key material can leave              the resource and be passed to htss-split. That invalidates the L1 boundary              review on Component::htss_split - redo it before shipping this."
+        );
+    }
+
+    // Positive control for the search itself: the accessor that *is* there
+    // must be found by the same method, otherwise this test would pass
+    // against a body it failed to read.
+    assert!(
+        body.contains("public-key:"),
+        "control: the resource body was not parsed correctly, so the absence          checks above prove nothing"
+    );
+}
+
+/// A proof produced at one context does not verify at another, through the
+/// component (P3-10 / 0X3-78).
+///
+/// The projection is what binds a proof to its context, so this is the
+/// property that makes tau single-use meaningful rather than decorative.
+#[test]
+fn a_proof_from_one_context_does_not_verify_at_another() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+
+    let secret = [0x11u8; 32];
+    let randomness = [0x77u8; 32];
+    let tau_a = b"context-alpha-0X3-78".to_vec();
+    let tau_b = b"context-beta-0X3-78".to_vec();
+
+    let proj_a = identity
+        .call_plp_project_at_context(&mut store, &secret, &tau_a, &randomness)
+        .expect("host call")
+        .expect("projection a");
+    let proj_b = identity
+        .call_plp_project_at_context(&mut store, &secret, &tau_b, &randomness)
+        .expect("host call")
+        .expect("projection b");
+
+    let proof_a = identity
+        .call_plp_prove_identity(&mut store, &secret, &tau_a)
+        .expect("host call")
+        .expect("proof a");
+
+    // Positive control: it does verify at its own context.
+    assert!(
+        identity
+            .call_plp_verify(&mut store, &proj_a, &proof_a)
+            .expect("host call")
+            .expect("verify returned err"),
+        "control: the proof should verify at the context it was produced for"
+    );
+
+    match identity
+        .call_plp_verify(&mut store, &proj_b, &proof_a)
+        .expect("host call")
+    {
+        Ok(false) => {}
+        Ok(true) => panic!("a proof produced at tau_a verified against tau_b's projection"),
+        Err(e) => panic!("cross-context verification returned err({e:?}); a well-formed proof at the wrong context is a verdict, ok(false)"),
+    }
+}
+
 /// The typed error channel actually carries errors. Every WASM export in the
 /// old wasm-bindgen surface returned a sentinel; the whole point of the
 /// component is that `result<T, identity-error>` reaches the caller.

@@ -3,13 +3,42 @@ package aethel:core@0.1.0;
 interface types {
   /// Closed set of failure reasons across all aethel:core operations.
   /// A flat variant — no operation's error nests another operation's error.
+  ///
+  /// Not every case has a producer today. Four do:
+  /// `invalid-input-length`, `serialization-error`, `threshold-not-met`, and
+  /// `rejection-sampling-failed`. The remaining three are reserved for the
+  /// predicate relation and are marked below; a caller written against this
+  /// world today will never observe them.
+  ///
+  /// They are declared rather than omitted because adding a case to a
+  /// `variant` is itself a breaking change for callers that match
+  /// exhaustively, and the predicate work is the next step on this surface.
+  /// Reserving them now means that work does not force a second break. The
+  /// split is pinned by `component_error_variant_reachability` in
+  /// `tests/component_execution.rs`, so it cannot quietly stop being true.
   variant identity-error {
+    /// A byte-slice input was too short or malformed for the operation.
     invalid-input-length,
+    /// A proof or projection could not be parsed into its declared shape.
     serialization-error,
+    /// Rejection sampling exhausted its fixed iteration ceiling, so no proof
+    /// exists to return. Emitting the last rejected candidate instead is how a
+    /// sigma protocol leaks its secret, so the operation refuses.
     rejection-sampling-failed,
+    /// RESERVED, no producer today. A response vector's infinity norm exceeded
+    /// the rejection bound. Verification reports a well-formed proof that does
+    /// not verify as `ok(false)`, never as an error, because that is a verdict
+    /// rather than a failure to reach one. Held for the predicate relation,
+    /// which must distinguish a range proof whose response is out of bounds
+    /// from one that simply does not hold.
     norm-bound-violation,
+    /// RESERVED, no producer today. A recomputed Fiat-Shamir challenge did not
+    /// match the proof's challenge. See `norm-bound-violation`.
     challenge-mismatch,
+    /// RESERVED, no producer today. A disclosed attribute did not match its
+    /// vector commitment. See `norm-bound-violation`.
     invalid-attribute-commitment,
+    /// Fewer than the threshold number of shares were supplied.
     threshold-not-met,
   }
 

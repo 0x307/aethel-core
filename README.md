@@ -30,8 +30,8 @@ integration tests + 1 doctest, all passing on default features):
 - `ct_verify` — a Valgrind/ctgrind constant-time verification harness (doctest-covered)
 - `identity_error` — the Rust-side mirror of the WIT world's `identity-error` variant, plus
   checked wrappers (`*_checked` functions) that return it instead of panicking
-- WASM bindings (`wasm` feature) exporting `plp_*`, `saap_*_wasm`, and `htss_*` — see
-  [WASM Exports](#wasm-exports) below
+- `component` — the WebAssembly Component Model adapter implementing the `aethel:core` WIT
+  world; the single WASM artifact every language binding embeds
 
 **Designed, not yet implemented / out of scope for this crate:**
 
@@ -39,10 +39,8 @@ integration tests + 1 doctest, all passing on default features):
   fuzzy extractor for deriving key material from noisy hardware SRAM. This is research code:
   its BCH encoder is a simplified placeholder (see the comments in `src/puf.rs`), it is not
   part of the default build, and it does not appear in the `aethel:core` WIT world. Enabling
-  `--features puf` compiles it and its two WASM exports; the default build does not.
-- **`sdk` module** — currently type/struct definitions only (`SdkConfig`, `StateNodePayload`,
-  `SaapProofTranscript`) plus a TypeScript client stub in `src/sdk/client.ts`. No client logic
-  is implemented against those types yet, and there are no tests exercising it.
+  `--features puf` compiles it; the default build does not, and no exported operation reaches
+  it.
 - **`enclave` feature** — gates a set of `extern "C"` FFI declarations (`src/puf.rs`'s `ffi`
   module) into a C enclave shim (`c/bch_decoder.c`, `c/ct_norm.c`, `c/ct_sampling.c`) that this
   repo does not build a real target for; `c/ct_sampling.c` calls C functions declared nowhere
@@ -76,7 +74,6 @@ integration tests + 1 doctest, all passing on default features):
 | `sampling` | Constant-time rejection sampling — 16-iteration fixed loop, CMOV, zeroization | Default |
 | `ct_verify` | Constant-time verification harness | Default |
 | `identity_error` | Mirror of the WIT `identity-error` variant, plus checked wrappers | Default |
-| `sdk` | Client SDK types (no client logic yet) | Default (types only) |
 | `puf` | SRAM PUF fuzzy extractor — BCH(1023,512,55) over GF(2^10), research code | Non-default (`puf` feature) |
 
 ## Feature Flags
@@ -84,9 +81,9 @@ integration tests + 1 doctest, all passing on default features):
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `std` | ✅ Yes | Standard library support, heap allocation. |
-| `wasm` | ❌ No | WebAssembly target with `wasm-bindgen` bindings. Required for `wasm32-unknown-unknown` builds. |
+| `component` | ❌ No | Builds the WebAssembly Component Model adapter implementing the `aethel:core` WIT world. The one WASM artifact; see [The WASM Component](#the-wasm-component-l1-boundary). |
 | `enclave` | ❌ No | Compiles the C enclave FFI shim (see [What runs today vs. what is designed](#what-runs-today-vs-what-is-designed)). Not buildable against a real enclave target in this repo. |
-| `puf` | ❌ No | Compiles the `puf` module (SRAM PUF fuzzy extraction) and its `puf_enroll` / `puf_reconstruct` WASM exports. Research only, out of scope for the `aethel:core` WIT world. |
+| `puf` | ❌ No | Compiles the `puf` module (SRAM PUF fuzzy extraction). Research only, and not reachable through the `aethel:core` WIT world. |
 
 ## WASM Exports
 
@@ -99,11 +96,9 @@ world aethel-core {
 }
 ```
 
-See [`dist/aethel_core.wit`](dist/aethel_core.wit) for the full WIT interface definition, and
-[`dist/README.md`](dist/README.md) for the currently-compiled `wasm-bindgen` ABI (which
-predates the typed WIT world — see that file for how the two relate). `puf_enroll` /
-`puf_reconstruct` are WASM exports only when built with `--features puf`; they are not part of
-the WIT world either way.
+See [`wit/aethel-core.wit`](wit/aethel-core.wit) for the full WIT interface definition. It is
+checked in and authoritative: bindings are generated from it, so the declared world and the
+compiled artifact cannot drift apart the way they did before P3-10.
 
 ## The WASM Component (L1 boundary)
 
@@ -164,21 +159,22 @@ artifact was not built from this source.
 | `plp-project-at-context` | Implemented |
 | `plp-prove-identity` | Implemented |
 | `plp-verify` | Implemented |
-| `saap-prove` | Implemented |
-| `saap-verify` | **Always returns `ok(false)`** — denies rather than pretends; see below |
+| `saap-verify-presentation` | Implemented |
+| `verify-signature` | Implemented |
 | `htss-split` | Implemented (fixed internal nonce, see `src/component.rs`) |
 | `htss-reconstruct` | Implemented |
 
-`saap-verify` is not wired to the corrected verifier because that needs a public key
-`t = A_τ·sk`, which this signature has no parameter to carry and which — with the current
-prover, having no error term — is an exact linear image of the secret and unsafe to publish.
-The specification anchors verification on the PLP projection `b_τ = A_τ·s + e_τ`, whose noise
-makes it publishable; building that is tracked as P3-11. A verifier that cannot verify soundly
-denies. **Do not read `ok(false)` from this operation as "this proof is invalid."**
+Selective disclosure runs through the `credential` resource (`issue` / `present`) and
+`saap-verify-presentation`, anchored on the PLP projection `b_τ = A_τ·s + e_τ`, whose noise is
+what makes it publishable. An earlier `attestation` interface exported a narrower
+`saap-prove` / `saap-verify` pair whose verify half could only ever deny — it needed a public
+key `t = A_τ·sk` that its signature could not carry and that, having no error term, was an
+exact linear image of the secret. That interface was removed in 0.1.5 rather than kept as a
+surface that could never succeed.
 
-The separate `wasm` feature still produces the older `wasm-bindgen` core module with a flat
-pointer/length ABI. It is not a component, its exports are untyped, and it is retained only
-for existing callers.
+This is the only WebAssembly artifact. The `wasm-bindgen` core module that used to sit
+alongside it was retired in 0.1.5: two surfaces contradicted the one-artifact rule, and the
+untyped one signalled failure with sentinel values instead of `result<T, identity-error>`.
 
 ## Building
 
@@ -194,12 +190,12 @@ cargo test
 
 ### WASM Build
 
-```bash
-cargo build --target wasm32-unknown-unknown --no-default-features --features wasm
-```
+The WebAssembly build is the component; see
+[The WASM Component (L1 boundary)](#the-wasm-component-l1-boundary) for the full recipe.
 
-Output: `target/wasm32-unknown-unknown/debug/aethel_core.wasm`. Rebuilding after this (`cargo
-build`) copies it into `dist/aethel_core.wasm` — see [Distribution Artifacts](#distribution-artifacts).
+```bash
+cargo build --release --target wasm32-unknown-unknown --no-default-features --features component
+```
 
 ### With the `puf` Feature
 
@@ -207,17 +203,6 @@ build`) copies it into `dist/aethel_core.wasm` — see [Distribution Artifacts](
 cargo build --features puf
 cargo test --features puf
 ```
-
-## Distribution Artifacts
-
-`build.rs` regenerates `dist/` on every build:
-
-| File | Description |
-|------|-------------|
-| `dist/aethel_core.wasm` | Best-effort copy of the most recently built WASM binary |
-| `dist/aethel_core.wit` | WIT interface definition |
-| `dist/aethel_core.abi.json` | ABI JSON descriptor — reflects the feature set of the build that generated it (e.g. only lists `puf_enroll`/`puf_reconstruct` when built with `--features puf`) |
-| `dist/README.md` | Integration documentation for the WASM artifacts |
 
 ## Integration Example (Rust)
 
@@ -296,10 +281,10 @@ Three jobs:
   confirms the isolation itself is real: a test that tries to make a network call is expected
   to fail under isolation, and the job fails loudly if it doesn't.
 - **WASM test (Node)** — runs the test suite under `wasm32-unknown-unknown` via `wasm-pack test
-  --node`, with `--no-default-features --features wasm` (the documented production WASM build,
-  not just any feature combination that happens to compile). This is what actually exercises
-  the zeroization test in WASM linear memory rather than only on native — memory that isn't
-  returned to an OS on drop the way native heap memory is.
+  --node`. This is what actually exercises the zeroization test in WASM linear memory rather
+  than only on native — memory that isn't returned to an OS on drop the way native heap memory
+  is. The job also greps for that test by name, because a run that silently skipped it would
+  otherwise still be green.
 
 ## Further Documentation
 

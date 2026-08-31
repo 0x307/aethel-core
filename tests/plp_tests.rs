@@ -21,10 +21,6 @@ use aethel_core::sampling::{
     PlpProof, Polynomial, VectorK,
     FIXED_ITERATION_CEILING, MODULE_K, REJECTION_BOUND, RING_N,
 };
-use aethel_core::saap::{
-    verify_saap_proof, saap_prove, SaapProof, SaapValidationError,
-    MAX_ATTRIBUTES, VectorK as SaapVectorK, Polynomial as SaapPoly,
-};
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -67,7 +63,8 @@ fn test_proof_generation_and_verification() {
     let identity = MasterIdentity::from_seed(&seed);
     let tau = b"block_42";
     let proj = identity.project_at_context(tau, &[0xa5u8; 32]);
-    let proof = Prover::prove_identity(&identity, &proj, &seed);
+    let proof = Prover::prove_identity(&identity, &proj, &seed)
+        .expect("honest proving must not exhaust rejection sampling");
 
     // Proof response norm should be within rejection bound
     let norm = proof.response_z.infinity_norm();
@@ -131,7 +128,8 @@ fn test_cross_block_replay_rejected() {
     let proj_2 = identity.project_at_context(b"context_1001", &[0xa5u8; 32]);
 
     // Generate proof for context 1
-    let proof_1 = Prover::prove_identity(&identity, &proj_1, &seed);
+    let proof_1 = Prover::prove_identity(&identity, &proj_1, &seed)
+        .expect("honest proving must not exhaust rejection sampling");
 
     // Proof for context 1 should be ACCEPTED for context 1
     assert!(
@@ -168,69 +166,6 @@ fn test_deterministic_context_matrix() {
     assert!(
         matrices_equal,
         "Context matrix A_τ must be deterministic for the same context"
-    );
-}
-
-// ── 4. SAAP Issue/Prove/Verify Round-Trip Tests ───────────────────────────────
-
-/// Verify that the SAAP prover produces a proof that passes norm check.
-#[test]
-fn test_saap_prove_norm_bound() {
-    let mut sk = SaapVectorK::zero();
-    for k in 0..aethel_core::saap::MODULE_K {
-        for n in 0..aethel_core::saap::RING_N {
-            sk.vec[k].coeffs[n] = (n % 5) as i32 - 2;
-        }
-    }
-    let credential = [0u8; 64];
-    let disclosure_mask = 0b00001111u64;
-    let tau = b"test_saap_context";
-
-    let proof = saap_prove(&credential, disclosure_mask, tau, &sk, &[0x7cu8; 32]);
-
-    // Norm bound check
-    let norm_result = aethel_core::saap::verify_response_norm(&proof.z);
-    assert_eq!(norm_result, 0, "SAAP response norm should be within bound");
-}
-
-/// Verify that the SAAP verifier accepts a well-formed proof.
-#[test]
-fn test_saap_prove_verify_roundtrip() {
-    let mut sk = SaapVectorK::zero();
-    for k in 0..aethel_core::saap::MODULE_K {
-        for n in 0..aethel_core::saap::RING_N {
-            sk.vec[k].coeffs[n] = (n % 5) as i32 - 2;
-        }
-    }
-    let credential = [0u8; 64];
-    let disclosure_mask = 0b00001111u64;
-    let tau = b"test_saap_context_verify";
-
-    let proof = saap_prove(&credential, disclosure_mask, tau, &sk, &[0x7cu8; 32]);
-
-    // Build dummy matrix and attribute commitments
-    let matrix_a = [SaapVectorK::zero(); aethel_core::saap::MODULE_K];
-    let attr_commits = [SaapPoly::zero(); MAX_ATTRIBUTES];
-
-    let result = verify_saap_proof(&proof, &matrix_a, &attr_commits);
-    assert!(result.is_ok(), "SAAP verify should accept valid proof: {:?}", result);
-}
-
-/// Verify that the SAAP verifier rejects a proof with an out-of-bounds response norm.
-#[test]
-fn test_saap_verify_rejects_invalid_norm() {
-    let mut proof = SaapProof::zero();
-    // Set a coefficient way out of bounds
-    proof.z.vec[0].coeffs[0] = aethel_core::saap::REJECTION_BOUND + 1000;
-
-    let matrix_a = [SaapVectorK::zero(); aethel_core::saap::MODULE_K];
-    let attr_commits = [SaapPoly::zero(); MAX_ATTRIBUTES];
-
-    let result = verify_saap_proof(&proof, &matrix_a, &attr_commits);
-    assert_eq!(
-        result,
-        Err(SaapValidationError::NormBoundViolation),
-        "Should reject proof with out-of-bounds norm"
     );
 }
 
@@ -417,7 +352,8 @@ fn test_proof_norm_bounds_satisfied() {
     for i in 0u8..5 {
         let tau = [i; 32];
         let proj = identity.project_at_context(&tau, &[0xa5u8; 32]);
-        let proof = Prover::prove_identity(&identity, &proj, &seed);
+        let proof = Prover::prove_identity(&identity, &proj, &seed)
+            .expect("honest proving must not exhaust rejection sampling");
 
         let norm = proof.response_z.infinity_norm();
         assert!(

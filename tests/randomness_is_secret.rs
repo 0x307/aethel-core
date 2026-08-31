@@ -8,7 +8,6 @@
 //! projection without storing it, and the scheme stays testable).
 
 use aethel_core::plp::MasterIdentity;
-use aethel_core::saap::{self, VectorK};
 
 // Distinct fixed rho per logical session. Real callers MUST sample these
 // freshly; the tests fix them only to be reproducible.
@@ -56,71 +55,5 @@ fn plp_projections_are_identity_bound() {
         a.public_b.coeffs(),
         b.public_b.coeffs(),
         "distinct identities must not share a projection"
-    );
-}
-
-// ── SAAP ─────────────────────────────────────────────────────────────────────
-
-fn test_sk() -> VectorK {
-    let mut sk = VectorK::zero();
-    for k in 0..saap::MODULE_K {
-        for n in 0..saap::RING_N {
-            sk.vec[k].coeffs[n] = ((k * 31 + n * 7) % 5) as i32 - 2;
-        }
-    }
-    sk
-}
-
-/// Fresh randomness changes the proof commitment; the same randomness reproduces
-/// it. The commitment `w = A·r` moves with `r`, so it carries per-call entropy.
-#[test]
-fn saap_mask_is_fresh_per_rho_and_reproducible_given_rho() {
-    let sk = test_sk();
-    let credential: Vec<u8> = (0u8..64).collect();
-    let tau = b"verifier-session-tau-0001";
-
-    let p_a1 = saap::saap_prove(&credential, 0b0000_0011, tau, &sk, &RHO_A);
-    let p_a2 = saap::saap_prove(&credential, 0b0000_0011, tau, &sk, &RHO_A);
-    let p_b = saap::saap_prove(&credential, 0b0000_0011, tau, &sk, &RHO_B);
-
-    let commitments_equal = |x: &saap::SaapProof, y: &saap::SaapProof| {
-        (0..saap::MODULE_K).all(|i| {
-            (0..saap::RING_N).all(|n| x.commitment_w.vec[i].coeffs[n] == y.commitment_w.vec[i].coeffs[n])
-        })
-    };
-
-    assert!(
-        commitments_equal(&p_a1, &p_a2),
-        "same rho must reproduce the same commitment"
-    );
-    assert!(
-        !commitments_equal(&p_a1, &p_b),
-        "different rho must change the commitment — r carries per-call entropy"
-    );
-}
-
-/// Proofs of one credential under one τ disclosing different attribute sets,
-/// each with its own fresh `rho`, carry independent masks — their commitments
-/// differ, so nothing links the two presentations through a shared mask.
-#[test]
-fn saap_distinct_rho_gives_distinct_masks_across_disclosures() {
-    let sk = test_sk();
-    let credential: Vec<u8> = (0u8..64).collect();
-    let tau = b"verifier-session-tau-0001";
-
-    let p1 = saap::saap_prove(&credential, 0b0000_0001, tau, &sk, &RHO_A);
-    let p2 = saap::saap_prove(&credential, 0b0000_0010, tau, &sk, &RHO_B);
-
-    let mut any_diff = false;
-    for i in 0..saap::MODULE_K {
-        for n in 0..saap::RING_N {
-            if p1.commitment_w.vec[i].coeffs[n] != p2.commitment_w.vec[i].coeffs[n] {
-                any_diff = true;
-            }
-        }
-    }
-    assert!(
-        any_diff,
-        "commitments must differ across proofs — masks are independent per rho"
     );
 }
