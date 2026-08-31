@@ -24,6 +24,18 @@ document for what counts as breaking inside `0.x`.
   `identity.saap-verify-presentation`, which is the construction P3-11
   (0X3-79) actually built.
 
+  **Deprecation-policy exception ([STABILITY.md](./STABILITY.md) §3):** this
+  removal skips the usual mark-deprecated-for-one-minor-version cycle.
+  `saap-verify` had exactly one behavior since it shipped — `ok(false)`,
+  unconditionally — so no caller could have been relying on a *correct*
+  result from it; a deprecation cycle would have kept a function whose only
+  output was a guaranteed denial callable for another release, with no
+  caller for whom that's useful and starting a fresh confusion clock for
+  anyone new who found it. `saap-prove` disappearing alongside it is the
+  same call: a prove half with no sound verify half isn't a usable API on
+  its own. Ordinary removals still get the full cycle; this one is an
+  explicit, reasoned exception, not a precedent for skipping it by default.
+
 ### Security
 
 - **Strengthened randomness handling in PLP and SAAP.** The projection error term
