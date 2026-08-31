@@ -99,11 +99,11 @@ world aethel-core {
 }
 ```
 
-See [`dist/aethel_core.wit`](dist/aethel_core.wit) for the full WIT interface definition, and
-[`dist/README.md`](dist/README.md) for the currently-compiled `wasm-bindgen` ABI (which
-predates the typed WIT world — see that file for how the two relate). `puf_enroll` /
-`puf_reconstruct` are WASM exports only when built with `--features puf`; they are not part of
-the WIT world either way.
+See [`wit/aethel-core.wit`](wit/aethel-core.wit) for the full WIT interface definition. The
+generated `dist/README.md` describes the currently-compiled `wasm-bindgen` ABI, which predates
+the typed WIT world; it is opt-in, see [Distribution Artifacts](#distribution-artifacts).
+`puf_enroll` / `puf_reconstruct` are WASM exports only when built with `--features puf`; they
+are not part of the WIT world either way.
 
 ## The WASM Component (L1 boundary)
 
@@ -198,8 +198,9 @@ cargo test
 cargo build --target wasm32-unknown-unknown --no-default-features --features wasm
 ```
 
-Output: `target/wasm32-unknown-unknown/debug/aethel_core.wasm`. Rebuilding after this (`cargo
-build`) copies it into `dist/aethel_core.wasm` — see [Distribution Artifacts](#distribution-artifacts).
+Output: `target/wasm32-unknown-unknown/debug/aethel_core.wasm`. Rebuilding after this with
+`AETHEL_GENERATE_DIST=1 cargo build` copies it into `dist/aethel_core.wasm` — see
+[Distribution Artifacts](#distribution-artifacts).
 
 ### With the `puf` Feature
 
@@ -210,7 +211,12 @@ cargo test --features puf
 
 ## Distribution Artifacts
 
-`build.rs` regenerates `dist/` on every build:
+`dist/` is a local development convenience, gitignored and excluded from the published crate.
+It is **opt-in**: set `AETHEL_GENERATE_DIST=1` to have `build.rs` regenerate it.
+
+```bash
+AETHEL_GENERATE_DIST=1 cargo build
+```
 
 | File | Description |
 |------|-------------|
@@ -218,6 +224,12 @@ cargo test --features puf
 | `dist/aethel_core.wit` | WIT interface definition |
 | `dist/aethel_core.abi.json` | ABI JSON descriptor — reflects the feature set of the build that generated it (e.g. only lists `puf_enroll`/`puf_reconstruct` when built with `--features puf`) |
 | `dist/README.md` | Integration documentation for the WASM artifacts |
+
+It is not generated on an ordinary build because a build script must not write outside
+`OUT_DIR`: doing so fails `cargo publish`'s verification step, and would otherwise write into
+another crate's extracted registry cache whenever `aethel-core` is used as a dependency. The
+authoritative WIT interface is the checked-in [`wit/aethel-core.wit`](wit/aethel-core.wit);
+`dist/aethel_core.wit` is a generated copy of it.
 
 ## Integration Example (Rust)
 

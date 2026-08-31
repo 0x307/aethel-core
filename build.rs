@@ -4,11 +4,12 @@
 // (enclave/SGX deployments). On WASM and MSVC targets, the pure Rust
 // implementations in sampling.rs and puf.rs are used instead.
 //
-// Additionally, this script generates the dist/ release distribution artifacts:
+// Additionally, when AETHEL_GENERATE_DIST is set, this script generates the
+// dist/ release distribution artifacts (opt-in, see generate_dist_artifacts):
 //   dist/aethel_core.wasm     — compiled WASM binary (best-effort copy from target/)
-//   dist/aethel_core.wit      — WIT interface definition (always generated)
-//   dist/aethel_core.abi.json — ABI JSON descriptor (always generated)
-//   dist/README.md          — usage documentation (always generated)
+//   dist/aethel_core.wit      — WIT interface definition
+//   dist/aethel_core.abi.json — ABI JSON descriptor
+//   dist/README.md            — usage documentation
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -108,7 +109,7 @@ fn generate_dist_artifacts() {
         eprintln!(
             "cargo:warning=dist: WASM binary not found at {} or {} — \
              run `cargo build --target wasm32-unknown-unknown --features wasm` first, \
-             then rebuild to populate dist/aethel_core.wasm",
+             then rebuild with AETHEL_GENERATE_DIST=1 to populate dist/aethel_core.wasm",
             release_wasm.display(),
             debug_wasm.display()
         );
@@ -225,7 +226,7 @@ cargo build \
   --release
 
 # Rebuild to trigger dist/ population (build.rs copies the artifact)
-cargo build
+AETHEL_GENERATE_DIST=1 cargo build
 ```
 
 Or use the release-wasm profile for size-optimized output:
