@@ -79,7 +79,12 @@ pub mod plp;
 pub mod htss;
 
 /// Selective Attribute Attestation Protocol (SAAP) verification engine.
-pub mod saap;
+// Superseded by [`credential`], and no longer part of the public surface: its
+// signatures take a raw u64 disclosure mask, which the WIT world is explicit
+// about never putting on the wire (P3-10 / 0X3-78). Retained crate-internally
+// so its characterisation tests keep pinning the old verifier's defects as
+// running code.
+pub(crate) mod saap;
 pub mod signing;
 
 pub mod credential;
