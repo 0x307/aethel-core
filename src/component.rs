@@ -140,10 +140,11 @@ impl IdentityGuest for Component {
         let identity = plp::MasterIdentity::from_seed(&seed);
         // The proof is independent of e_tau, so proving needs only A_tau and
         // tau — no fresh randomness. The proving seed is the secret itself;
-        // `prove_identity` runs a fixed 16-iteration rejection loop and always
-        // returns a proof, which verifies against whatever b_tau was published.
+        // `prove_identity` runs a fixed 16-iteration rejection loop and returns
+        // `rejection-sampling-failed` if every iteration is rejected, rather
+        // than a proof that failed the norm bound.
         let proj = plp::EphemeralProjection::for_proving(&tau);
-        let proof = plp::Prover::prove_identity(&identity, &proj, &seed);
+        let proof = plp::Prover::prove_identity(&identity, &proj, &seed)?;
 
         Ok(WitZkProof {
             commitment_w: proof.commitment_w.coeffs().to_vec(),
@@ -274,7 +275,7 @@ impl GuestMasterIdentity for OwnedIdentity {
         let seed = self.0.plp_seed();
         let identity = plp::MasterIdentity::from_seed(seed);
         let proj = plp::EphemeralProjection::for_proving(&tau);
-        let proof = plp::Prover::prove_identity(&identity, &proj, seed);
+        let proof = plp::Prover::prove_identity(&identity, &proj, seed)?;
 
         Ok(WitZkProof {
             commitment_w: proof.commitment_w.coeffs().to_vec(),

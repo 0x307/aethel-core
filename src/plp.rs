@@ -716,7 +716,12 @@ impl Prover {
     /// leaves this function.
     ///
     /// Uses a fixed 16-iteration loop with SHAKE-256 masking vectors.
-    /// Returns the first valid proof, or the last candidate if all 16 fail.
+    ///
+    /// Returns the first response that satisfies the norm bound, or
+    /// `Err(RejectionSamplingFailed)` if all 16 iterations are rejected. There
+    /// is deliberately **no fallback proof**: see the note above the error
+    /// return for why emitting the last candidate was a key-recovery hazard
+    /// rather than a convenience.
     ///
     /// Every intermediate that touches `secret_key` (`cs`) or blinds it (`y`)
     /// is explicitly zeroized once consumed — `Poly` is `Copy` and so cannot
@@ -730,7 +735,7 @@ impl Prover {
         identity: &MasterIdentity,
         proj: &EphemeralProjection,
         seed: &[u8; 32],
-    ) -> ZkIdentityProof {
+    ) -> Result<ZkIdentityProof, IdentityError> {
         for iter in 0u8..16 {
             // 1. Sample masking polynomial y ~ uniform [-γ₁, γ₁]
             let mut hasher = Shake256::default();
@@ -769,11 +774,11 @@ impl Prover {
 
             // 5. Rejection sampling: ||z||∞ < γ₁ - β
             if z.infinity_norm() < REJECTION_THRESHOLD as i64 {
-                return ZkIdentityProof {
+                return Ok(ZkIdentityProof {
                     commitment_w: w,
                     challenge_c,
                     response_z: z,
-                };
+                });
             }
 
             // Rejected: w/challenge_c/z must not survive to the next
@@ -783,26 +788,25 @@ impl Prover {
             z.zeroize();
         }
 
-        // Fallback: return last candidate (should not happen in practice)
-        // This path is taken only if all 16 iterations are rejected
-        let mut hasher = Shake256::default();
-        hasher.update(b"AETHEL_MASK_V1");
-        hasher.update(seed);
-        hasher.update(&[0u8]);
-        let mut xof = hasher.finalize_xof();
-        let mut y = sample_mask_from_xof(&mut xof);
-        let w = proj.matrix_a.mul_schoolbook(&y);
-        let ctx_u64 = u64::from_le_bytes(proj.tau[..8].try_into().unwrap_or([0u8; 8]));
-        let challenge_c = hash_to_challenge(&w, ctx_u64);
-        let mut cs = challenge_c.mul_schoolbook(&identity.secret_key);
-        let z = y.add(&cs);
-        y.zeroize();
-        cs.zeroize();
-        ZkIdentityProof {
-            commitment_w: w,
-            challenge_c,
-            response_z: z,
-        }
+        // No fallback, for two independent reasons — this path used to rebuild
+        // a proof here and return it (P3-15 / 0X3-85).
+        //
+        // 1. It derived the mask under `AETHEL_MASK_V1` from `(seed, 0)` with τ
+        //    absent, reintroducing in the fallback exactly the nonce reuse the
+        //    main path above binds τ to prevent. Two all-rejected proofs of one
+        //    identity at different contexts shared `y` while their challenges
+        //    differed, and `z₁ − z₂ = (c₁ − c₂)·s` recovers the master secret.
+        // 2. It returned that `z` without re-checking the norm bound, so it
+        //    emitted precisely the response rejection sampling exists to
+        //    withhold. A response outside the bound is how a sigma protocol
+        //    leaks its secret, which is the whole reason the bound is there.
+        //
+        // Neither was reachable often — all 16 iterations rejecting is
+        // negligible for honest parameters — but the derivation is deterministic
+        // in τ, so an attacker can search τ for a context that lands here rather
+        // than waiting for chance. `credential::prove` already returns this same
+        // error with the same reasoning; this brings PLP in line with it.
+        Err(IdentityError::RejectionSamplingFailed)
     }
 }
 
@@ -1048,8 +1052,16 @@ mod tests {
             let proj1 = identity.project_at_context(b"context-one", &[0x11u8; 32]);
             let proj2 = identity.project_at_context(b"context-two", &[0x22u8; 32]);
 
-            let p1 = Prover::prove_identity(&identity, &proj1, &seed);
-            let p2 = Prover::prove_identity(&identity, &proj2, &seed);
+            // All-rejected now yields an error rather than a leaky fallback
+            // proof (P3-15 / 0X3-85). Skip those: there is no transcript to
+            // attack, which is the point of the change.
+            let (p1, p2) = match (
+                Prover::prove_identity(&identity, &proj1, &seed),
+                Prover::prove_identity(&identity, &proj2, &seed),
+            ) {
+                (Ok(a), Ok(b)) => (a, b),
+                _ => continue,
+            };
 
             if p1.challenge_c.coeffs == p2.challenge_c.coeffs {
                 continue;
@@ -1095,6 +1107,124 @@ mod tests {
         );
     }
 
+    // ── P3-15 / 0X3-85: the all-rejected fallback ────────────────────────────
+    //
+    // The sweep above covers the main proving path. These cover the path it
+    // could not reach: what `prove_identity` did when all 16 iterations were
+    // rejected. It rebuilt a proof under `AETHEL_MASK_V1` from `(seed, 0)` with
+    // tau absent — reintroducing in the fallback exactly the nonce reuse the
+    // main path binds tau to prevent — and returned the result without
+    // re-checking the norm bound.
+    //
+    // That path is now `Err(RejectionSamplingFailed)`, so it cannot be entered
+    // to be tested directly. What is testable is the invariant it violated and
+    // the derivation it used, and both are asserted below.
+
+    /// Every proof `prove_identity` returns satisfies the norm bound.
+    ///
+    /// This is the invariant the fallback broke. A response outside
+    /// `||z||∞ < γ₁ − β` is precisely the value rejection sampling exists to
+    /// withhold: emitting one is how a sigma protocol leaks its secret. The old
+    /// fallback returned exactly such a response, and it verified nowhere —
+    /// `Verifier::verify` rejects on the same bound — so it was a proof that
+    /// could only leak, never authenticate.
+    #[test]
+    fn every_returned_proof_satisfies_the_norm_bound_and_verifies() {
+        let mut checked = 0usize;
+
+        for k in 0u8..48 {
+            let seed = [k.wrapping_mul(11).wrapping_add(3); 32];
+            let identity = MasterIdentity::from_seed(&seed);
+
+            for ctx in 0u8..4 {
+                let tau = [ctx.wrapping_mul(37).wrapping_add(5); 32];
+                let proj = identity.project_at_context(&tau, &[0x5au8; 32]);
+
+                let proof = match Prover::prove_identity(&identity, &proj, &seed) {
+                    Ok(p) => p,
+                    // Refusing to prove is the correct outcome, not a failure.
+                    Err(IdentityError::RejectionSamplingFailed) => continue,
+                    Err(e) => panic!("unexpected error from prove_identity: {e:?}"),
+                };
+
+                assert!(
+                    proof.response_z.infinity_norm() < REJECTION_THRESHOLD as i64,
+                    "prove_identity returned a response outside the norm bound \
+                     (norm {}, bound {}). That is the value rejection sampling \
+                     exists to withhold, and returning it is how the secret leaks.",
+                    proof.response_z.infinity_norm(),
+                    REJECTION_THRESHOLD
+                );
+                assert!(
+                    Verifier::verify(&proj, &proof),
+                    "prove_identity returned a proof that does not verify against \
+                     the projection it was produced for"
+                );
+                checked += 1;
+            }
+        }
+
+        assert!(
+            checked > 0,
+            "no proof was produced at all, so this test asserted nothing"
+        );
+    }
+
+    /// Positive control for the assertion above.
+    ///
+    /// The norm check is only worth something if it can distinguish a
+    /// bound-satisfying response from a bound-violating one. Build a response
+    /// that deliberately exceeds the bound and confirm both the norm assertion
+    /// and the verifier reject it — otherwise the test above would pass against
+    /// a verifier that accepted anything.
+    #[test]
+    fn the_norm_bound_check_detects_a_violating_response() {
+        let seed = test_seed();
+        let identity = MasterIdentity::from_seed(&seed);
+        let proj = identity.project_at_context(b"norm-control", &test_rho());
+
+        let mut proof = Prover::prove_identity(&identity, &proj, &seed)
+            .expect("honest proving must not exhaust rejection sampling");
+
+        // Push one coefficient just past the rejection threshold, which is what
+        // an all-rejected candidate looks like.
+        proof.response_z.coeffs[0] = REJECTION_THRESHOLD as u32 + 1;
+
+        assert!(
+            proof.response_z.infinity_norm() >= REJECTION_THRESHOLD as i64,
+            "control: the constructed response should violate the norm bound"
+        );
+        assert!(
+            !Verifier::verify(&proj, &proof),
+            "control: the verifier accepted a response outside the norm bound, \
+             so the check the test above relies on proves nothing"
+        );
+    }
+
+    /// The tau-unbound mask derivation is gone from this module.
+    ///
+    /// `AETHEL_MASK_V1` was the fallback's domain separator, derived from
+    /// `(seed, iter)` with tau never entering. The main path moved to
+    /// `AETHEL_MASK_V2` and binds tau; the fallback kept using V1, so the fix
+    /// was incomplete while that string remained. Asserted against the source
+    /// because the path itself no longer exists to be called: if someone
+    /// reintroduces a tau-independent derivation under the old separator, this
+    /// fails rather than silently restoring the leak.
+    #[test]
+    fn no_tau_independent_mask_derivation_remains() {
+        let source = include_str!("plp.rs");
+
+        // The constant is allowed to appear in prose explaining why it went.
+        // What must not come back is an actual hasher fed with it.
+        assert!(
+            !source.contains("update(b\"AETHEL_MASK_V1\")"),
+            "a mask derivation under AETHEL_MASK_V1 is back in plp.rs. That \
+             separator's derivation does not bind tau, which is what let two \
+             proofs at different contexts share a mask and leak the secret via \
+             z1 - z2 = (c1 - c2)*s. See P3-15 / 0X3-85 before restoring it."
+        );
+    }
+
     #[test]
     fn test_poly_add_sub() {
         let mut a = Poly::zero();
@@ -1134,7 +1264,8 @@ mod tests {
         let identity = MasterIdentity::from_seed(&seed);
         let tau = b"block_1000_context";
         let proj = identity.project_at_context(tau, &test_rho());
-        let proof = Prover::prove_identity(&identity, &proj, &seed);
+        let proof = Prover::prove_identity(&identity, &proj, &seed)
+            .expect("honest proving must not exhaust rejection sampling");
         assert!(Verifier::verify(&proj, &proof), "proof should verify");
     }
 
@@ -1147,7 +1278,8 @@ mod tests {
         // Projections should differ
         assert_ne!(proj1.public_b.coeffs, proj2.public_b.coeffs);
         // Proof for context 1 should not verify against context 2
-        let proof1 = Prover::prove_identity(&identity, &proj1, &seed);
+        let proof1 = Prover::prove_identity(&identity, &proj1, &seed)
+            .expect("honest proving must not exhaust rejection sampling");
         assert!(!Verifier::verify(&proj2, &proof1), "cross-context replay should fail");
     }
 
@@ -1195,7 +1327,8 @@ mod tests {
 
         let tau = b"tamper_test_context_777";
         let proj = identity.project_at_context(tau, &test_rho());
-        let mut proof = Prover::prove_identity(&identity, &proj, &seed);
+        let mut proof = Prover::prove_identity(&identity, &proj, &seed)
+            .expect("honest proving must not exhaust rejection sampling");
 
         // Tamper with the first coefficient of the response vector
         proof.response_z.coeffs[0] = proof.response_z.coeffs[0].wrapping_add(1);

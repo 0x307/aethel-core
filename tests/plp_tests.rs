@@ -67,7 +67,8 @@ fn test_proof_generation_and_verification() {
     let identity = MasterIdentity::from_seed(&seed);
     let tau = b"block_42";
     let proj = identity.project_at_context(tau, &[0xa5u8; 32]);
-    let proof = Prover::prove_identity(&identity, &proj, &seed);
+    let proof = Prover::prove_identity(&identity, &proj, &seed)
+        .expect("honest proving must not exhaust rejection sampling");
 
     // Proof response norm should be within rejection bound
     let norm = proof.response_z.infinity_norm();
@@ -131,7 +132,8 @@ fn test_cross_block_replay_rejected() {
     let proj_2 = identity.project_at_context(b"context_1001", &[0xa5u8; 32]);
 
     // Generate proof for context 1
-    let proof_1 = Prover::prove_identity(&identity, &proj_1, &seed);
+    let proof_1 = Prover::prove_identity(&identity, &proj_1, &seed)
+        .expect("honest proving must not exhaust rejection sampling");
 
     // Proof for context 1 should be ACCEPTED for context 1
     assert!(
@@ -417,7 +419,8 @@ fn test_proof_norm_bounds_satisfied() {
     for i in 0u8..5 {
         let tau = [i; 32];
         let proj = identity.project_at_context(&tau, &[0xa5u8; 32]);
-        let proof = Prover::prove_identity(&identity, &proj, &seed);
+        let proof = Prover::prove_identity(&identity, &proj, &seed)
+            .expect("honest proving must not exhaust rejection sampling");
 
         let norm = proof.response_z.infinity_norm();
         assert!(

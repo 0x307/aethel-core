@@ -220,7 +220,15 @@ pub fn plp_prove_identity(seed: &[u8], tau: &[u8]) -> Vec<u8> {
     // randomness and no real b_tau. It verifies against whatever b_tau the
     // caller published via plp_project_at_context.
     let proj = plp::EphemeralProjection::for_proving(tau);
-    let proof = Prover::prove_identity(&identity, &proj, &seed_arr);
+    // All 16 iterations rejected: no proof exists to return. This surface has
+    // no error channel, so it uses the same empty-vec sentinel as the short-seed
+    // case above. Emitting the last rejected candidate instead — what this did
+    // before P3-15 / 0X3-85 — would hand back a response that failed the norm
+    // bound, which is how a sigma protocol leaks its secret.
+    let proof = match Prover::prove_identity(&identity, &proj, &seed_arr) {
+        Ok(p) => p,
+        Err(_) => return alloc::vec![],
+    };
     // Serialize: commitment_w(256*4) + challenge_c(256*4) + response_z(256*4)
     let mut out = alloc::vec![0u8; 256 * 4 * 3];
     for (i, &c) in proof.commitment_w.coeffs.iter().enumerate() {
