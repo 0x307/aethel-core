@@ -197,6 +197,89 @@ fn plp_verify_separates_a_false_verdict_from_unparseable_input() {
     }
 }
 
+/// Pins which `identity-error` variants the component can actually produce
+/// (P3-10 / 0X3-78).
+///
+/// Four are reachable and are exercised by tests in this file.  Three are
+/// reserved for the predicate relation and have no producer yet, which is a
+/// deliberate, documented choice rather than an oversight: adding a case to a
+/// WIT `variant` breaks callers that match exhaustively, so reserving them now
+/// means the predicate work does not force a second break.
+///
+/// The risk in reserving is that "documented as reserved" quietly becomes
+/// wrong in either direction — a producer lands and the docs still say
+/// reserved, or a reachable variant loses its last producer and nobody
+/// notices. This test is what makes that fail loudly.
+///
+/// **If you are here because this test failed:** you have changed which
+/// variants the component can return. Update the `RESERVED` markers in
+/// `wit/aethel-core.wit`, the module documentation in `src/identity_error.rs`,
+/// and the two lists below together, and add a test that reaches the newly
+/// reachable variant through the component.
+#[test]
+fn component_error_variant_reachability() {
+    // Reachable, each covered by a test in this file:
+    //   invalid-input-length      short_entropy_is_refused_by_the_component
+    //   serialization-error       plp_verify_separates_a_false_verdict_from_unparseable_input
+    //   threshold-not-met         htss_round_trips_and_reports_threshold_not_met
+    //   rejection-sampling-failed reachable, but needs all 16 iterations to
+    //                             reject, so it is exercised natively in
+    //                             src/plp.rs rather than forced from here
+    const RESERVED: [&str; 3] = [
+        "norm-bound-violation",
+        "challenge-mismatch",
+        "invalid-attribute-commitment",
+    ];
+    const REACHABLE: [&str; 4] = [
+        "invalid-input-length",
+        "serialization-error",
+        "rejection-sampling-failed",
+        "threshold-not-met",
+    ];
+
+    let wit = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("wit/aethel-core.wit"),
+    )
+    .expect("read wit source");
+
+    // The doc block for a case is the run of `///` lines directly above it, and
+    // nothing further. Walking upward and stopping at the first non-doc line is
+    // what keeps one case's marker from being read as its neighbour's.
+    fn doc_block_above<'a>(wit: &'a str, case: &str) -> &'a str {
+        let decl = wit
+            .find(&format!("
+    {case},"))
+            .unwrap_or_else(|| panic!("`{case}` is not declared as a bare variant case"));
+        let before = &wit[..decl];
+        let mut cut = before.len();
+        for line in before.lines().rev() {
+            if line.trim_start().starts_with("///") {
+                cut -= line.len() + 1;
+            } else {
+                break;
+            }
+        }
+        &before[cut..]
+    }
+
+    for case in RESERVED {
+        assert!(
+            doc_block_above(&wit, case).contains("RESERVED"),
+            "`{case}` is declared without a RESERVED marker in its own doc block.              Either it now has a producer - in which case document that, move it              from RESERVED to REACHABLE here, and add a test reaching it through              the component - or the marker was lost."
+        );
+    }
+
+    // The other half of the same claim, and the positive control for the
+    // detection above: a reachable case must NOT be marked reserved. Without
+    // this, a detector that saw "RESERVED" everywhere would satisfy the loop.
+    for case in REACHABLE {
+        assert!(
+            !doc_block_above(&wit, case).contains("RESERVED"),
+            "`{case}` is marked RESERVED but is reachable and tested. If it              genuinely lost its last producer, move it to RESERVED here and say              so in src/identity_error.rs; otherwise the marker is wrong."
+        );
+    }
+}
+
 /// The L1 boundary review's load-bearing claim, asserted rather than argued
 /// (P3-12 / 0X3-80).
 ///
