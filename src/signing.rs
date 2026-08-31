@@ -32,7 +32,7 @@
 
 use alloc::vec::Vec;
 
-use chacha20poly1305::aead::Aead;
+use chacha20poly1305::aead::{Aead, Payload};
 use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
 use pqc_sig::{MlDsa65Keypair, SigPublicKey, Signature};
 use rand_core::{CryptoRng, RngCore};
@@ -204,10 +204,50 @@ pub fn verify(
 /// Present so a future format change is a clean rejection rather than a
 /// misparse. A blob whose version this build does not know is refused, not
 /// guessed at.
-const SEAL_VERSION: u8 = 1;
+const SEAL_VERSION: u8 = 2;
 
 /// Domain-separated key derivation for sealing.
 const SEAL_KDF_DOMAIN: &[u8] = b"AETHEL_IDENTITY_SEAL_KDF_V1";
+
+/// What kind of object a sealed blob holds.
+///
+/// # Why this exists
+///
+/// Version 1 sealed the entropy with a nonce derived from `(key, plaintext)`
+/// and no associated data. That is sound against nonce reuse: the nonce is a
+/// function of the plaintext, so two different plaintexts under one key get
+/// different nonces, and XChaCha20-Poly1305 never sees a repeated (key, nonce)
+/// pair with differing messages.
+///
+/// What it is *not* sound against is type confusion. Nothing in a v1 blob said
+/// what kind of object it held. The moment a second kind of thing is sealed
+/// under the same key (a rotation record is the motivating case), a blob of one
+/// kind is indistinguishable from a blob of another at the API boundary, and
+/// `import_sealed` would decrypt a rotation record and hand it to
+/// `Identity::generate` as though it were entropy.
+///
+/// The tag is mixed into both the nonce derivation and the AEAD associated
+/// data, and is **not** written to the blob. A reader always supplies the tag
+/// it expects, so a blob of the wrong kind fails its authentication tag rather
+/// than being parsed as something it is not. That costs zero bytes on the wire
+/// and makes the failure a decryption failure, which is already the one failure
+/// mode callers must handle.
+///
+/// This is made now, while there is exactly one sealed type and the migration
+/// cost is a regenerated fixture. After a second type exists it is not cheap.
+const SEAL_TYPE_IDENTITY: &[u8] = b"identity";
+
+/// Associated data for a sealed blob: the version byte and the type tag.
+///
+/// The version byte is checked before decryption, but checking is not binding.
+/// Putting it here means a blob whose version was edited fails its tag rather
+/// than merely failing a comparison, so the two cannot disagree.
+fn seal_aad(version: u8, type_tag: &[u8]) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(1 + type_tag.len());
+    aad.push(version);
+    aad.extend_from_slice(type_tag);
+    aad
+}
 
 /// Minimum sealing key length.
 ///
@@ -256,10 +296,14 @@ impl Identity {
             return Err(IdentityError::InvalidInputLength);
         }
 
-        let (cipher_key, nonce) = derive_seal_material(key, &self.entropy);
+        let (cipher_key, nonce) = derive_seal_material(key, SEAL_TYPE_IDENTITY, &self.entropy);
         let cipher = XChaCha20Poly1305::new((&cipher_key).into());
+        let aad = seal_aad(SEAL_VERSION, SEAL_TYPE_IDENTITY);
         let ciphertext = cipher
-            .encrypt(( &nonce).into(), self.entropy.as_slice())
+            .encrypt(
+                (&nonce).into(),
+                Payload { msg: self.entropy.as_slice(), aad: &aad },
+            )
             .map_err(|_| IdentityError::SerializationError)?;
 
         let mut out = Vec::with_capacity(SEAL_OVERHEAD + ciphertext.len());
@@ -293,8 +337,9 @@ impl Identity {
         // the blob and is authenticated by the tag.
         let cipher_key = derive_seal_key(key);
         let cipher = XChaCha20Poly1305::new((&cipher_key).into());
+        let aad = seal_aad(SEAL_VERSION, SEAL_TYPE_IDENTITY);
         let mut entropy = cipher
-            .decrypt((&nonce).into(), ciphertext)
+            .decrypt((&nonce).into(), Payload { msg: ciphertext, aad: &aad })
             .map_err(|_| IdentityError::SerializationError)?;
 
         let identity = Identity::generate(&entropy);
@@ -316,13 +361,24 @@ fn derive_seal_key(key: &[u8]) -> [u8; 32] {
     out
 }
 
-/// Derive the sealing key and a nonce bound to both the key and the plaintext.
-fn derive_seal_material(key: &[u8], entropy: &[u8]) -> ([u8; 32], [u8; SEAL_NONCE_BYTES]) {
+/// Derive the sealing key and a nonce bound to the key, the object type, and
+/// the plaintext.
+///
+/// The type tag participates so that two different kinds of object with
+/// identical plaintext bytes, sealed under one key, still get different nonces.
+/// See [`SEAL_TYPE_IDENTITY`].
+fn derive_seal_material(
+    key: &[u8],
+    type_tag: &[u8],
+    entropy: &[u8],
+) -> ([u8; 32], [u8; SEAL_NONCE_BYTES]) {
     let cipher_key = derive_seal_key(key);
 
     let mut hasher = Shake256::default();
     hasher.update(SEAL_KDF_DOMAIN);
     hasher.update(b"nonce");
+    hasher.update(&(type_tag.len() as u32).to_le_bytes());
+    hasher.update(type_tag);
     hasher.update(&(key.len() as u32).to_le_bytes());
     hasher.update(key);
     hasher.update(&(entropy.len() as u32).to_le_bytes());
@@ -604,6 +660,89 @@ mod seal_tests {
         assert!(
             !sealed.windows(32).any(|w| w == identity.plp_seed().as_slice()),
             "the PLP seed appears verbatim in the sealed blob"
+        );
+    }
+
+    // ── Sealed blob type tagging (Q6) ────────────────────────────────────────
+
+    /// Seal `plaintext` as some other kind of object under the same key.
+    ///
+    /// This is what a rotation record would look like on the wire: same key,
+    /// same format, different type tag. It exists so the confusion the tag
+    /// prevents can actually be attempted, rather than asserted about.
+    fn seal_as_other_type(key: &[u8], plaintext: &[u8]) -> Vec<u8> {
+        const OTHER: &[u8] = b"rotation-record";
+
+        let (cipher_key, nonce) = derive_seal_material(key, OTHER, plaintext);
+        let cipher = XChaCha20Poly1305::new((&cipher_key).into());
+        let aad = seal_aad(SEAL_VERSION, OTHER);
+        let ciphertext = cipher
+            .encrypt((&nonce).into(), Payload { msg: plaintext, aad: &aad })
+            .expect("seal");
+
+        let mut out = vec![SEAL_VERSION];
+        out.extend_from_slice(&nonce);
+        out.extend_from_slice(&ciphertext);
+        out
+    }
+
+    /// A blob of another type must not open as an identity.
+    ///
+    /// This is the whole point of the type tag. Before it, a second kind of
+    /// object sealed under the same key was byte-indistinguishable from an
+    /// identity at the API boundary, and `import_sealed` would have decrypted
+    /// it and fed it to `Identity::generate` as entropy.
+    #[test]
+    fn a_blob_of_another_type_does_not_open_as_an_identity() {
+        let blob = seal_as_other_type(KEY, ENTROPY);
+
+        assert!(
+            matches!(
+                Identity::import_sealed(&blob, KEY),
+                Err(IdentityError::SerializationError)
+            ),
+            "a blob sealed as a different object type opened as an identity"
+        );
+    }
+
+    /// Positive control for the test above.
+    ///
+    /// `seal_as_other_type` differs from `export_sealed` only in its type tag.
+    /// If the helper were simply producing malformed blobs, the rejection above
+    /// would prove nothing about tagging. The same construction with the
+    /// identity tag must open.
+    #[test]
+    fn the_type_tag_check_is_what_rejects_the_other_type() {
+        let (cipher_key, nonce) = derive_seal_material(KEY, SEAL_TYPE_IDENTITY, ENTROPY);
+        let cipher = XChaCha20Poly1305::new((&cipher_key).into());
+        let aad = seal_aad(SEAL_VERSION, SEAL_TYPE_IDENTITY);
+        let ciphertext = cipher
+            .encrypt((&nonce).into(), Payload { msg: ENTROPY, aad: &aad })
+            .expect("seal");
+
+        let mut blob = vec![SEAL_VERSION];
+        blob.extend_from_slice(&nonce);
+        blob.extend_from_slice(&ciphertext);
+
+        assert!(
+            Identity::import_sealed(&blob, KEY).is_ok(),
+            "the same construction with the identity tag failed to open, so the              rejection of the other type is not attributable to the tag"
+        );
+    }
+
+    /// Two object types with identical plaintext get different nonces.
+    ///
+    /// The nonce is a function of (key, type, plaintext). Without the type in
+    /// that derivation, sealing the same bytes as two different kinds of object
+    /// under one key would reuse a nonce across differing associated data.
+    #[test]
+    fn the_type_tag_separates_nonces_for_identical_plaintext() {
+        let (_, identity_nonce) = derive_seal_material(KEY, SEAL_TYPE_IDENTITY, ENTROPY);
+        let (_, other_nonce) = derive_seal_material(KEY, b"rotation-record", ENTROPY);
+
+        assert_ne!(
+            identity_nonce, other_nonce,
+            "the same plaintext under the same key produced one nonce for two types"
         );
     }
 
