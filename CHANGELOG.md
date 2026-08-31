@@ -9,6 +9,18 @@ document for what counts as breaking inside `0.x`.
 
 ## [0.1.5] - 2026-08-31
 
+### Fixed
+
+- **`build.rs` no longer writes into the source tree by default.** The `dist/`
+  convenience copy (WIT, ABI JSON, README, a best-effort WASM binary) was
+  regenerated on every build, unconditionally, which is exactly what a build
+  script must not do — it broke `cargo publish`'s verification (which
+  rejects a source tree build.rs modified) and would have polluted another
+  crate's extracted registry cache had anyone depended on this one. Set
+  `AETHEL_GENERATE_DIST=1` to opt back into regenerating `dist/` locally;
+  ordinary builds, `cargo publish`, and downstream dependents no longer touch
+  it.
+
 ### Removed (breaking)
 
 - **The `attestation` WIT interface** (`saap-prove`, `saap-verify`) is gone from
