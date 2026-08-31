@@ -11,7 +11,6 @@ categories = ["cryptography", "no-std"]
 readme = "README.md"
 rust-version = "1.85"
 build = "build.rs"
-exclude = ["dist/*"]
 
 # ── Library configuration ─────────────────────────────────────────────────────
 
@@ -29,8 +28,8 @@ sha3 = { version = "0.10", default-features = false }
 # Zeroize for secure memory cleanup of secret key material.
 # `alloc` is enabled unconditionally (not just via the `std` feature) so
 # Vec<_>-backed intermediates (e.g. htss.rs's Shamir polynomial coefficients)
-# can be zeroized in every build configuration, including `--features wasm`
-# with `std` off.
+# can be zeroized in every build configuration, including the `no_std`
+# component build.
 zeroize = { version = "1.7", default-features = false, features = ["zeroize_derive", "alloc"] }
 
 # Serialization for proof transcript encoding/decoding
@@ -52,8 +51,6 @@ chacha20poly1305 = { version = "0.10", default-features = false, features = ["al
 # in a component with no ambient randomness.
 rand_core = { version = "0.6", default-features = false }
 
-# WASM bindings (optional, enabled by `wasm` feature)
-wasm-bindgen = { version = "0.2", optional = true }
 wit-bindgen = { version = "0.60", default-features = false, features = ["realloc", "macros", "bitflags"], optional = true }
 
 # ── Dev dependencies ──────────────────────────────────────────────────────────
@@ -73,6 +70,13 @@ static_assertions = "1.1"
 # Runs #[wasm_bindgen_test] tests under wasm32-unknown-unknown (via `wasm-pack
 # test --node`), so the zeroization test actually executes in WASM linear
 # memory, not just on native.
+#
+# This is a TEST HARNESS, not the retired wasm-bindgen export surface (P3-13 /
+# 0X3-81). The test it runs calls the native Rust API and asserts the secret is
+# wiped; what running it under wasm32 proves is that the wasm codegen path does
+# not elide that write. Losing that to retire the exports would have been a bad
+# trade, so the harness stays and only the exports went. It is a dev-dependency,
+# so it is absent from a component build's dependency graph.
 wasm-bindgen-test = "0.3"
 
 # `rand`'s transitive `getrandom` dependency refuses to compile for
@@ -88,7 +92,14 @@ wasm-bindgen-test = "0.3"
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 wasmtime = { version = "48.0.1", default-features = false, features = ["runtime", "component-model", "cranelift"] }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+# A DEV-dependency, deliberately. It exists only so `rand` (itself a
+# dev-dependency) compiles under wasm32 for `wasm-pack test`; this crate uses no
+# OS randomness at all, everything is SHAKE-256-derived over caller-supplied
+# entropy. Declaring it as a normal dependency, which it was until P3-13 /
+# 0X3-81, put getrandom and its js-sys / wasm-bindgen tail into the shipped
+# component's dependency graph, so retiring the wasm-bindgen exports would not
+# by itself have got wasm-bindgen out of a component build.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 getrandom = { version = "0.2", features = ["js"] }
 
 # ── Build dependencies ────────────────────────────────────────────────────────
@@ -100,7 +111,8 @@ cc = "1.0"
 
 [features]
 
-# Default: std enabled for native builds; WASM uses --no-default-features --features wasm
+# Default: std enabled for native builds; the component uses
+# --no-default-features --features component
 default = ["std"]
 
 # std: Enable standard library support (heap allocation, I/O)
@@ -111,18 +123,14 @@ std = [
     "chacha20poly1305/std",
 ]
 
-# wasm: WebAssembly target with wasm-bindgen bindings
-wasm = [
-    "wasm-bindgen",
-]
-
 # enclave: Enables constant-time enclave execution paths and volatile zeroization
 # Activates the fixed-iteration rejection sampling loop and CMOV selection
 enclave = []
 
 # component: Builds the WebAssembly Component Model adapter in `src/component.rs`,
-# implementing the `aethel:core` WIT world with its declared types. Separate from
-# `wasm` (which is the wasm-bindgen cdylib and a *core module*, not a component).
+# implementing the `aethel:core` WIT world with its declared types. This is the
+# only WebAssembly surface; the wasm-bindgen cdylib it used to sit alongside was
+# retired in P3-13 / 0X3-81.
 # Non-default: it pulls wit-bindgen, and the default build of a crypto crate
 # should not carry a binding generator it does not use.
 component = [

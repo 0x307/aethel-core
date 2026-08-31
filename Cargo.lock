@@ -35,7 +35,6 @@ dependencies = [
  "serde",
  "sha3 0.10.9",
  "static_assertions",
- "wasm-bindgen",
  "wasm-bindgen-test",
  "wasmtime",
  "wit-bindgen",
