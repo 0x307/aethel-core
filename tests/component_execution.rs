@@ -135,6 +135,116 @@ fn prove_and_verify_round_trip_inside_the_component() {
     assert!(verified, "an honestly generated proof failed to verify through the component");
 }
 
+/// `plp-verify` distinguishes "this proof is not valid" from "these bytes are
+/// not a proof" (P3-10 / 0X3-78).
+///
+/// Two different answers, and conflating them is how a caller ends up treating
+/// a parse failure as a verification result. `ok(false)` is a verdict;
+/// `err(serialization-error)` says no verdict was reached. Asserted separately
+/// so one cannot pass by accident of the other.
+#[test]
+fn plp_verify_separates_a_false_verdict_from_unparseable_input() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+
+    let secret = [0x11u8; 32];
+    let tau = b"verdict-vs-parse".to_vec();
+    let randomness = [0x77u8; 32];
+
+    let projection = identity
+        .call_plp_project_at_context(&mut store, &secret, &tau, &randomness)
+        .expect("host call")
+        .expect("projection");
+    let proof = identity
+        .call_plp_prove_identity(&mut store, &secret, &tau)
+        .expect("host call")
+        .expect("proof");
+
+    // Positive control: untampered, this proof verifies. Without it, a
+    // verifier that returned false for everything would pass the next
+    // assertion.
+    assert!(
+        identity
+            .call_plp_verify(&mut store, &projection, &proof)
+            .expect("host call")
+            .expect("verify returned err"),
+        "control: the honest proof should verify before it is tampered with"
+    );
+
+    // A well-formed proof that does not verify: ok(false), not err.
+    let mut tampered = proof.clone();
+    tampered.response_z[0] = tampered.response_z[0].wrapping_add(1);
+    match identity
+        .call_plp_verify(&mut store, &projection, &tampered)
+        .expect("host call")
+    {
+        Ok(false) => {}
+        Ok(true) => panic!("a tampered proof verified"),
+        Err(e) => panic!("a well-formed but invalid proof returned err({e:?}); it should be a verdict, ok(false)"),
+    }
+
+    // Bytes that are not a proof at all: err, not a verdict. The coefficient
+    // vector is the wrong length, so it cannot be parsed into a Poly.
+    let mut malformed = proof.clone();
+    malformed.response_z.truncate(3);
+    match identity
+        .call_plp_verify(&mut store, &projection, &malformed)
+        .expect("host call")
+    {
+        Err(aethel::core::types::IdentityError::SerializationError) => {}
+        Err(other) => panic!("expected serialization-error for unparseable input, got {other:?}"),
+        Ok(v) => panic!("unparseable input produced a verdict ok({v}) instead of err; a parse failure is not a verification result"),
+    }
+}
+
+/// A proof produced at one context does not verify at another, through the
+/// component (P3-10 / 0X3-78).
+///
+/// The projection is what binds a proof to its context, so this is the
+/// property that makes tau single-use meaningful rather than decorative.
+#[test]
+fn a_proof_from_one_context_does_not_verify_at_another() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+
+    let secret = [0x11u8; 32];
+    let randomness = [0x77u8; 32];
+    let tau_a = b"context-alpha-0X3-78".to_vec();
+    let tau_b = b"context-beta-0X3-78".to_vec();
+
+    let proj_a = identity
+        .call_plp_project_at_context(&mut store, &secret, &tau_a, &randomness)
+        .expect("host call")
+        .expect("projection a");
+    let proj_b = identity
+        .call_plp_project_at_context(&mut store, &secret, &tau_b, &randomness)
+        .expect("host call")
+        .expect("projection b");
+
+    let proof_a = identity
+        .call_plp_prove_identity(&mut store, &secret, &tau_a)
+        .expect("host call")
+        .expect("proof a");
+
+    // Positive control: it does verify at its own context.
+    assert!(
+        identity
+            .call_plp_verify(&mut store, &proj_a, &proof_a)
+            .expect("host call")
+            .expect("verify returned err"),
+        "control: the proof should verify at the context it was produced for"
+    );
+
+    match identity
+        .call_plp_verify(&mut store, &proj_b, &proof_a)
+        .expect("host call")
+    {
+        Ok(false) => {}
+        Ok(true) => panic!("a proof produced at tau_a verified against tau_b's projection"),
+        Err(e) => panic!("cross-context verification returned err({e:?}); a well-formed proof at the wrong context is a verdict, ok(false)"),
+    }
+}
+
 /// The typed error channel actually carries errors. Every WASM export in the
 /// old wasm-bindgen surface returned a sentinel; the whole point of the
 /// component is that `result<T, identity-error>` reaches the caller.
