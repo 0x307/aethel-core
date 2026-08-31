@@ -21,8 +21,6 @@
 //!   extractor: GF(2^10) arithmetic, Berlekamp-Massey, Chien Search, and pure Rust WASM
 //!   implementation. Not part of the default build or the `aethel:core` WIT world.
 //! - **[`ct_verify`]** — Valgrind/ctgrind constant-time verification harness.
-//! - **[`sdk`]** — Client SDK: TypeScript state node ingestion, HNSW vector mapping,
-//!   and SAAP proof verification.
 //!
 //! ## Security Properties
 //!
@@ -97,7 +95,6 @@ pub mod puf;
 pub mod ct_verify;
 
 /// Client SDK module.
-pub mod sdk;
 
 /// Rust-side mirror of the `aethel:core` WIT world's `identity-error` variant.
 pub mod identity_error;

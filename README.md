@@ -40,9 +40,6 @@ integration tests + 1 doctest, all passing on default features):
   its BCH encoder is a simplified placeholder (see the comments in `src/puf.rs`), it is not
   part of the default build, and it does not appear in the `aethel:core` WIT world. Enabling
   `--features puf` compiles it and its two WASM exports; the default build does not.
-- **`sdk` module** — currently type/struct definitions only (`SdkConfig`, `StateNodePayload`,
-  `SaapProofTranscript`) plus a TypeScript client stub in `src/sdk/client.ts`. No client logic
-  is implemented against those types yet, and there are no tests exercising it.
 - **`enclave` feature** — gates a set of `extern "C"` FFI declarations (`src/puf.rs`'s `ffi`
   module) into a C enclave shim (`c/bch_decoder.c`, `c/ct_norm.c`, `c/ct_sampling.c`) that this
   repo does not build a real target for; `c/ct_sampling.c` calls C functions declared nowhere
@@ -76,7 +73,6 @@ integration tests + 1 doctest, all passing on default features):
 | `sampling` | Constant-time rejection sampling — 16-iteration fixed loop, CMOV, zeroization | Default |
 | `ct_verify` | Constant-time verification harness | Default |
 | `identity_error` | Mirror of the WIT `identity-error` variant, plus checked wrappers | Default |
-| `sdk` | Client SDK types (no client logic yet) | Default (types only) |
 | `puf` | SRAM PUF fuzzy extractor — BCH(1023,512,55) over GF(2^10), research code | Non-default (`puf` feature) |
 
 ## Feature Flags
