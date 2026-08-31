@@ -319,6 +319,36 @@ fn zk_proof_from_wit(p: &WitZkProof) -> Result<plp::ZkIdentityProof, WitError> {
 // ── secret-sharing ────────────────────────────────────────────────────────────
 
 impl SecretSharingGuest for Component {
+    /// # L1 boundary review (P3-12 / 0X3-80)
+    ///
+    /// Shares are key-derived, and they leave the component, so it is worth
+    /// stating exactly why that does not widen the boundary the charter draws.
+    ///
+    /// **The secret arrives from outside.** `htss-split` takes
+    /// `secret: list<u8>` as a parameter, so whoever calls it already holds
+    /// that material; splitting it emits nothing the caller did not have. This
+    /// is the opposite posture from `master-identity`, which derives its secret
+    /// inside the component and exposes no accessor for it.
+    ///
+    /// **A `master-identity`'s secret cannot reach here.** That resource has no
+    /// method returning its ML-DSA key or PLP seed — `public-key` is the only
+    /// key material it emits, and `export-sealed` emits ciphertext under a
+    /// caller-supplied key. So there is no route, inside the component or
+    /// outside it, from a generated identity to `htss-split`. Splitting an
+    /// identity for recovery would need a method on the resource itself, which
+    /// is P5-08's design problem, not something this surface silently allows.
+    ///
+    /// **What a share reveals.** Each share is an index and a value; the value
+    /// is one evaluation per 16-bit limb. Its length therefore discloses the
+    /// secret's length rounded up to a limb, and nothing else. Below the
+    /// threshold the shares are information-theoretically independent of the
+    /// secret, which `a_public_nonce_does_not_compromise_a_single_share` and
+    /// `losing_one_share_does_not_lose_the_secret` assert rather than assume.
+    ///
+    /// **Shares are secret material to the caller.** Three of five reconstruct,
+    /// so a caller holding three has the secret. That is the scheme working as
+    /// designed, not a leak, but it does mean shares must be distributed to
+    /// distinct custodians. The WIT cannot enforce that and does not pretend to.
     fn htss_split(secret: Vec<u8>) -> Result<Vec<WitShare>, WitError> {
         let shares = htss::SecretSharer::split_key_material(&secret, COMPONENT_SPLIT_NONCE)?;
         Ok(shares

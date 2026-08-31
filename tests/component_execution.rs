@@ -197,6 +197,46 @@ fn plp_verify_separates_a_false_verdict_from_unparseable_input() {
     }
 }
 
+/// The L1 boundary review's load-bearing claim, asserted rather than argued
+/// (P3-12 / 0X3-80).
+///
+/// HTSS shares are key-derived and they leave the component, which is only
+/// safe because the secret being split arrived from outside in the first
+/// place. That holds as long as a `master-identity`'s own secret has no route
+/// to `htss-split`: the resource must expose no accessor that yields raw key
+/// material for a caller to hand onward.
+///
+/// Checked against the vendored world rather than by attempting the call,
+/// because the point is that no such call can be written. If someone adds a
+/// `secret`/`export-key`/`seed` accessor to the resource, this fails and the
+/// boundary review has to be redone before it ships.
+#[test]
+fn a_master_identity_secret_has_no_route_to_htss_split() {
+    let wit = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("wit/aethel-core.wit"),
+    )
+    .expect("read wit source");
+
+    let start = wit.find("resource master-identity").expect("resource is declared");
+    let body = &wit[start..start + wit[start..].find("
+  }").expect("resource block ends")];
+
+    for forbidden in ["secret-key:", "secret:", "export-key:", "seed:", "private-key:"] {
+        assert!(
+            !body.contains(forbidden),
+            "master-identity now exposes `{forbidden}`, so raw key material can leave              the resource and be passed to htss-split. That invalidates the L1 boundary              review on Component::htss_split - redo it before shipping this."
+        );
+    }
+
+    // Positive control for the search itself: the accessor that *is* there
+    // must be found by the same method, otherwise this test would pass
+    // against a body it failed to read.
+    assert!(
+        body.contains("public-key:"),
+        "control: the resource body was not parsed correctly, so the absence          checks above prove nothing"
+    );
+}
+
 /// A proof produced at one context does not verify at another, through the
 /// component (P3-10 / 0X3-78).
 ///
