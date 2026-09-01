@@ -50,6 +50,25 @@ document for what counts as breaking inside `0.x`.
   coefficients, which is what makes shares below the threshold reveal nothing.
   Predicting a coefficient still requires the secret or a SHAKE-256 preimage.
 
+- **`saap::saap_prove` no longer emits a rejected response on exhaustion.** Its
+  all-rejected fallback re-derived the masking vector at nonce 0, which is
+  iteration 0's nonce. The derivation is a pure function of
+  `(rho, context_tag, nonce)`, so the commitment, challenge and response all
+  recomputed to iteration 0's values: the function returned, verbatim and without
+  re-checking the bound, the response iteration 0 had already rejected. An
+  out-of-bound response verifies nowhere, so it could only leak, never
+  authenticate.
+
+  It now returns `Err(RejectionSamplingFailed)`, matching
+  `plp::Prover::prove_identity` and `credential::prove`, which already refuse for
+  this reason. "Negligible probability" was the wrong frame: 16 consecutive
+  rejections is negligible by chance, but the derivation is deterministic in
+  `(rho, context_tag)`, so a context that lands there can be searched for.
+
+  Not reachable through the WIT world: `saap_prove` has had no exported caller
+  since the `attestation` interface was removed in 0.1.5. Native Rust callers of
+  `saap::saap_prove` must handle the `Result`.
+
 ### Added (breaking)
 
 - **`identity-error` gains an eighth case, `invalid-share-set`,** appended last.
@@ -79,6 +98,9 @@ document for what counts as breaking inside `0.x`.
   statement about what the operation is for. 64 KiB is deliberately generous
   against real key material, so the ceiling is a contract rather than a limit a
   legitimate caller meets.
+
+- **`saap::saap_prove` returns `Result<SaapProof, IdentityError>`** rather than
+  `SaapProof`. See above.
 
 - **`SecretSharer::reconstruct_secret` returns `Result<u64, IdentityError>`**
   rather than `u64`, so a non-interpolable point set is reported rather than

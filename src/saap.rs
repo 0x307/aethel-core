@@ -33,6 +33,8 @@ use core::sync::atomic::{compiler_fence, Ordering};
 use sha3::{Shake256, digest::{Update, ExtendableOutput, XofReader}};
 use zeroize::Zeroize;
 
+use crate::identity_error::IdentityError;
+
 pub const RING_N: usize = 256;
 pub const MODULE_K: usize = 4;
 pub const MAX_ATTRIBUTES: usize = 8;
@@ -415,13 +417,19 @@ fn sample_saap_masking_vector(rho: &[u8], tau: &[u8; 32], nonce: u8) -> VectorK 
 /// none of this happens automatically.
 ///
 /// Implements the BDLOP commitment scheme with Fiat-Shamir ZK proof.
+///
+/// Returns the first response that satisfies the norm bound, or
+/// `Err(RejectionSamplingFailed)` if all 16 iterations are rejected. There is
+/// deliberately **no fallback proof**: see the note above the error return for
+/// why emitting a candidate there was a soundness hazard rather than a
+/// convenience.
 pub fn saap_prove(
     credential: &[u8],
     disclosure_mask: AttributeMask,
     tau: &[u8],
     secret_key: &VectorK,
     rho: &[u8],
-) -> SaapProof {
+) -> Result<SaapProof, IdentityError> {
     // 1. Parse credential into attribute vector (up to MAX_ATTRIBUTES u64 values)
     let mut attributes = AttributePayload::zero();
     for i in 0..MAX_ATTRIBUTES {
@@ -481,7 +489,7 @@ pub fn saap_prove(
             let mut xof = hasher.finalize_xof();
             xof.read(&mut commitment_hash);
 
-            return SaapProof {
+            return Ok(SaapProof {
                 context_tag,
                 disclosure_mask,
                 attributes,
@@ -489,7 +497,7 @@ pub fn saap_prove(
                 z,
                 commitment_hash,
                 commitment_w: w,
-            };
+            });
         }
 
         // Rejected: w/c/z must not survive to the next iteration unwiped.
@@ -498,43 +506,29 @@ pub fn saap_prove(
         z.zeroize();
     }
 
-    // Fallback: return last candidate (all 16 iterations rejected — negligible probability)
-    let mut r = sample_saap_masking_vector(rho, &context_tag, 0);
-    let mut w = VectorK::zero();
-    for i in 0..MODULE_K {
-        for j in 0..MODULE_K {
-            let prod = poly_mul_negacyclic(&matrix_a[i].vec[j], &r.vec[j]);
-            w.vec[i] = poly_add(&w.vec[i], &prod);
-        }
-    }
-    let c = recompute_challenge(&w, &context_tag, disclosure_mask, &attributes);
-    let mut z = VectorK::zero();
-    for k in 0..MODULE_K {
-        let mut cs_k = poly_mul_negacyclic(&c, &secret_key.vec[k]);
-        z.vec[k] = poly_add(&r.vec[k], &cs_k);
-        cs_k.zeroize();
-    }
-    r.zeroize();
-    let mut commitment_hash = [0u8; 32];
-    let mut hasher = Shake256::default();
-    hasher.update(b"AETHEL_SAAP_COMMIT_V1");
-    for poly in w.vec.iter() {
-        for coeff in poly.coeffs.iter() {
-            hasher.update(&coeff.to_le_bytes());
-        }
-    }
-    let mut xof = hasher.finalize_xof();
-    xof.read(&mut commitment_hash);
-
-    SaapProof {
-        context_tag,
-        disclosure_mask,
-        attributes,
-        challenge: c,
-        z,
-        commitment_hash,
-        commitment_w: w,
-    }
+    // No fallback, and specifically not the one that used to be here.
+    //
+    // This path rebuilt a candidate by re-deriving the mask as
+    // `sample_saap_masking_vector(rho, &context_tag, 0)` — nonce zero, which is
+    // iteration 0's mask. The derivation is a pure function of
+    // `(rho, context_tag, nonce)`, so `w`, `c` and `z` all recomputed to
+    // iteration 0's values and the function returned, verbatim, the response
+    // iteration 0 had already rejected. It did not compute a fresh candidate; it
+    // re-emitted a rejected one, without re-checking the bound.
+    //
+    // That is precisely the value rejection sampling exists to withhold. A
+    // response outside the bound verifies nowhere, so it could only leak, never
+    // authenticate: an out-of-bound `z` is how a sigma protocol gives up its
+    // secret, which is the whole reason the bound is there.
+    //
+    // "Negligible probability" is the wrong frame for how reachable this was.
+    // All 16 iterations rejecting is negligible by chance, but the derivation is
+    // deterministic in `(rho, context_tag)`, so an attacker searches for a
+    // context that lands here rather than waiting for one. `plp::Prover::
+    // prove_identity` (0X3-85) and `credential::prove` already refuse for this
+    // reason; this brings the third implementation of the same primitive in
+    // line with them.
+    Err(IdentityError::RejectionSamplingFailed)
 }
 
 // ── SAAP Verifier ─────────────────────────────────────────────────────────────
@@ -761,7 +755,8 @@ mod tests {
         let disclosure_mask = 0b00001111u64;
         let tau = b"test_context_tau_saap";
 
-        let proof = saap_prove(&credential, disclosure_mask, tau, &sk, &[0x7cu8; 32]);
+        let proof = saap_prove(&credential, disclosure_mask, tau, &sk, &[0x7cu8; 32])
+            .expect("honest parameters: 16 rejections is negligible");
 
         // Verify norm bound
         assert_eq!(verify_response_norm(&proof.z), 0, "response norm should be within bound");
@@ -941,7 +936,8 @@ mod soundness_tests {
     #[test]
     fn honest_proof_satisfies_the_verification_equation() {
         let sk = test_secret_key();
-        let proof = saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk, &[0x7cu8; 32]);
+        let proof = saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk, &[0x7cu8; 32])
+            .expect("honest parameters: 16 rejections is negligible");
         let public_key = saap_public_key(TAU, &sk);
 
         assert_eq!(
@@ -966,7 +962,8 @@ mod soundness_tests {
     #[test]
     fn corrected_verifier_rejects_a_proof_from_another_context() {
         let sk = test_secret_key();
-        let proof = saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk, &[0x7cu8; 32]);
+        let proof = saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk, &[0x7cu8; 32])
+            .expect("honest parameters: 16 rejections is negligible");
 
         // Same identity, different context: derive the public key for the context
         // the verifier actually cares about.
@@ -982,7 +979,8 @@ mod soundness_tests {
     #[test]
     fn corrected_verifier_rejects_a_tampered_response() {
         let sk = test_secret_key();
-        let mut proof = saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk, &[0x7cu8; 32]);
+        let mut proof = saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk, &[0x7cu8; 32])
+            .expect("honest parameters: 16 rejections is negligible");
         let public_key = saap_public_key(TAU, &sk);
 
         proof.z.vec[0].coeffs[0] = proof.z.vec[0].coeffs[0].wrapping_add(1);
@@ -1009,7 +1007,8 @@ mod soundness_tests {
     #[test]
     fn disclosed_attributes_are_bound_into_the_challenge() {
         let sk = test_secret_key();
-        let mut proof = saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk, &[0x7cu8; 32]);
+        let mut proof = saap_prove(CREDENTIAL, 0b0000_0011, TAU, &sk, &[0x7cu8; 32])
+            .expect("honest parameters: 16 rejections is negligible");
         let public_key = saap_public_key(TAU, &sk);
 
         // Sanity: the untampered proof verifies.
@@ -1073,9 +1072,12 @@ mod soundness_tests {
         let credential: [u8; 64] = core::array::from_fn(|i| i as u8);
         let tau = b"verifier-session-tau-0001";
 
-        let p_a1 = saap_prove(&credential, 0b0000_0011, tau, &sk, &RHO_A);
-        let p_a2 = saap_prove(&credential, 0b0000_0011, tau, &sk, &RHO_A);
-        let p_b = saap_prove(&credential, 0b0000_0011, tau, &sk, &RHO_B);
+        let p_a1 = saap_prove(&credential, 0b0000_0011, tau, &sk, &RHO_A)
+            .expect("honest parameters: 16 rejections is negligible");
+        let p_a2 = saap_prove(&credential, 0b0000_0011, tau, &sk, &RHO_A)
+            .expect("honest parameters: 16 rejections is negligible");
+        let p_b = saap_prove(&credential, 0b0000_0011, tau, &sk, &RHO_B)
+            .expect("honest parameters: 16 rejections is negligible");
 
         let commitments_equal = |x: &SaapProof, y: &SaapProof| {
             (0..MODULE_K).all(|i| {
@@ -1105,8 +1107,10 @@ mod soundness_tests {
         let credential: [u8; 64] = core::array::from_fn(|i| i as u8);
         let tau = b"verifier-session-tau-0001";
 
-        let p1 = saap_prove(&credential, 0b0000_0001, tau, &sk, &RHO_A);
-        let p2 = saap_prove(&credential, 0b0000_0010, tau, &sk, &RHO_B);
+        let p1 = saap_prove(&credential, 0b0000_0001, tau, &sk, &RHO_A)
+            .expect("honest parameters: 16 rejections is negligible");
+        let p2 = saap_prove(&credential, 0b0000_0010, tau, &sk, &RHO_B)
+            .expect("honest parameters: 16 rejections is negligible");
 
         let mut any_diff = false;
         for i in 0..MODULE_K {
@@ -1168,7 +1172,8 @@ mod roundtrip_tests {
         let disclosure_mask = 0b00001111u64;
         let tau = b"test_saap_context";
 
-        let proof = saap_prove(&credential, disclosure_mask, tau, &sk, &[0x7cu8; 32]);
+        let proof = saap_prove(&credential, disclosure_mask, tau, &sk, &[0x7cu8; 32])
+            .expect("honest parameters: 16 rejections is negligible");
 
         // Norm bound check
         let norm_result = verify_response_norm(&proof.z);
@@ -1188,7 +1193,8 @@ mod roundtrip_tests {
         let disclosure_mask = 0b00001111u64;
         let tau = b"test_saap_context_verify";
 
-        let proof = saap_prove(&credential, disclosure_mask, tau, &sk, &[0x7cu8; 32]);
+        let proof = saap_prove(&credential, disclosure_mask, tau, &sk, &[0x7cu8; 32])
+            .expect("honest parameters: 16 rejections is negligible");
 
         // Build dummy matrix and attribute commitments
         let matrix_a = [VectorK::zero(); MODULE_K];
@@ -1302,5 +1308,137 @@ mod roundtrip_tests {
                 );
             }
         }
+    }
+}
+
+
+// ── Rejection sampling has no fallback (AETHEL-F-01, saap half) ──────────────
+//
+// The `plp.rs` half of this finding was fixed in 0b24bc0. This module is the
+// evidence for the same property here.
+#[cfg(test)]
+mod rejection_sampling_tests {
+    use super::*;
+
+    fn test_sk() -> VectorK {
+        let mut sk = VectorK::zero();
+        for k in 0..MODULE_K {
+            for n in 0..RING_N {
+                sk.vec[k].coeffs[n] = ((n + k) % 5) as i32 - 2;
+            }
+        }
+        sk
+    }
+
+    /// Every proof `saap_prove` returns satisfies the norm bound.
+    ///
+    /// This is the invariant the fallback broke. It re-derived iteration 0's
+    /// mask, recomputed iteration 0's `w`, `c` and `z`, and returned that `z`
+    /// without re-checking the bound — so the one response the function was
+    /// certain to be out of bounds was the one it emitted on exhaustion.
+    ///
+    /// Swept across contexts and randomness rather than asserted once, because
+    /// a single honest call proves only that the happy path works.
+    #[test]
+    fn every_returned_proof_satisfies_the_norm_bound() {
+        let sk = test_sk();
+        let credential = [0x3Cu8; 64];
+
+        for tau_idx in 0u8..12 {
+            for rho_idx in 0u8..4 {
+                let tau = [b'c', b't', b'x', tau_idx];
+                let rho = [0x40u8 ^ rho_idx; 32];
+
+                let proof = saap_prove(&credential, 0b0000_0011, &tau, &sk, &rho)
+                    .expect("honest parameters: 16 rejections is negligible");
+
+                assert_eq!(
+                    verify_response_norm(&proof.z),
+                    0,
+                    "saap_prove returned a response outside the rejection bound \
+                     at tau {tau_idx}, rho {rho_idx}"
+                );
+            }
+        }
+    }
+
+    /// Positive control for the sweep above.
+    ///
+    /// Without this, the sweep would pass just as happily against a norm check
+    /// that accepted everything, which would make it evidence of nothing.
+    #[test]
+    fn the_norm_check_rejects_an_out_of_bound_response() {
+        let sk = test_sk();
+        let credential = [0x3Cu8; 64];
+        let mut proof = saap_prove(&credential, 0b0000_0011, b"ctx", &sk, &[0x41u8; 32])
+            .expect("honest parameters: 16 rejections is negligible");
+
+        assert_eq!(verify_response_norm(&proof.z), 0, "test setup: an honest proof is in bounds");
+
+        proof.z.vec[0].coeffs[0] = REJECTION_BOUND;
+        assert_ne!(
+            verify_response_norm(&proof.z),
+            0,
+            "a response at the rejection bound was accepted, so the sweep above \
+             is not testing anything"
+        );
+    }
+
+    /// Nothing may re-derive the mask after the loop.
+    ///
+    /// The old fallback was `sample_saap_masking_vector(rho, &context_tag, 0)`.
+    /// Nonce zero is iteration 0's nonce, and the derivation is a pure function
+    /// of `(rho, context_tag, nonce)`, so that call reproduced iteration 0's
+    /// mask exactly and the proof rebuilt from it was, byte for byte, the
+    /// response iteration 0 had already rejected.
+    ///
+    /// A behavioural test cannot reach this: forcing 16 consecutive rejections
+    /// at honest parameters is exactly the negligible event the fallback was
+    /// excused by. So the derivation itself is pinned instead, the same way
+    /// `plp.rs` pins `no_tau_independent_mask_derivation_remains`.
+    #[test]
+    fn no_fallback_mask_derivation_remains() {
+        let source = include_str!("saap.rs");
+
+        // Split across `concat!` so the needle never appears contiguously in
+        // this file, which would otherwise make the test match itself. Comment
+        // lines are skipped for the same reason: the doc comment above names
+        // the old call on purpose.
+        let needle = concat!("sample_saap_masking_vector(rho, &context_tag, ", "0)");
+        let hits = source
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| l.contains(needle))
+            .count();
+
+        assert_eq!(
+            hits, 0,
+            "the fallback mask derivation is back in saap_prove. Nonce 0 is \
+             iteration 0's nonce and the derivation is pure, so it reproduces \
+             iteration 0's mask and rebuilds, byte for byte, the response \
+             iteration 0 already rejected. That is precisely the value rejection \
+             sampling exists to withhold. See AETHEL-F-01 and 0b24bc0 before \
+             restoring it."
+        );
+    }
+
+    /// Exhaustion is reported, not papered over.
+    ///
+    /// Pins the signature: a caller must be able to tell "no proof exists" from
+    /// "here is a proof", which the previous `-> SaapProof` return type made
+    /// impossible.
+    #[test]
+    fn exhaustion_has_an_error_to_report() {
+        let sk = test_sk();
+        let proof: Result<SaapProof, IdentityError> =
+            saap_prove(&[0x3Cu8; 64], 0b0000_0011, b"ctx", &sk, &[0x42u8; 32]);
+        assert!(proof.is_ok(), "honest parameters must still produce a proof");
+
+        // The variant the exhausted path returns, matching plp::Prover::
+        // prove_identity and credential::prove.
+        assert_eq!(
+            IdentityError::from(crate::sampling::RejectionError::AllIterationsRejected),
+            IdentityError::RejectionSamplingFailed
+        );
     }
 }
