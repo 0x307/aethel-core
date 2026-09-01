@@ -96,9 +96,9 @@ fn projection_through_the_component_matches_the_native_api() {
 
     assert_eq!(via_component.tau, native.tau.to_vec(), "tau differs");
     assert_eq!(
-        via_component.matrix_a,
-        native.matrix_a.coeffs().to_vec(),
-        "matrix_a differs between the component and the native API"
+        via_component.salt,
+        native.salt.to_vec(),
+        "salt differs between the component and the native API"
     );
     assert_eq!(
         via_component.public_b,
@@ -123,7 +123,7 @@ fn prove_and_verify_round_trip_inside_the_component() {
         .expect("projection");
 
     let proof = identity
-        .call_plp_prove_identity(&mut store, &secret, &tau)
+        .call_plp_prove_identity(&mut store, &secret, &tau, &randomness)
         .expect("host call")
         .expect("proof");
 
@@ -156,7 +156,7 @@ fn plp_verify_separates_a_false_verdict_from_unparseable_input() {
         .expect("host call")
         .expect("projection");
     let proof = identity
-        .call_plp_prove_identity(&mut store, &secret, &tau)
+        .call_plp_prove_identity(&mut store, &secret, &tau, &randomness)
         .expect("host call")
         .expect("proof");
 
@@ -347,7 +347,7 @@ fn a_proof_from_one_context_does_not_verify_at_another() {
         .expect("projection b");
 
     let proof_a = identity
-        .call_plp_prove_identity(&mut store, &secret, &tau_a)
+        .call_plp_prove_identity(&mut store, &secret, &tau_a, &randomness)
         .expect("host call")
         .expect("proof a");
 
@@ -462,6 +462,89 @@ fn htss_refuses_a_share_set_with_a_repeated_index() {
         Err(other) => panic!("expected invalid-share-set, got {:?}", other),
         Ok(_) => panic!("a share set with a repeated index reconstructed something"),
     }
+}
+
+/// Two projections at ONE tau must be independent samples (AETHEL-F-02 / 0X3-95).
+///
+/// This is the property that used to fail. `A` was a pure function of tau, so
+/// every projection at one tau shared it and the samples differed only in a
+/// centered error term; averaging roughly 64 of them recovered `A*s` and hence
+/// the master secret. The averaging attack itself is mounted natively in
+/// `src/plp.rs`, with a positive control against the old construction. This
+/// asserts the structural precondition holds across the WIT boundary too.
+#[test]
+fn two_projections_at_one_tau_do_not_share_a_context_matrix() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+
+    let secret = [0x42u8; 32].to_vec();
+    let tau = b"block-height-1000".to_vec();
+
+    let first = identity
+        .call_plp_project_at_context(&mut store, &secret, &tau, &[0x11u8; 32])
+        .expect("host call")
+        .expect("project");
+    let second = identity
+        .call_plp_project_at_context(&mut store, &secret, &tau, &[0x22u8; 32])
+        .expect("host call")
+        .expect("project");
+
+    assert_eq!(first.tau, second.tau, "test setup: both projections are at one tau");
+    assert_ne!(
+        first.salt, second.salt,
+        "two projections at one tau shared a salt, so they share A and the          averaging attack is back"
+    );
+    assert_ne!(
+        first.public_b, second.public_b,
+        "two projections at one tau produced the same sample"
+    );
+}
+
+/// The randomness `plp-prove-identity` now takes is load-bearing.
+///
+/// A proof is computed against the projection's `A`, which is derived from a
+/// salt derived from this randomness. Passing the randomness that built the
+/// projection must verify; passing different randomness must not. Without this,
+/// the new parameter could be ignored by the implementation and every test would
+/// still pass.
+#[test]
+fn a_proof_is_bound_to_the_randomness_that_built_its_projection() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+
+    let secret = [0x42u8; 32].to_vec();
+    let tau = b"block-height-1000".to_vec();
+    let right = [0x11u8; 32];
+    let wrong = [0x22u8; 32];
+
+    let projection = identity
+        .call_plp_project_at_context(&mut store, &secret, &tau, &right)
+        .expect("host call")
+        .expect("project");
+
+    let good = identity
+        .call_plp_prove_identity(&mut store, &secret, &tau, &right)
+        .expect("host call")
+        .expect("prove");
+    assert!(
+        identity
+            .call_plp_verify(&mut store, &projection, &good)
+            .expect("host call")
+            .expect("verify"),
+        "a proof built with the projection's own randomness failed to verify"
+    );
+
+    let mismatched = identity
+        .call_plp_prove_identity(&mut store, &secret, &tau, &wrong)
+        .expect("host call")
+        .expect("prove");
+    assert!(
+        !identity
+            .call_plp_verify(&mut store, &projection, &mismatched)
+            .expect("host call")
+            .expect("verify"),
+        "a proof built under different randomness verified against this          projection, so the randomness parameter is not actually binding A"
+    );
 }
 
 /// The superseded single-relation `attestation` interface is gone from the
@@ -646,7 +729,7 @@ fn a_generated_identity_projects_and_proves() {
         .expect("project");
 
     let proof = api
-        .call_prove(&mut store, id, b"context-one")
+        .call_prove(&mut store, id, b"context-one", &[0x5Au8; 32])
         .expect("host call")
         .expect("prove");
 

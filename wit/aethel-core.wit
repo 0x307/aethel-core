@@ -69,9 +69,24 @@ interface identity {
   use types.{identity-error, disclosure-attributes};
 
   /// A context-bound projection of a master identity at context τ.
+  ///
+  /// `matrix-a` is gone from this record. It used to carry the context matrix
+  /// `A`, which was a pure function of τ; that is what made repeated projection
+  /// at one τ recover the master secret, because every sample shared one `A` and
+  /// averaging away the centered error left `A·s`. `A` is now derived from τ and
+  /// a per-projection `salt`, so two projections at one τ are independent
+  /// samples.
+  ///
+  /// The matrix is not carried because it is fully determined by `tau` and
+  /// `salt`. Sending it would be redundant bytes a verifier would then have to
+  /// trust or cross-check; deriving it makes an inconsistent `A` unrepresentable
+  /// rather than merely detectable. This also shrinks the record substantially.
   record ephemeral-projection {
     tau: list<u8>,
-    matrix-a: list<u32>,
+    /// Public per-projection salt, 32 bytes. Derived inside the component from
+    /// the caller's projection randomness. Fresh randomness gives a fresh salt,
+    /// which is what makes τ reuse safe.
+    salt: list<u8>,
     public-b: list<u32>,
   }
 
@@ -85,12 +100,32 @@ interface identity {
   /// Project a master identity (from secret key material) at context τ.
   ///
   /// `randomness` MUST be at least 32 bytes of fresh, secret entropy, distinct
-  /// per projection: it seeds the error term e_τ that makes b_τ an M-LWE sample
-  /// rather than an exact linear image of the secret. τ MUST be single-use.
+  /// per projection. It does two jobs: it seeds the error term e_τ that makes
+  /// b_τ an M-LWE sample rather than an exact linear image of the secret, and it
+  /// derives the public salt that makes the context matrix `A` specific to this
+  /// projection.
+  ///
+  /// τ no longer has to be single-use. It used to: `A` was a function of τ
+  /// alone, so repeated projection at one τ produced samples sharing one `A`,
+  /// and averaging roughly 64 of them recovered the secret however fresh each
+  /// error term was. With `A` salted per projection there is nothing to average.
+  ///
+  /// The obligation has moved onto `randomness`, which is the better place for
+  /// it: a caller generates their own randomness, whereas τ is often handed to
+  /// them and collides across users by construction (the canonical τ is a block
+  /// height). Reusing `randomness` for two projections of one identity at one τ
+  /// reinstates the shared `A`.
   plp-project-at-context: func(secret: list<u8>, tau: list<u8>, randomness: list<u8>) -> result<ephemeral-projection, identity-error>;
 
   /// Prove identity ownership at context τ.
-  plp-prove-identity: func(secret: list<u8>, tau: list<u8>) -> result<zk-identity-proof, identity-error>;
+  ///
+  /// `randomness` MUST be the same value passed to `plp-project-at-context` for
+  /// this τ. The proof is computed against the projection's context matrix `A`,
+  /// and `A` is now derived from τ and a salt that comes from this randomness,
+  /// so a proof built under different randomness is a proof about a different
+  /// `A` and will not verify. This parameter is new: `A` used to be recoverable
+  /// from τ alone, which is exactly the property that made τ reuse unsafe.
+  plp-prove-identity: func(secret: list<u8>, tau: list<u8>, randomness: list<u8>) -> result<zk-identity-proof, identity-error>;
 
   /// Verify a ZK identity proof against a projection.
   plp-verify: func(projection: ephemeral-projection, proof: zk-identity-proof) -> result<bool, identity-error>;
@@ -128,7 +163,10 @@ interface identity {
     project-at-context: func(tau: list<u8>, randomness: list<u8>) -> result<ephemeral-projection, identity-error>;
 
     /// Prove ownership of this identity at context tau.
-    prove: func(tau: list<u8>) -> result<zk-identity-proof, identity-error>;
+    ///
+    /// `randomness` MUST be the same value passed to `project-at-context` for
+    /// this tau. See `plp-prove-identity` for why.
+    prove: func(tau: list<u8>, randomness: list<u8>) -> result<zk-identity-proof, identity-error>;
 
     /// Seal this identity so it can be stored and loaded again.
     ///

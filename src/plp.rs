@@ -358,10 +358,68 @@ pub(crate) fn derive_error_tau(rho: &[u8], tau: &[u8]) -> Poly {
     sample_cbd_eta2_from_xof(&mut xof)
 }
 
-pub fn derive_context_matrix_k1(tau: &[u8]) -> Poly {
+/// Derive the public per-projection salt from the caller's secret randomness.
+///
+/// The salt is what makes `A` differ between two projections of one identity at
+/// one context. It is published in the projection, so it must not reveal `rho`:
+/// SHAKE-256 is one-way, and the salt is the only thing derived from `rho` that
+/// leaves the component besides `b_tau` itself.
+///
+/// Derived from `rho` rather than taken as its own parameter so that a caller
+/// who supplies fresh `rho`, which they already MUST do for `e_tau`, gets a
+/// fresh salt for free and cannot supply one without the other. It is bound to
+/// `tau` as well so that an accidentally reused `rho` still yields a distinct
+/// salt per context, matching [`derive_error_tau`].
+///
+/// Uses a domain separator distinct from [`derive_error_tau`], so the salt and
+/// the error term are independent outputs rather than correlated views of one
+/// stream.
+pub(crate) fn pad_tau(tau: &[u8]) -> [u8; 32] {
+    let mut t = [0u8; 32];
+    let len = tau.len().min(32);
+    t[..len].copy_from_slice(&tau[..len]);
+    t
+}
+
+pub(crate) fn derive_projection_salt(rho: &[u8], tau: &[u8; 32]) -> [u8; 32] {
     let mut hasher = Shake256::default();
-    hasher.update(b"AETHEL_PLP_CTX_V1");
+    hasher.update(b"AETHEL_PLP_SALT_V1");
+    hasher.update(&(rho.len() as u32).to_le_bytes());
+    hasher.update(rho);
     hasher.update(tau);
+    let mut xof = hasher.finalize_xof();
+    let mut salt = [0u8; 32];
+    xof.read(&mut salt);
+    salt
+}
+
+/// Derive the context matrix `A` for a projection at `tau` with `salt`.
+///
+/// # Why the salt is here
+///
+/// `A` used to be `SHAKE-256("AETHEL_PLP_CTX_V1" || tau)`, a pure function of
+/// the context. That made repeated projection at one `tau` a key-recovery
+/// vector rather than merely a caller error: every projection shared one `A`,
+/// so the samples `b_i = A*s + e_i` differed only in their error terms. `e`
+/// comes from CBD, which is centered at zero, so averaging enough samples
+/// drives the noise to nothing and leaves `A*s`, from which `s` is linear
+/// algebra over the ring rather than an M-LWE instance. Roughly 64 samples
+/// sufficed, and no amount of freshness in each individual `e_i` helped.
+///
+/// Binding a per-projection salt removes the shared `A` that attack needs. Two
+/// projections of one identity at one `tau` are now independent M-LWE samples
+/// under unrelated matrices, so there is nothing to average.
+///
+/// This is what makes `tau` reuse structurally safe rather than a documented
+/// prohibition. See 0X3-95 and AETHEL-F-02.
+/// `tau` is the **padded 32-byte** context tag, not the caller's raw slice. A
+/// verifier only ever holds the padded form, so keying the derivation on
+/// anything else would make `A` unreconstructable from a decoded projection.
+pub fn derive_context_matrix(tau: &[u8; 32], salt: &[u8; 32]) -> Poly {
+    let mut hasher = Shake256::default();
+    hasher.update(b"AETHEL_PLP_CTX_V2");
+    hasher.update(tau);
+    hasher.update(salt);
     let mut xof = hasher.finalize_xof();
 
     let mut poly = Poly::zero();
@@ -424,14 +482,23 @@ fn sample_mask_from_xof(xof: &mut impl XofReader) -> Poly {
 
 /// Hash-to-challenge: produce a sparse ternary polynomial with exactly 60 ±1 coefficients.
 ///
-/// c = HashToPoly(SHAKE-256("AETHEL_PLP_CHALLENGE_V1" ∥ w ∥ ctx))
-pub fn hash_to_challenge(w: &Poly, ctx: u64) -> Poly {
+/// c = HashToPoly(SHAKE-256("AETHEL_PLP_CHALLENGE_V2" ∥ w ∥ tau ∥ salt))
+///
+/// Binds the whole projection, not just the commitment. The previous version
+/// hashed `w` and the **first 8 bytes** of `tau` only, so a proof was bound to
+/// neither the rest of the context nor to `A`. Now that `A` varies per
+/// projection, an unbound challenge would let one proof be presented against a
+/// different projection at the same context; including `salt` ties the proof to
+/// exactly the `A` it was computed against, and including the full `tau`
+/// removes the 8-byte truncation while we are here.
+pub fn hash_to_challenge(w: &Poly, tau: &[u8; 32], salt: &[u8; 32]) -> Poly {
     let mut hasher = Shake256::default();
-    hasher.update(b"AETHEL_PLP_CHALLENGE_V1");
+    hasher.update(b"AETHEL_PLP_CHALLENGE_V2");
     for &c in w.coeffs.iter() {
         hasher.update(&c.to_le_bytes());
     }
-    hasher.update(&ctx.to_le_bytes());
+    hasher.update(tau);
+    hasher.update(salt);
     let mut xof = hasher.finalize_xof();
 
     // Sample 60 distinct positions in [0, N) without replacement
@@ -517,9 +584,11 @@ impl MasterIdentity {
         Self { secret_key }
     }
 
-    /// Derive a single-use polymorphic public projection for context τ.
+    /// Derive a polymorphic public projection for context τ.
     ///
-    /// `b_τ = A_τ · s + e_τ (mod q)`, where `A_τ ← SHAKE-256("AETHEL_PLP_CTX_V1" ∥ τ)`
+    /// `b_τ = A · s + e_τ (mod q)`, where
+    /// `A ← SHAKE-256("AETHEL_PLP_CTX_V2" ∥ τ ∥ salt)`,
+    /// `salt ← SHAKE-256("AETHEL_PLP_SALT_V1" ∥ rho ∥ τ)`,
     /// and `e_τ ← CBD η=2` sampled from the caller-supplied fresh randomness `rho`.
     ///
     /// ## `rho` MUST be fresh, secret entropy — at least 32 bytes
@@ -531,25 +600,40 @@ impl MasterIdentity {
     /// `A_τ·s` from a single projection. Deriving it from fresh secret `rho`
     /// closes that: with `rho` unknown, one projection is a sound M-LWE sample.
     ///
-    /// ## τ MUST be single-use
+    /// ## τ reuse is survivable, but `rho` freshness is what makes it so
     ///
-    /// `A_τ` is a deterministic function of `τ`, so projecting the *same*
-    /// identity at the *same* `τ` more than once yields many samples
-    /// `b_i = A_τ·s + e_i` sharing one `A_τ`. Because `e ← CBD` is centered,
-    /// averaging enough of them recovers `A_τ·s` regardless of how fresh each
-    /// `e_i` is. The projection is called *ephemeral* for this reason: each `τ`
-    /// (e.g. a block height) is consumed once. Callers reusing `τ` void the
-    /// hiding guarantee. (Closing this for reused `τ` — freshening `A` per
-    /// projection — is a design question flagged for review, not a defect in
-    /// single-use operation.)
+    /// `A` used to be a deterministic function of `τ` alone, which made
+    /// projecting the *same* identity at the *same* `τ` a key-recovery vector:
+    /// the samples `b_i = A_τ·s + e_i` shared one `A_τ` and differed only in
+    /// their centered error terms, so averaging roughly 64 of them recovered
+    /// `A_τ·s` and thence `s`, no matter how fresh each `e_i` was.
+    ///
+    /// `A` is now derived from `τ` **and** a per-projection salt, and the salt
+    /// comes from `rho`. Two projections at one `τ` with different `rho` are
+    /// independent M-LWE samples under unrelated matrices, so there is nothing
+    /// to average and the attack has no purchase. See 0X3-95 / AETHEL-F-02.
+    ///
+    /// This moves the burden entirely onto `rho`: reusing `τ` is now safe, and
+    /// reusing `rho` is what is not. That is the better place for it, because
+    /// `rho` is a value the caller generates and `τ` is often one they are
+    /// handed (the RFC's canonical `τ` is a block height, which collides across
+    /// users by construction).
     pub fn project_at_context(&self, tau: &[u8], rho: &[u8]) -> EphemeralProjection {
-        // Derive context-bound matrix A_τ deterministically
-        let matrix_a = derive_context_matrix_k1(tau);
+        // Everything keyed on tau uses the padded form, because that is the only
+        // form a verifier decoding this projection will ever hold.
+        let tau_padded = pad_tau(tau);
+
+        // Public per-projection salt, one-way from the caller's secret rho.
+        let salt = derive_projection_salt(rho, &tau_padded);
+
+        // Context-bound matrix A, now a function of (tau, salt) rather than tau
+        // alone. This is the line that closes the averaging attack.
+        let matrix_a = derive_context_matrix(&tau_padded, &salt);
 
         // Generate ephemeral error e_τ ← CBD η=2 from fresh secret randomness.
         let mut e_tau = derive_error_tau(rho, tau);
 
-        // b_τ = A_τ · s + e_τ
+        // b_τ = A · s + e_τ
         let public_b = matrix_a.mul_schoolbook(&self.secret_key).add(&e_tau);
         // e_tau is secret-derived noise with no further use past this point —
         // wipe it explicitly rather than letting it fall out of scope (Poly is
@@ -557,12 +641,8 @@ impl MasterIdentity {
         e_tau.zeroize();
 
         EphemeralProjection {
-            tau: {
-                let mut t = [0u8; 32];
-                let len = tau.len().min(32);
-                t[..len].copy_from_slice(&tau[..len]);
-                t
-            },
+            tau: tau_padded,
+            salt,
             matrix_a,
             public_b,
         }
@@ -602,16 +682,26 @@ pub fn checked_project_at_context(
 
 /// Byte length of an [`EphemeralProjection`] as encoded by [`EphemeralProjection::to_bytes`]:
 /// `tau(32) + matrix_a coeffs(N*4) + public_b coeffs(N*4)`.
-pub const EPHEMERAL_PROJECTION_BYTE_LEN: usize = 32 + N * 4 + N * 4;
+pub const EPHEMERAL_PROJECTION_BYTE_LEN: usize = 32 + 32 + N * 4;
 
-/// Single-use public projection for a given context τ.
+/// Public projection for a given context τ.
 #[derive(Clone)]
 pub struct EphemeralProjection {
     /// Context tag τ (truncated/padded to 32 bytes).
     pub tau: [u8; 32],
-    /// Context-bound matrix A_τ.
+    /// Public per-projection salt. Freshness of this is what makes two
+    /// projections at one τ independent samples. See [`derive_context_matrix`].
+    pub salt: [u8; 32],
+    /// Context matrix `A = derive_context_matrix(tau, salt)`.
+    ///
+    /// A **cache**, not an input. It is fully determined by `tau` and `salt`,
+    /// and [`Self::from_bytes`] recomputes it rather than reading it off the
+    /// wire, so a decoded projection cannot carry an `A` inconsistent with its
+    /// own salt. [`Verifier::verify`] re-derives it too and ignores whatever is
+    /// in this field, so a hand-built struct with a doctored `A` cannot fool a
+    /// verifier either.
     pub matrix_a: Poly,
-    /// Public projection b_τ = A_τ · s + e_τ.
+    /// Public projection b_τ = A · s + e_τ.
     pub public_b: Poly,
 }
 
@@ -628,28 +718,36 @@ impl EphemeralProjection {
     ///
     /// `pub(crate)` on purpose: the zero `public_b` is not a real projection and
     /// must never escape as one.
-    pub(crate) fn for_proving(tau: &[u8]) -> Self {
-        let matrix_a = derive_context_matrix_k1(tau);
-        let mut t = [0u8; 32];
-        let len = tau.len().min(32);
-        t[..len].copy_from_slice(&tau[..len]);
+    ///
+    /// Takes `rho` because `A` is no longer recoverable from `tau` alone. The
+    /// prover must reconstruct the *same* `A` the projection was built under,
+    /// which means reconstructing the same salt, which means being given the
+    /// same `rho`. That is why `plp-prove-identity` and `master-identity.prove`
+    /// gained a randomness parameter: see 0X3-95.
+    pub(crate) fn for_proving(tau: &[u8], rho: &[u8]) -> Self {
+        let tau_padded = pad_tau(tau);
+        let salt = derive_projection_salt(rho, &tau_padded);
+        let matrix_a = derive_context_matrix(&tau_padded, &salt);
         EphemeralProjection {
-            tau: t,
+            tau: tau_padded,
+            salt,
             matrix_a,
             public_b: Poly::zero(),
         }
     }
 
-    /// Encode as `tau(32) ++ matrix_a.coeffs(N*4, LE) ++ public_b.coeffs(N*4, LE)`.
+    /// Encode as `tau(32) ++ salt(32) ++ public_b.coeffs(N*4, LE)`.
+    ///
+    /// `matrix_a` is deliberately **not** on the wire. It is a function of `tau`
+    /// and `salt`, so carrying it would be redundant bytes that a peer would
+    /// then have to be trusted about, or cross-checked against. Deriving it on
+    /// decode makes an inconsistent `A` unrepresentable instead of detectable.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = alloc::vec![0u8; EPHEMERAL_PROJECTION_BYTE_LEN];
         out[..32].copy_from_slice(&self.tau);
-        for (i, &c) in self.matrix_a.coeffs.iter().enumerate() {
-            let offset = 32 + i * 4;
-            out[offset..offset + 4].copy_from_slice(&c.to_le_bytes());
-        }
+        out[32..64].copy_from_slice(&self.salt);
         for (i, &c) in self.public_b.coeffs.iter().enumerate() {
-            let offset = 32 + N * 4 + i * 4;
+            let offset = 64 + i * 4;
             out[offset..offset + 4].copy_from_slice(&c.to_le_bytes());
         }
         out
@@ -667,23 +765,21 @@ impl EphemeralProjection {
         let mut tau = [0u8; 32];
         tau.copy_from_slice(&bytes[..32]);
 
-        let mut matrix_a = Poly::zero();
-        for i in 0..N {
-            let offset = 32 + i * 4;
-            let mut b = [0u8; 4];
-            b.copy_from_slice(&bytes[offset..offset + 4]);
-            matrix_a.coeffs[i] = u32::from_le_bytes(b);
-        }
+        let mut salt = [0u8; 32];
+        salt.copy_from_slice(&bytes[32..64]);
 
         let mut public_b = Poly::zero();
         for i in 0..N {
-            let offset = 32 + N * 4 + i * 4;
+            let offset = 64 + i * 4;
             let mut b = [0u8; 4];
             b.copy_from_slice(&bytes[offset..offset + 4]);
             public_b.coeffs[i] = u32::from_le_bytes(b);
         }
 
-        Ok(Self { tau, matrix_a, public_b })
+        // Derived, never read off the wire. See the field's doc comment.
+        let matrix_a = derive_context_matrix(&tau, &salt);
+
+        Ok(Self { tau, salt, matrix_a, public_b })
     }
 }
 
@@ -759,9 +855,8 @@ impl Prover {
             // 2. Compute commitment W = A_τ · y
             let mut w = proj.matrix_a.mul_schoolbook(&y);
 
-            // 3. Compute Fiat-Shamir challenge c = HashToPoly(W, τ_ctx)
-            let ctx_u64 = u64::from_le_bytes(proj.tau[..8].try_into().unwrap_or([0u8; 8]));
-            let mut challenge_c = hash_to_challenge(&w, ctx_u64);
+            // 3. Compute Fiat-Shamir challenge c = HashToPoly(W, τ, salt)
+            let mut challenge_c = hash_to_challenge(&w, &proj.tau, &proj.salt);
 
             // 4. Compute candidate response z = y + c · s
             let mut cs = challenge_c.mul_schoolbook(&identity.secret_key);
@@ -820,8 +915,14 @@ impl Verifier {
     ///
     /// Checks:
     /// 1. ||z||∞ < γ₁ - β
-    /// 2. Challenge consistency: c' = HashToPoly(W, τ)
-    /// 3. Verification equation: A_τ · z - c · b_τ ≈ W (mod small noise)
+    /// 2. Challenge consistency: c' = HashToPoly(W, τ, salt)
+    /// 3. Verification equation: A · z - c · b_τ ≈ W (mod small noise)
+    ///
+    /// `A` is re-derived here from the projection's `tau` and `salt` rather than
+    /// read from its `matrix_a` field. The field is a prover-side cache, and a
+    /// verifier that trusted it would be accepting a matrix chosen by whoever
+    /// handed it the projection. Deriving it means the only thing a caller
+    /// controls is the salt, and the salt is bound into the challenge.
     pub fn verify(proj: &EphemeralProjection, proof: &ZkIdentityProof) -> bool {
         // 1. Check response norm bound: ||z||∞ < γ₁ - β
         if proof.response_z.infinity_norm() >= REJECTION_THRESHOLD as i64 {
@@ -829,8 +930,7 @@ impl Verifier {
         }
 
         // 2. Re-compute Fiat-Shamir challenge c'
-        let ctx_u64 = u64::from_le_bytes(proj.tau[..8].try_into().unwrap_or([0u8; 8]));
-        let recomputed_c = hash_to_challenge(&proof.commitment_w, ctx_u64);
+        let recomputed_c = hash_to_challenge(&proof.commitment_w, &proj.tau, &proj.salt);
 
         // Constant-time challenge comparison
         let mut mismatch = 0u32;
@@ -841,9 +941,10 @@ impl Verifier {
             return false;
         }
 
-        // 3. Verify equation: A_τ · z - c · b_τ ≈ W
-        // W' = A_τ · z - c · b_τ
-        let az = proj.matrix_a.mul_schoolbook(&proof.response_z);
+        // 3. Verify equation: A · z - c · b_τ ≈ W
+        // W' = A · z - c · b_τ, with A derived, not taken on trust.
+        let matrix_a = derive_context_matrix(&proj.tau, &proj.salt);
+        let az = matrix_a.mul_schoolbook(&proof.response_z);
         let cb = proof.challenge_c.mul_schoolbook(&proj.public_b);
         let w_prime = az.sub(&cb);
 
@@ -1001,8 +1102,8 @@ mod tests {
         for i in 0..N {
             y.coeffs[i] = ((i as u64 * 7919 + 13) % 100_000) as u32;
         }
-        let c1 = hash_to_challenge(&proj.matrix_a, 1);
-        let c2 = hash_to_challenge(&proj.matrix_a, 2);
+        let c1 = hash_to_challenge(&proj.matrix_a, &proj.tau, &[1u8; 32]);
+        let c2 = hash_to_challenge(&proj.matrix_a, &proj.tau, &[2u8; 32]);
         assert_ne!(c1.coeffs, c2.coeffs, "setup: challenges must differ");
 
         // z = y + c*s, with s the real secret this identity holds.
@@ -1240,9 +1341,18 @@ mod tests {
     #[test]
     fn test_derive_context_matrix_deterministic() {
         let tau = b"test_context_tau";
-        let a1 = derive_context_matrix_k1(tau);
-        let a2 = derive_context_matrix_k1(tau);
-        assert_eq!(a1.coeffs, a2.coeffs);
+        let salt = [0x5au8; 32];
+        let tau = &pad_tau(tau);
+        let a1 = derive_context_matrix(tau, &salt);
+        let a2 = derive_context_matrix(tau, &salt);
+        assert_eq!(a1.coeffs, a2.coeffs, "derivation must be deterministic in (tau, salt)");
+
+        // And genuinely salt-dependent, which is the whole point of 0X3-95.
+        let other = derive_context_matrix(tau, &[0xa5u8; 32]);
+        assert_ne!(
+            a1.coeffs, other.coeffs,
+            "a different salt at the same tau produced the same matrix"
+        );
         // All coefficients should be in [0, Q)
         for &c in a1.coeffs.iter() {
             assert!(c < Q, "coefficient {} >= Q", c);
@@ -1252,10 +1362,142 @@ mod tests {
     #[test]
     fn test_hash_to_challenge_sparse() {
         let w = Poly::zero();
-        let c = hash_to_challenge(&w, 1000u64);
+        let c = hash_to_challenge(&w, &[0x11u8; 32], &[0x22u8; 32]);
         // Count non-zero coefficients — should be exactly 60
         let nonzero = c.coeffs.iter().filter(|&&x| x != 0).count();
         assert_eq!(nonzero, 60, "challenge should have exactly 60 non-zero coefficients");
+    }
+
+    // ── The averaging attack on a reused tau (AETHEL-F-02 / 0X3-95) ──────────
+
+    /// Mount the averaging attack and report how many of the `N` coefficients of
+    /// `A*s` it recovered exactly.
+    ///
+    /// `b_i = A_i*s + e_i` with every coefficient in `[0, q)`. `e` is CBD, so it
+    /// is centered at zero with variance 1 and lives in `{-2..2}`; the mean of
+    /// `count` samples therefore has standard deviation `1/sqrt(count)`, which
+    /// for 64 samples is 0.125. Rounding the per-coefficient mean recovers the
+    /// underlying value exactly whenever it is shared across the samples.
+    ///
+    /// Wraparound is not a concern: a coefficient is corrupted by the mod-q
+    /// boundary only if `A*s` lands within 2 of 0 or q, which for a value spread
+    /// over `q = 8380417` happens with probability about 5e-7 per coefficient.
+    fn averaging_attack_recovered_coeffs(samples: &[Poly], target: &Poly) -> usize {
+        let count = samples.len() as i64;
+        let mut recovered = 0usize;
+        for j in 0..N {
+            let sum: i64 = samples.iter().map(|p| p.coeffs[j] as i64).sum();
+            // Round to nearest rather than truncate.
+            let mean = (sum + count / 2) / count;
+            if mean == target.coeffs[j] as i64 {
+                recovered += 1;
+            }
+        }
+        recovered
+    }
+
+    /// Positive control. The attack must actually work against the construction
+    /// this change removed, or the negative result below proves nothing.
+    ///
+    /// Reconstructs the old scheme faithfully out of the current primitives: one
+    /// **fixed** salt across every projection, which is exactly what "A is a pure
+    /// function of tau" meant, with the error term still freshly derived per
+    /// sample. If this test ever stops recovering the secret, the attack model
+    /// is wrong and the negative test below is worthless.
+    #[test]
+    fn the_averaging_attack_recovers_a_s_under_a_shared_context_matrix() {
+        let identity = MasterIdentity::from_seed(&test_seed());
+        let tau = pad_tau(b"block-height-1000");
+
+        // The old construction: A fixed for this tau, regardless of rho.
+        let fixed_salt = [0u8; 32];
+        let matrix_a = derive_context_matrix(&tau, &fixed_salt);
+
+        let samples: Vec<Poly> = (0u8..64)
+            .map(|i| {
+                let rho = [i.wrapping_mul(7).wrapping_add(1); 32];
+                let e = derive_error_tau(&rho, &tau);
+                matrix_a.mul_schoolbook(&identity.secret_key).add(&e)
+            })
+            .collect();
+
+        let target = matrix_a.mul_schoolbook(&identity.secret_key);
+        let recovered = averaging_attack_recovered_coeffs(&samples, &target);
+
+        assert!(
+            recovered > (N * 9) / 10,
+            "the averaging attack recovered only {recovered}/{N} coefficients of A*s \
+             against a SHARED context matrix. It is supposed to succeed here; if it \
+             does not, the attack model is wrong and the negative test that depends \
+             on it proves nothing."
+        );
+    }
+
+    /// The finding itself: with `A` salted per projection, reusing tau no longer
+    /// leaks `A*s`.
+    ///
+    /// Same identity, same tau, 64 projections, fresh rho each time, exactly the
+    /// scenario the old doc comment told callers to avoid. Because each
+    /// projection now derives its own `A`, the per-coefficient mean is an average
+    /// over unrelated matrices and corresponds to no particular `A_i*s`.
+    #[test]
+    fn a_reused_tau_does_not_leak_a_s() {
+        let identity = MasterIdentity::from_seed(&test_seed());
+        let tau = b"block-height-1000";
+
+        let projections: Vec<EphemeralProjection> = (0u8..64)
+            .map(|i| {
+                let rho = [i.wrapping_mul(7).wrapping_add(1); 32];
+                identity.project_at_context(tau, &rho)
+            })
+            .collect();
+
+        // Every projection is at the SAME tau, and every one has its own A.
+        assert!(
+            projections.windows(2).all(|w| w[0].tau == w[1].tau),
+            "test setup: all projections must share tau"
+        );
+        assert_ne!(
+            projections[0].matrix_a.coeffs, projections[1].matrix_a.coeffs,
+            "test setup: two projections at one tau must not share A"
+        );
+
+        let samples: Vec<Poly> = projections.iter().map(|p| p.public_b).collect();
+        let target = projections[0]
+            .matrix_a
+            .mul_schoolbook(&identity.secret_key);
+
+        let recovered = averaging_attack_recovered_coeffs(&samples, &target);
+
+        // Chance alone lands a coefficient on the target with probability about
+        // 1/q, so anything above a handful means real signal is leaking.
+        assert!(
+            recovered < N / 10,
+            "averaging 64 projections at one tau recovered {recovered}/{N} coefficients \
+             of A*s. A is leaking across projections again: see AETHEL-F-02 and \
+             derive_context_matrix before changing the derivation."
+        );
+    }
+
+    /// Reusing rho at one tau is what is unsafe now, and it is unsafe in exactly
+    /// the old way. Pinned so the residual obligation is executable rather than
+    /// only described in a doc comment.
+    #[test]
+    fn reusing_rho_at_one_tau_reinstates_the_shared_matrix() {
+        let identity = MasterIdentity::from_seed(&test_seed());
+        let rho = [0x5au8; 32];
+        let a = identity.project_at_context(b"one-tau", &rho);
+        let b = identity.project_at_context(b"one-tau", &rho);
+
+        assert_eq!(
+            a.matrix_a.coeffs, b.matrix_a.coeffs,
+            "same (tau, rho) is deterministic, so it must reproduce one matrix"
+        );
+        assert_eq!(
+            a.public_b.coeffs, b.public_b.coeffs,
+            "and therefore one projection: reusing rho gives the attacker nothing \
+             new, but it also gives the holder no fresh sample"
+        );
     }
 
     #[test]
