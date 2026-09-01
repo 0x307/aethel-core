@@ -131,20 +131,30 @@ impl IdentityGuest for Component {
 
         Ok(WitProjection {
             tau: proj.tau.to_vec(),
-            matrix_a: proj.matrix_a.coeffs().to_vec(),
+            salt: proj.salt.to_vec(),
             public_b: proj.public_b.coeffs().to_vec(),
         })
     }
 
-    fn plp_prove_identity(secret: Vec<u8>, tau: Vec<u8>) -> Result<WitZkProof, WitError> {
+    fn plp_prove_identity(
+        secret: Vec<u8>,
+        tau: Vec<u8>,
+        randomness: Vec<u8>,
+    ) -> Result<WitZkProof, WitError> {
+        if randomness.len() < 32 {
+            return Err(WitError::InvalidInputLength);
+        }
         let seed = secret_as_seed(&secret)?;
         let identity = plp::MasterIdentity::from_seed(&seed);
-        // The proof is independent of e_tau, so proving needs only A_tau and
-        // tau — no fresh randomness. The proving seed is the secret itself;
-        // `prove_identity` runs a fixed 16-iteration rejection loop and returns
+        // The proof is independent of e_tau, so proving needs no *fresh*
+        // randomness — but it does need the *same* randomness the projection
+        // used, because A is derived from a salt derived from it (0X3-95).
+        // Before that change A came from tau alone and this took no randomness
+        // at all. The proving seed is still the secret itself; `prove_identity`
+        // runs a fixed 16-iteration rejection loop and returns
         // `rejection-sampling-failed` if every iteration is rejected, rather
         // than a proof that failed the norm bound.
-        let proj = plp::EphemeralProjection::for_proving(&tau);
+        let proj = plp::EphemeralProjection::for_proving(&tau, &randomness);
         let proof = plp::Prover::prove_identity(&identity, &proj, &seed)?;
 
         Ok(WitZkProof {
@@ -258,7 +268,7 @@ impl GuestMasterIdentity for OwnedIdentity {
 
         Ok(WitProjection {
             tau: proj.tau.to_vec(),
-            matrix_a: proj.matrix_a.coeffs().to_vec(),
+            salt: proj.salt.to_vec(),
             public_b: proj.public_b.coeffs().to_vec(),
         })
     }
@@ -272,10 +282,14 @@ impl GuestMasterIdentity for OwnedIdentity {
         Ok(WitMasterIdentity::new(OwnedIdentity(identity)))
     }
 
-    fn prove(&self, tau: Vec<u8>) -> Result<WitZkProof, WitError> {
+    fn prove(&self, tau: Vec<u8>, randomness: Vec<u8>) -> Result<WitZkProof, WitError> {
+        if randomness.len() < 32 {
+            return Err(WitError::InvalidInputLength);
+        }
         let seed = self.0.plp_seed();
         let identity = plp::MasterIdentity::from_seed(seed);
-        let proj = plp::EphemeralProjection::for_proving(&tau);
+        // Same randomness as the projection at this tau. See `plp_prove_identity`.
+        let proj = plp::EphemeralProjection::for_proving(&tau, &randomness);
         let proof = plp::Prover::prove_identity(&identity, &proj, seed)?;
 
         Ok(WitZkProof {
@@ -299,12 +313,20 @@ fn projection_from_wit(p: &WitProjection) -> Result<plp::EphemeralProjection, Wi
     if p.tau.len() != 32 {
         return Err(WitError::SerializationError);
     }
+    if p.salt.len() != 32 {
+        return Err(WitError::SerializationError);
+    }
     let mut tau = [0u8; 32];
     tau.copy_from_slice(&p.tau);
+    let mut salt = [0u8; 32];
+    salt.copy_from_slice(&p.salt);
 
     Ok(plp::EphemeralProjection {
         tau,
-        matrix_a: poly_from_coeffs(&p.matrix_a)?,
+        salt,
+        // Derived, not decoded. The wire carries no matrix, so there is no
+        // inconsistent A for a caller to supply. See the record's doc comment.
+        matrix_a: plp::derive_context_matrix(&tau, &salt),
         public_b: poly_from_coeffs(&p.public_b)?,
     })
 }

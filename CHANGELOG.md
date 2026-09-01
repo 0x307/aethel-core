@@ -7,6 +7,63 @@ adheres to the breaking-change and deprecation rules in
 [`STABILITY.md`](./STABILITY.md) rather than strict SemVer prior to `1.0.0` — see that
 document for what counts as breaking inside `0.x`.
 
+## [Unreleased]
+
+### Fixed
+
+- **Reusing τ no longer leaks the master secret (AETHEL-F-02).** The context
+  matrix `A` was `SHAKE-256("AETHEL_PLP_CTX_V1" || τ)`, a pure function of the
+  context, so every projection of one identity at one τ shared it. The samples
+  `b_i = A·s + e_i` then differed only in their error terms, and `e` comes from a
+  centered binomial distribution, so averaging enough of them drove the noise to
+  nothing and left `A·s`, from which the secret is linear algebra over the ring
+  rather than an M-LWE instance. Roughly 64 samples sufficed, and freshness of
+  each individual `e_i` did not help.
+
+  `A` is now derived from τ **and** a per-projection salt, and the salt is
+  derived from the caller's projection randomness. Two projections at one τ are
+  independent samples under unrelated matrices, so there is nothing to average.
+  Measured against the old construction the attack recovers 256 of 256
+  coefficients of `A·s`; against the new one it recovers 0.
+
+  This was previously documented as a caller obligation ("τ MUST be single-use")
+  rather than enforced. A documented MUST is a weak control when violating it
+  costs the master secret and the canonical τ is a block height, which collides
+  across users by construction. The obligation now rests on the projection
+  randomness instead, which is a value the caller generates rather than one they
+  are handed.
+
+- **The Fiat-Shamir challenge binds the whole projection.** It hashed the
+  commitment and the **first 8 bytes** of τ, so a proof was bound neither to the
+  rest of the context nor to `A`. It now covers the full τ and the salt.
+
+### Changed (breaking)
+
+- **`ephemeral-projection` replaces `matrix-a` with `salt`.** `A` is fully
+  determined by `tau` and `salt`, so carrying it would be redundant bytes a
+  verifier would have to trust or cross-check. Deriving it on decode makes an
+  inconsistent `A` unrepresentable rather than merely detectable, and shrinks the
+  record from `32 + 8N` bytes to `64 + 4N`.
+
+  **Migration:** read `salt` where you read `matrix-a`. If you cached `A` by τ,
+  stop: it is no longer a function of τ alone. `Verifier::verify` re-derives `A`
+  and ignores the struct's cached `matrix_a` field, so a hand-built projection
+  cannot supply a doctored matrix.
+
+- **`plp-prove-identity` and `master-identity.prove` take `randomness`.** It MUST
+  be the same value passed to the matching projection call. `A` used to be
+  recoverable from τ alone, which is precisely the property that made τ reuse
+  unsafe; with `A` salted, the prover has to be told which salt to reconstruct.
+
+  **Migration:** `plp-prove-identity(secret, tau)` becomes
+  `plp-prove-identity(secret, tau, randomness)`; `prove(tau)` becomes
+  `prove(tau, randomness)`. Both refuse randomness under 32 bytes with
+  `invalid-input-length`.
+
+- **Proofs and projections from 0.2.0 do not verify under this version**, and the
+  reverse. The domain separators moved to `AETHEL_PLP_CTX_V2` and
+  `AETHEL_PLP_CHALLENGE_V2`, and the projection wire format changed.
+
 ## [0.2.0] - 2026-09-01
 
 ### Fixed

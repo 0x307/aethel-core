@@ -213,16 +213,20 @@ use aethel_core::plp::{MasterIdentity, Prover, Verifier};
 let seed = [0x11u8; 32];
 let identity = MasterIdentity::from_seed(&seed);
 
-// Project at context τ (ephemeral, context-bound).
+// Project at context τ (context-bound).
 // `randomness` MUST be at least 32 bytes of fresh, secret entropy, sampled anew
-// per projection. It seeds the error term that makes the projection an M-LWE
-// sample rather than an exact linear image of the secret. τ MUST be single-use.
+// per projection. It does two jobs: it seeds the error term that makes the
+// projection an M-LWE sample rather than an exact linear image of the secret,
+// and it salts the context matrix A so two projections at one τ are independent
+// samples. Reusing τ is safe; reusing `randomness` is what is not.
 let tau = b"session_context_2026";
 let randomness = [0x22u8; 32]; // demo value; sample fresh in real use
 let projection = identity.project_at_context(tau, &randomness);
 
-// Prove ownership
-let proof = Prover::prove_identity(&identity, &projection, &seed);
+// Prove ownership. The proof is computed against the projection, so it is
+// bound to that projection's A.
+let proof = Prover::prove_identity(&identity, &projection, &seed)
+    .expect("honest parameters");
 
 // Verify (by any party with the projection and proof)
 assert!(Verifier::verify(&projection, &proof));

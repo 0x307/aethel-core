@@ -899,7 +899,8 @@ mod soundness_tests {
         let commitment_w = Poly::zero();
         let challenge_c = crate::plp::hash_to_challenge(
             &commitment_w,
-            u64::from_le_bytes(projection.tau[..8].try_into().unwrap()),
+            &projection.tau,
+            &projection.salt,
         );
         let proof = ZkIdentityProof {
             commitment_w,
