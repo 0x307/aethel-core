@@ -1,15 +1,25 @@
-//! HTSS key-material tests (P3-12 / 0X3-80).
+//! HTSS key-material tests (P3-12 / 0X3-80, share authentication / 0X3-105).
 //!
 //! The WIT world declares:
 //!
 //! ```text
-//! htss-split:       func(secret: list<u8>) -> result<list<htss-share>, identity-error>
-//! htss-reconstruct: func(shares: list<htss-share>) -> result<list<u8>, identity-error>
+//! htss-split:       func(secret: list<u8>) -> result<tuple<list<htss-share>, list<u8>>, identity-error>
+//! htss-reconstruct: func(shares: list<htss-share>, root: list<u8>) -> result<list<u8>, identity-error>
 //! ```
 //!
 //! P3-01's Do list said "HTSS operates over real key material, not a `u64`". The
 //! WIT was changed; the Shamir implementation was not, and the gap turned out to
 //! include a break of the threshold property itself.
+//!
+//! `split_key_material` now returns a root alongside the shares, and
+//! `reconstruct_key_material` takes that root back: every share is checked
+//! against it before interpolation runs. PR #21 stopped a share list that
+//! cannot determine any secret at all (a repeated index, too many shares); it
+//! could not stop a share list that determines a secret nobody ever split. The
+//! root check is what closes that — see
+//! `shares_from_one_sharing_do_not_authenticate_against_another_sharings_root`
+//! for the demonstration, and `SecretSharer::reconstruct_key_material`'s doc
+//! comment for exactly what the root does and does not vouch for.
 //!
 //! The `deprecated_*` tests characterise the old behaviour so it is pinned in
 //! executable form rather than described. Everything else asserts the new path.
@@ -27,10 +37,10 @@ const NONCE: &[u8] = b"session-nonce-01";
 fn key_material_round_trips_byte_for_byte() {
     let key = [0xA5u8; 32];
 
-    let shares = SecretSharer::split_key_material(&key, NONCE).expect("split");
+    let (shares, root) = SecretSharer::split_key_material(&key, NONCE).expect("split");
     assert_eq!(shares.len(), 5, "expected a 3-of-5 split");
 
-    let recovered = SecretSharer::reconstruct_key_material(&shares[..3]).expect("reconstruct");
+    let recovered = SecretSharer::reconstruct_key_material(&shares[..3], &root).expect("reconstruct");
 
     assert_eq!(recovered, key, "32 bytes of key material did not survive the round trip");
 }
@@ -39,11 +49,11 @@ fn key_material_round_trips_byte_for_byte() {
 #[test]
 fn any_three_shares_reconstruct() {
     let key: [u8; 32] = core::array::from_fn(|i| (i as u8).wrapping_mul(7).wrapping_add(3));
-    let shares = SecretSharer::split_key_material(&key, NONCE).expect("split");
+    let (shares, root) = SecretSharer::split_key_material(&key, NONCE).expect("split");
 
     for combo in [[0, 1, 2], [0, 2, 4], [1, 3, 4], [2, 3, 4]] {
         let subset: Vec<HtssShare> = combo.iter().map(|&i| shares[i].clone()).collect();
-        let recovered = SecretSharer::reconstruct_key_material(&subset)
+        let recovered = SecretSharer::reconstruct_key_material(&subset, &root)
             .unwrap_or_else(|e| panic!("shares {:?} failed to reconstruct: {:?}", combo, e));
         assert_eq!(recovered, key, "shares {:?} reconstructed the wrong secret", combo);
     }
@@ -54,15 +64,15 @@ fn any_three_shares_reconstruct() {
 #[test]
 fn below_threshold_is_an_error_not_a_zero() {
     let key = [0x11u8; 32];
-    let shares = SecretSharer::split_key_material(&key, NONCE).expect("split");
+    let (shares, root) = SecretSharer::split_key_material(&key, NONCE).expect("split");
 
     assert_eq!(
-        SecretSharer::reconstruct_key_material(&shares[..2]),
+        SecretSharer::reconstruct_key_material(&shares[..2], &root),
         Err(IdentityError::ThresholdNotMet),
         "two shares of a 3-of-5 split must return ThresholdNotMet"
     );
     assert_eq!(
-        SecretSharer::reconstruct_key_material(&shares[..1]),
+        SecretSharer::reconstruct_key_material(&shares[..1], &root),
         Err(IdentityError::ThresholdNotMet)
     );
 }
@@ -71,12 +81,12 @@ fn below_threshold_is_an_error_not_a_zero() {
 #[test]
 fn losing_one_share_does_not_lose_the_secret() {
     let key = [0x5Cu8; 32];
-    let shares = SecretSharer::split_key_material(&key, NONCE).expect("split");
+    let (shares, root) = SecretSharer::split_key_material(&key, NONCE).expect("split");
 
     let survivors: Vec<HtssShare> = shares.iter().skip(1).cloned().collect();
     assert_eq!(survivors.len(), 4);
 
-    let recovered = SecretSharer::reconstruct_key_material(&survivors).expect("reconstruct");
+    let recovered = SecretSharer::reconstruct_key_material(&survivors, &root).expect("reconstruct");
     assert_eq!(recovered, key);
 }
 
@@ -86,8 +96,8 @@ fn losing_one_share_does_not_lose_the_secret() {
 fn odd_length_secrets_round_trip_without_padding() {
     for len in [1usize, 7, 15, 31, 33] {
         let secret: Vec<u8> = (0..len).map(|i| (i as u8) ^ 0x3C).collect();
-        let shares = SecretSharer::split_key_material(&secret, NONCE).expect("split");
-        let recovered = SecretSharer::reconstruct_key_material(&shares[..3]).expect("reconstruct");
+        let (shares, root) = SecretSharer::split_key_material(&secret, NONCE).expect("split");
+        let recovered = SecretSharer::reconstruct_key_material(&shares[..3], &root).expect("reconstruct");
         assert_eq!(recovered, secret, "length {} did not round-trip exactly", len);
     }
 }
@@ -105,8 +115,8 @@ fn a_public_nonce_does_not_compromise_a_single_share() {
     let secret_a = [0x01u8; 32];
     let secret_b = [0x02u8; 32];
 
-    let shares_a = SecretSharer::split_key_material(&secret_a, NONCE).expect("split a");
-    let shares_b = SecretSharer::split_key_material(&secret_b, NONCE).expect("split b");
+    let (shares_a, _) = SecretSharer::split_key_material(&secret_a, NONCE).expect("split a");
+    let (shares_b, _) = SecretSharer::split_key_material(&secret_b, NONCE).expect("split b");
 
     assert_ne!(
         shares_a[0].value, shares_b[0].value,
@@ -115,7 +125,7 @@ fn a_public_nonce_does_not_compromise_a_single_share() {
     );
 
     // And the same secret under different nonces gives independent sharings.
-    let shares_a2 = SecretSharer::split_key_material(&secret_a, b"another-nonce").expect("split");
+    let (shares_a2, _) = SecretSharer::split_key_material(&secret_a, b"another-nonce").expect("split");
     assert_ne!(
         shares_a[0].value, shares_a2[0].value,
         "the nonce did not separate two sharings of the same secret"
@@ -133,20 +143,20 @@ fn empty_input_is_rejected() {
 #[test]
 fn malformed_shares_are_rejected() {
     let key = [0x77u8; 32];
-    let mut shares = SecretSharer::split_key_material(&key, NONCE).expect("split");
+    let (mut shares, root) = SecretSharer::split_key_material(&key, NONCE).expect("split");
 
     // Mismatched widths.
     shares[0].value.truncate(4);
     assert_eq!(
-        SecretSharer::reconstruct_key_material(&shares[..3]),
+        SecretSharer::reconstruct_key_material(&shares[..3], &root),
         Err(IdentityError::SerializationError)
     );
 
     // A zero index is not a valid evaluation point — f(0) is the secret.
-    let mut shares = SecretSharer::split_key_material(&key, NONCE).expect("split");
+    let (mut shares, root) = SecretSharer::split_key_material(&key, NONCE).expect("split");
     shares[0].index = 0;
     assert_eq!(
-        SecretSharer::reconstruct_key_material(&shares[..3]),
+        SecretSharer::reconstruct_key_material(&shares[..3], &root),
         Err(IdentityError::SerializationError)
     );
 }
@@ -179,7 +189,8 @@ fn the_largest_allowed_secret_splits_and_round_trips() {
     let secret: Vec<u8> = (0..MAX_SECRET_BYTES).map(|i| (i % 251) as u8).collect();
 
     let started = std::time::Instant::now();
-    let shares = SecretSharer::split_key_material(&secret, NONCE).expect("split at the ceiling");
+    let (shares, root) =
+        SecretSharer::split_key_material(&secret, NONCE).expect("split at the ceiling");
     let elapsed = started.elapsed();
 
     assert!(
@@ -188,7 +199,7 @@ fn the_largest_allowed_secret_splits_and_round_trips() {
          quadratic in the secret's length again"
     );
 
-    let recovered = SecretSharer::reconstruct_key_material(&shares[..3]).expect("reconstruct");
+    let recovered = SecretSharer::reconstruct_key_material(&shares[..3], &root).expect("reconstruct");
     assert_eq!(recovered, secret, "the largest allowed secret did not survive the round trip");
 }
 
@@ -252,8 +263,8 @@ fn coefficients_still_depend_on_the_secret() {
     let mut b = a;
     b[31] ^= 0x01;
 
-    let shares_a = SecretSharer::split_key_material(&a, NONCE).expect("split");
-    let shares_b = SecretSharer::split_key_material(&b, NONCE).expect("split");
+    let (shares_a, _) = SecretSharer::split_key_material(&a, NONCE).expect("split");
+    let (shares_b, _) = SecretSharer::split_key_material(&b, NONCE).expect("split");
 
     // Share 1 of each carries f_limb(1) for every limb. The constant terms
     // differ in one limb only, so if the higher coefficients were not
@@ -309,11 +320,11 @@ fn payload_shaped_value(secret: &[u8]) -> Vec<u8> {
 #[test]
 fn a_repeated_share_index_is_refused() {
     let key = [0x42u8; 32];
-    let shares = SecretSharer::split_key_material(&key, NONCE).expect("split");
+    let (shares, root) = SecretSharer::split_key_material(&key, NONCE).expect("split");
 
     let repeated = vec![shares[0].clone(), shares[0].clone(), shares[1].clone()];
     assert_eq!(
-        SecretSharer::reconstruct_key_material(&repeated),
+        SecretSharer::reconstruct_key_material(&repeated, &root),
         Err(IdentityError::InvalidShareSet),
         "a share set with a repeated evaluation index was accepted"
     );
@@ -327,9 +338,11 @@ fn a_repeated_share_index_is_refused() {
 /// carried by the index-2 share. Shaping that share's value like a payload makes
 /// the length prefix decode, and the old code returned `Ok(fabricated bytes)`.
 ///
-/// Rejecting on an implausible length prefix, which is what the old code did for
-/// most inputs, is an accident of the payload encoding rather than a guard, and
-/// this input is the demonstration.
+/// This is caught by the uniqueness check alone, before the root is ever
+/// examined — the path and root below are placeholders and never get read.
+/// `shares_from_one_sharing_do_not_authenticate_against_another_sharings_root`
+/// is the test for the class of forgery uniqueness *cannot* catch: distinct
+/// indices, no duplicate, still not genuine.
 #[test]
 fn a_repeated_index_cannot_forge_a_reconstruction() {
     let fabricated = b"ATTACKER".to_vec();
@@ -337,12 +350,13 @@ fn a_repeated_index_cannot_forge_a_reconstruction() {
     let width = forged_value.len();
 
     let shares = vec![
-        HtssShare { index: 1, value: vec![0xAA; width] },
-        HtssShare { index: 1, value: vec![0xBB; width] },
-        HtssShare { index: 2, value: forged_value },
+        HtssShare { index: 1, value: vec![0xAA; width], path: Vec::new() },
+        HtssShare { index: 1, value: vec![0xBB; width], path: Vec::new() },
+        HtssShare { index: 2, value: forged_value, path: Vec::new() },
     ];
+    let dummy_root = [0u8; 32];
 
-    let result = SecretSharer::reconstruct_key_material(&shares);
+    let result = SecretSharer::reconstruct_key_material(&shares, &dummy_root);
     assert_ne!(
         result.as_deref(),
         Ok(fabricated.as_slice()),
@@ -357,16 +371,23 @@ fn a_repeated_index_cannot_forge_a_reconstruction() {
 #[test]
 fn more_shares_than_the_scheme_issues_are_refused() {
     let key = [0x11u8; 32];
-    let shares = SecretSharer::split_key_material(&key, NONCE).expect("split");
+    let (shares, root) = SecretSharer::split_key_material(&key, NONCE).expect("split");
     assert_eq!(shares.len(), 5, "test setup: a 3-of-5 split");
 
     // Six well-formed shares: the five real ones plus one more with a distinct,
     // in-range index, so the only thing wrong with the set is its cardinality.
+    // Cardinality is checked before authentication, so an unauthenticatable
+    // sixth share (value/path copied from share 0, wrong for index 6) still
+    // demonstrates the bound rather than accidentally testing the root check.
     let mut oversized = shares.clone();
-    oversized.push(HtssShare { index: 6, value: shares[0].value.clone() });
+    oversized.push(HtssShare {
+        index: 6,
+        value: shares[0].value.clone(),
+        path: shares[0].path.clone(),
+    });
 
     assert_eq!(
-        SecretSharer::reconstruct_key_material(&oversized),
+        SecretSharer::reconstruct_key_material(&oversized, &root),
         Err(IdentityError::InvalidShareSet)
     );
 }
@@ -376,9 +397,134 @@ fn more_shares_than_the_scheme_issues_are_refused() {
 #[test]
 fn the_full_issued_share_set_still_reconstructs() {
     let key = [0x33u8; 48];
-    let shares = SecretSharer::split_key_material(&key, NONCE).expect("split");
-    let recovered = SecretSharer::reconstruct_key_material(&shares).expect("reconstruct");
+    let (shares, root) = SecretSharer::split_key_material(&key, NONCE).expect("split");
+    let recovered = SecretSharer::reconstruct_key_material(&shares, &root).expect("reconstruct");
     assert_eq!(recovered, key, "the cardinality bound rejected a valid full share set");
+}
+
+// ── Share authentication (0X3-105): the gap #21 could not close ───────────────
+
+/// The gap #21 left open, closed: a well-formed share set at distinct indices,
+/// self-consistent, still is not accepted unless it checks out against the
+/// caller-supplied root.
+///
+/// This is not shares fabricated from nothing — an attacker who can call
+/// `split_key_material` at all can trivially produce a share set that passes
+/// every check #21 added (distinct indices, in-bound cardinality, matching
+/// width) by the simple expedient of actually splitting bytes of their own
+/// choosing. That is exactly the "well-formed but not genuine" shape #21 could
+/// not rule out, and it is what `a_repeated_index_cannot_forge_a_reconstruction`
+/// above does not exercise, because its forged shares share an index.
+///
+/// Root authentication closes it: the attacker's shares are only ever
+/// consistent with the root their own split produced. Presented against a
+/// different, genuine sharing's root, they are refused — whether presented on
+/// their own or spliced one-for-one into the genuine set.
+#[test]
+fn shares_from_one_sharing_do_not_authenticate_against_another_sharings_root() {
+    // The victim's real sharing of a real secret.
+    let victim_secret = [0x77u8; 32];
+    let (victim_shares, victim_root) =
+        SecretSharer::split_key_material(&victim_secret, NONCE).expect("split");
+
+    // The attacker's own, entirely legitimate split of bytes THEY chose. Every
+    // check #21 added passes: distinct indices, five shares, matching width —
+    // exactly 32 bytes, like the victim's secret, so the spliced case below
+    // exercises the root check rather than tripping the width-uniformity check
+    // first.
+    let attacker_payload: Vec<u8> = (0..32u8).map(|i| i ^ 0xAA).collect();
+    let (attacker_shares, attacker_root) =
+        SecretSharer::split_key_material(&attacker_payload, NONCE).expect("split");
+
+    // Self-consistent: the attacker's own shares verify against their own root.
+    // This is the caveat stated in `reconstruct_key_material`'s doc comment,
+    // demonstrated rather than only asserted: authentication proves a share
+    // belongs to a tree, not that the tree is the one anyone else expected.
+    let self_consistent =
+        SecretSharer::reconstruct_key_material(&attacker_shares[..3], &attacker_root);
+    assert_eq!(
+        self_consistent.as_deref(),
+        Ok(attacker_payload.as_slice()),
+        "test setup: a genuine split must reconstruct against its own root"
+    );
+
+    // Presented against the VICTIM's published root, the same well-formed,
+    // distinct-index, matching-width shares must not authenticate.
+    let against_victim_root =
+        SecretSharer::reconstruct_key_material(&attacker_shares[..3], &victim_root);
+    assert_eq!(
+        against_victim_root,
+        Err(IdentityError::InvalidShareSet),
+        "shares from one sharing authenticated against a different sharing's root"
+    );
+
+    // Splicing a single substituted share into an otherwise-genuine set must
+    // also fail, even though every index is still distinct.
+    let mixed = vec![
+        victim_shares[0].clone(),
+        victim_shares[1].clone(),
+        attacker_shares[2].clone(),
+    ];
+    assert_eq!(
+        SecretSharer::reconstruct_key_material(&mixed, &victim_root),
+        Err(IdentityError::InvalidShareSet),
+        "a single substituted share from a different sharing was accepted"
+    );
+}
+
+/// Corrupting a genuine share's value invalidates its own inclusion proof, even
+/// though nothing else about the share set changed.
+#[test]
+fn a_tampered_share_value_fails_authentication() {
+    let key = [0x99u8; 32];
+    let (mut shares, root) = SecretSharer::split_key_material(&key, NONCE).expect("split");
+
+    // Flip a byte. `path` still describes the tree built from the ORIGINAL
+    // value, so it no longer folds to `root` for this changed value.
+    let last = shares[0].value.len() - 1;
+    shares[0].value[last] ^= 0x01;
+
+    assert_eq!(
+        SecretSharer::reconstruct_key_material(&shares[..3], &root),
+        Err(IdentityError::InvalidShareSet),
+        "a share with a tampered value still authenticated against the root"
+    );
+}
+
+/// Swapping two shares' inclusion paths must fail: a proof is for one specific
+/// index, not interchangeable with another share's.
+#[test]
+fn a_swapped_share_path_fails_authentication() {
+    let key = [0x88u8; 32];
+    let (mut shares, root) = SecretSharer::split_key_material(&key, NONCE).expect("split");
+
+    let tmp = shares[0].path.clone();
+    shares[0].path = shares[1].path.clone();
+    shares[1].path = tmp;
+
+    assert_eq!(
+        SecretSharer::reconstruct_key_material(&shares[..3], &root),
+        Err(IdentityError::InvalidShareSet),
+        "swapping two shares' inclusion paths still authenticated"
+    );
+}
+
+/// A root that is merely the wrong length is rejected as malformed input, not
+/// as a share-set failure — the two are different kinds of caller error and
+/// this crate has treated them as distinct since `InvalidShareSet` was added.
+/// `reconstruct_key_material` takes `root: &[u8; 32]`, so this is enforced by
+/// the type at the native boundary; `reconstruct_key_material_bytes` and the
+/// WIT `htss-reconstruct` are the surfaces that see a caller-supplied length.
+#[test]
+fn wire_format_rejects_a_short_root() {
+    let key = [0x66u8; 32];
+    let wire = SecretSharer::split_key_material_bytes(&key, NONCE).expect("split");
+
+    // Truncate to fewer than the 32 root bytes plus a share-count byte.
+    assert_eq!(
+        SecretSharer::reconstruct_key_material_bytes(&wire[..20]),
+        Err(IdentityError::SerializationError)
+    );
 }
 
 // ── Characterisation of the deprecated u64 path ───────────────────────────────
@@ -442,11 +588,32 @@ fn deprecated_path_truncates_a_full_width_u64() {
     assert_eq!(recovered, secret % 8_380_417);
 }
 
-// ── The byte-oriented boundary the WASM exports wrap ──────────────────────────
+// ── The byte-oriented boundary a non-Rust caller parses ────────────────────────
 //
-// These exercise the exact logic behind `htss_split` / `htss_reconstruct`. The
-// exports are `#[cfg(feature = "wasm")]` thin wrappers over these functions,
-// deliberately, so the artifact's boundary is reachable by native tests.
+// These exercise the exact logic behind the wire format `htss-split` /
+// `htss-reconstruct` implementations sit on top of at the component boundary.
+
+/// Re-encode a subset of shares plus root in the wire format written by
+/// [`SecretSharer::split_key_material_bytes`]: `root(32) ++ count(u8) ++
+/// width(u32 LE) ++ [index(u8) ++ value(width bytes) ++ path] × count`.
+///
+/// Building this by hand from a real split's shares, rather than slicing bytes
+/// out of `split_key_material_bytes`'s own output, is what lets these tests
+/// construct an arbitrary below-threshold or malformed sub-blob without
+/// depending on this crate's internal per-index path length.
+fn encode_wire(shares: &[HtssShare], root: &[u8; 32]) -> Vec<u8> {
+    let width = shares[0].value.len();
+    let mut out = Vec::new();
+    out.extend_from_slice(root);
+    out.push(shares.len() as u8);
+    out.extend_from_slice(&(width as u32).to_le_bytes());
+    for share in shares {
+        out.push(share.index);
+        out.extend_from_slice(&share.value);
+        out.extend_from_slice(&share.path);
+    }
+    out
+}
 
 #[test]
 fn wire_format_round_trips_key_material() {
@@ -459,14 +626,8 @@ fn wire_format_round_trips_key_material() {
 #[test]
 fn wire_format_below_threshold_is_an_error() {
     let key = [0x42u8; 32];
-    let wire = SecretSharer::split_key_material_bytes(&key, NONCE).expect("split");
-
-    // Rebuild the wire payload carrying only two of the five shares.
-    let width = u32::from_le_bytes(wire[1..5].try_into().unwrap()) as usize;
-    let mut two = Vec::new();
-    two.push(2u8);
-    two.extend_from_slice(&(width as u32).to_le_bytes());
-    two.extend_from_slice(&wire[5..5 + 2 * (1 + width)]);
+    let (shares, root) = SecretSharer::split_key_material(&key, NONCE).expect("split");
+    let two = encode_wire(&shares[..2], &root);
 
     assert_eq!(
         SecretSharer::reconstruct_key_material_bytes(&two),

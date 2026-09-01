@@ -57,17 +57,24 @@ pub enum IdentityError {
     InvalidAttributeCommitment,
     /// Fewer than the threshold number of shares were supplied for reconstruction.
     ThresholdNotMet,
-    /// The supplied shares are not a valid share set: an evaluation index
-    /// appears more than once, or more shares were supplied than the scheme
-    /// issues.
+    /// The supplied shares are not a valid, authenticated share set. Three
+    /// causes, all folded into one variant because they share a consequence —
+    /// none of them may reconstruct:
+    ///
+    /// - an evaluation index appears more than once
+    /// - more shares were supplied than the scheme issues
+    /// - a share's Merkle proof does not check out against the caller-supplied
+    ///   root (0X3-105)
     ///
     /// Distinct from [`Self::SerializationError`] on purpose. "This share is
-    /// malformed" and "you sent the same share twice" are different failures
+    /// malformed" and "you sent the same share twice" (or "this share was
+    /// never part of the sharing it claims to be") are different failures
     /// with different fixes, and collapsing them is the same sentinel-flattening
     /// this crate treats as a defect class elsewhere. Lagrange interpolation
-    /// over a repeated evaluation point is undefined; a share set carrying one
-    /// does not reconstruct to the shared secret, so it must not reconstruct at
-    /// all.
+    /// over a repeated evaluation point is undefined, and interpolation over a
+    /// share nobody ever split is defined but meaningless; a share set
+    /// carrying either does not reconstruct to the shared secret, so it must
+    /// not reconstruct at all.
     InvalidShareSet,
 }
 

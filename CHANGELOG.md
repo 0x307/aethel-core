@@ -37,6 +37,36 @@ document for what counts as breaking inside `0.x`.
   commitment and the **first 8 bytes** of τ, so a proof was bound neither to the
   rest of the context nor to `A`. It now covers the full τ and the salt.
 
+- **`htss-reconstruct` now authenticates every share against a root, closing
+  the gap `invalid-share-set`'s duplicate-index and cardinality checks could
+  not.** Those checks (0.2.0) stopped a share list that cannot determine any
+  secret at all. They could not stop one that determines a secret nobody ever
+  split: three well-formed shares at three distinct indices interpolate
+  whether or not any of them came out of a real `htss-split` call, because
+  nothing about valid indices, matching width, or Lagrange interpolation
+  distinguishes a genuine share from a fabricated one at a free index. An
+  attacker who can call `htss-split` at all (which needs no privilege, since
+  the secret it splits is caller-supplied) can trivially produce such a
+  share list by splitting bytes of their own choosing.
+
+  `htss-split` now also returns a 32-byte root, and every `htss-share` carries
+  a Merkle inclusion path proving its membership in the tree that root names.
+  `htss-reconstruct` checks every supplied share's path against the
+  caller-supplied root before interpolation runs; a share that does not check
+  out (wrong tree, tampered value, swapped path) is refused as
+  `invalid-share-set` regardless of how well-formed it otherwise looks.
+  Fabricating a share that passes verification against a root you did not
+  build requires a second preimage of SHA3-256.
+
+  **This authenticates shares to a root. It does not authenticate the root
+  itself.** `root` is ordinary caller input, like everything else in these
+  signatures; `htss-reconstruct` has no way to know whether it is the genuine
+  value from a real split. A caller who receives `(shares, root)` as one
+  untrusted bundle and passes both straight through gets no protection: an
+  attacker can always mint a self-consistent bundle of their own. The
+  guarantee is only as strong as the channel used to obtain `root`, the same
+  requirement verifying a signature places on the public key.
+
 ### Changed (breaking)
 
 - **`ephemeral-projection` replaces `matrix-a` with `salt`.** `A` is fully
@@ -63,6 +93,31 @@ document for what counts as breaking inside `0.x`.
 - **Proofs and projections from 0.2.0 do not verify under this version**, and the
   reverse. The domain separators moved to `AETHEL_PLP_CTX_V2` and
   `AETHEL_PLP_CHALLENGE_V2`, and the projection wire format changed.
+
+- **`htss-share` gains `path`, and both HTSS operations' signatures change to
+  carry a root.**
+
+  - `htss-split(secret)` returns `result<tuple<list<htss-share>, list<u8>>,
+    identity-error>` instead of `result<list<htss-share>, identity-error>`,
+    with the second tuple element carrying the 32-byte root.
+  - `htss-reconstruct(shares, root)` takes the root back; the previous
+    signature took only `shares`.
+  - `SecretSharer::split_key_material` returns
+    `Result<(Vec<HtssShare>, [u8; 32]), IdentityError>` instead of
+    `Result<Vec<HtssShare>, IdentityError>`.
+  - `SecretSharer::reconstruct_key_material` takes `root: &[u8; 32]` as a
+    second parameter.
+  - The `split_key_material_bytes` / `reconstruct_key_material_bytes` wire
+    format gains a 32-byte root prefix and a per-share path; see
+    `split_key_material_bytes`'s doc comment for the exact layout. Both
+    functions keep their existing signatures: the root travels inside the
+    same blob rather than as a separate parameter, since that boundary already
+    treats the whole thing as one opaque transfer unit.
+
+  **Shares from a version before this one cannot be reconstructed under this
+  version**, because they carry no path and there is no root to check them
+  against. There is no migration path for shares already in storage other
+  than re-splitting the underlying secret.
 
 ## [0.2.0] - 2026-09-01
 
