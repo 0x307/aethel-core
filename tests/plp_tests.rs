@@ -181,14 +181,14 @@ fn test_htss_secret_sharing_roundtrip() {
     assert_eq!(shares.len(), 5, "Should produce exactly 5 shares");
 
     // Reconstruct from first 3 shares
-    let reconstructed = SecretSharer::reconstruct_secret(&shares[0..3]);
+    let reconstructed = SecretSharer::reconstruct_secret(&shares[0..3]).expect("distinct indices interpolate");
     assert_eq!(
         reconstructed, original_secret,
         "Reconstructed secret should match original"
     );
 
     // Reconstruct from last 3 shares
-    let reconstructed_alt = SecretSharer::reconstruct_secret(&shares[2..5]);
+    let reconstructed_alt = SecretSharer::reconstruct_secret(&shares[2..5]).expect("distinct indices interpolate");
     assert_eq!(
         reconstructed_alt, original_secret,
         "Reconstruction from different 3 shares should also match"
@@ -225,7 +225,7 @@ fn test_htss_hypercube_routing() {
         .map(|p| (p.payload.share_id, p.payload.share_val))
         .collect();
 
-    let reconstructed = SecretSharer::reconstruct_secret(&received);
+    let reconstructed = SecretSharer::reconstruct_secret(&received).expect("distinct indices interpolate");
     assert_eq!(
         reconstructed, original_scalar,
         "Reconstructed scalar should match original after 5D routing"

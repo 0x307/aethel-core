@@ -95,6 +95,7 @@ impl From<IdentityError> for WitError {
             IdentityError::ChallengeMismatch => WitError::ChallengeMismatch,
             IdentityError::InvalidAttributeCommitment => WitError::InvalidAttributeCommitment,
             IdentityError::ThresholdNotMet => WitError::ThresholdNotMet,
+            IdentityError::InvalidShareSet => WitError::InvalidShareSet,
         }
     }
 }
