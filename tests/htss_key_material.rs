@@ -151,6 +151,130 @@ fn malformed_shares_are_rejected() {
     );
 }
 
+// ── Cost is linear in the secret's length ─────────────────────────────────────
+
+/// The largest secret `split_key_material` accepts, mirrored from the crate's
+/// `MAX_SECRET_BYTES`. Not re-exported: the ceiling is a property of the
+/// operation, and a test that read it from the implementation would agree with
+/// whatever the implementation happened to do.
+const MAX_SECRET_BYTES: usize = 64 * 1024;
+
+/// Splitting at the ceiling must finish, and finish quickly.
+///
+/// The coefficient derivation used to absorb the entire secret into a fresh
+/// SHAKE-256 instance per coefficient, and the limb loop makes one call per byte
+/// of secret, so total absorption was quadratic. At 64 KiB that is roughly
+/// 4.3 GB of absorption; measured before the fix, this call took 11.7 seconds in
+/// release and far longer in a debug build. Now the secret is absorbed once and
+/// the per-coefficient work is constant, so the same call is milliseconds.
+///
+/// The bound is wall clock, which is not something to assert lightly. It is
+/// defensible here only because the gap is orders of magnitude wide. This call
+/// takes about 4 seconds in an unoptimised build and 50 milliseconds optimised;
+/// before the fix it was minutes unoptimised. 60 seconds is not a measurement of
+/// the fast path, it is a ceiling the slow path cannot get under on any machine
+/// that could run this suite at all.
+#[test]
+fn the_largest_allowed_secret_splits_and_round_trips() {
+    let secret: Vec<u8> = (0..MAX_SECRET_BYTES).map(|i| (i % 251) as u8).collect();
+
+    let started = std::time::Instant::now();
+    let shares = SecretSharer::split_key_material(&secret, NONCE).expect("split at the ceiling");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < std::time::Duration::from_secs(60),
+        "splitting {MAX_SECRET_BYTES} bytes took {elapsed:?}. The derivation is \
+         quadratic in the secret's length again"
+    );
+
+    let recovered = SecretSharer::reconstruct_key_material(&shares[..3]).expect("reconstruct");
+    assert_eq!(recovered, secret, "the largest allowed secret did not survive the round trip");
+}
+
+/// Cost must grow with the secret's length, not with its square.
+///
+/// Asserted as a ratio with wide slack rather than an absolute time, because the
+/// two behaviours are far enough apart that slack costs nothing: over an 8x
+/// range, linear work is ~8x and quadratic work is ~64x. Anything under 32x is
+/// unambiguously the former.
+#[test]
+fn split_cost_grows_linearly_not_quadratically() {
+    fn time_split(n: usize) -> std::time::Duration {
+        let secret = vec![0x5Au8; n];
+        // One warm-up pass, so the measured pass is not paying for first-touch
+        // allocation.
+        let _ = SecretSharer::split_key_material(&secret, NONCE).expect("split");
+        let started = std::time::Instant::now();
+        let _ = SecretSharer::split_key_material(&secret, NONCE).expect("split");
+        started.elapsed()
+    }
+
+    let small = time_split(2 * 1024).max(std::time::Duration::from_micros(1));
+    let large = time_split(16 * 1024);
+
+    let ratio = large.as_secs_f64() / small.as_secs_f64();
+    assert!(
+        ratio < 32.0,
+        "8x the input cost {ratio:.1}x the time ({small:?} -> {large:?}). Linear \
+         work is about 8x and quadratic work is about 64x; this is the latter"
+    );
+}
+
+/// The ceiling is a real bound, and it is stated rather than represented.
+///
+/// The previous bound was `u32::MAX`, about 4 GiB, which is the largest value
+/// the payload's length prefix can hold and not a claim about what this
+/// operation is for.
+#[test]
+fn a_secret_above_the_ceiling_is_refused() {
+    let over = vec![0u8; MAX_SECRET_BYTES + 1];
+    assert_eq!(
+        SecretSharer::split_key_material(&over, NONCE),
+        Err(IdentityError::InvalidInputLength)
+    );
+
+    // And the ceiling itself is accepted, so the bound is off-by-one-free.
+    let at = vec![0u8; MAX_SECRET_BYTES];
+    assert!(SecretSharer::split_key_material(&at, NONCE).is_ok());
+}
+
+/// The faster derivation must still take its entropy from the secret.
+///
+/// This is the property the whole `split_key_material` path exists for: the
+/// coefficients are unpredictable to anyone who does not know the secret, which
+/// is what makes shares below the threshold reveal nothing. Two secrets that
+/// differ in one bit must produce unrelated shares — if the hoisted key had been
+/// derived from the nonce alone, this is the test that would catch it.
+#[test]
+fn coefficients_still_depend_on_the_secret() {
+    let mut a = [0x11u8; 32];
+    let mut b = a;
+    b[31] ^= 0x01;
+
+    let shares_a = SecretSharer::split_key_material(&a, NONCE).expect("split");
+    let shares_b = SecretSharer::split_key_material(&b, NONCE).expect("split");
+
+    // Share 1 of each carries f_limb(1) for every limb. The constant terms
+    // differ in one limb only, so if the higher coefficients were not
+    // secret-derived the two share values would agree almost everywhere.
+    let differing = shares_a[0]
+        .value
+        .iter()
+        .zip(shares_b[0].value.iter())
+        .filter(|(x, y)| x != y)
+        .count();
+    assert!(
+        differing > shares_a[0].value.len() / 2,
+        "a one-bit change in the secret changed only {differing} of {} share bytes. \
+         The sharing coefficients are not being derived from the secret",
+        shares_a[0].value.len()
+    );
+
+    a.fill(0);
+    b.fill(0);
+}
+
 // ── The share list must be a valid *set* ──────────────────────────────────────
 
 /// Encode `secret` the way `split_key_material` lays out its payload:
