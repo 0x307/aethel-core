@@ -7,7 +7,7 @@ adheres to the breaking-change and deprecation rules in
 [`STABILITY.md`](./STABILITY.md) rather than strict SemVer prior to `1.0.0` — see that
 document for what counts as breaking inside `0.x`.
 
-## [Unreleased]
+## [0.3.1] - 2026-09-01
 
 ### Fixed
 
@@ -28,11 +28,13 @@ document for what counts as breaking inside `0.x`.
   absorbed its `b_tau` argument; this brings PLP's own prove/verify pair in
   line with it.
 
-### Changed (breaking)
-
-- **Proofs from before this fix do not verify under this version, and the
-  reverse.** The challenge domain separator moved to
-  `AETHEL_PLP_CHALLENGE_V3`.
+  The challenge domain separator moved to `AETHEL_PLP_CHALLENGE_V3`, so
+  proofs from before this fix do not verify under this version, and the
+  reverse. Not classed as breaking under [`STABILITY.md`](./STABILITY.md)'s
+  own rule for this: the old behavior (accepting a forged proof) contradicted
+  the documented one (that a verifying proof attests to a genuine identity),
+  so the fix isn't breaking even though it changes output — called out here
+  regardless, since you may have been depending on it.
 
 ## [0.3.0] - 2026-09-01
 
