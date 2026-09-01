@@ -146,15 +146,15 @@ impl IdentityGuest for Component {
         }
         let seed = secret_as_seed(&secret)?;
         let identity = plp::MasterIdentity::from_seed(&seed);
-        // The proof is independent of e_tau, so proving needs no *fresh*
-        // randomness — but it does need the *same* randomness the projection
-        // used, because A is derived from a salt derived from it (0X3-95).
-        // Before that change A came from tau alone and this took no randomness
-        // at all. The proving seed is still the secret itself; `prove_identity`
-        // runs a fixed 16-iteration rejection loop and returns
+        // Needs the *same* randomness the projection used, because A is
+        // derived from a salt derived from it (0X3-95), and now — since the
+        // challenge binds b_τ (0X3-108) — because `prove_identity` needs the
+        // real `public_b` this randomness produces, not a placeholder. The
+        // proving seed is still the secret itself; `prove_identity` runs a
+        // fixed 16-iteration rejection loop and returns
         // `rejection-sampling-failed` if every iteration is rejected, rather
         // than a proof that failed the norm bound.
-        let proj = plp::EphemeralProjection::for_proving(&tau, &randomness);
+        let proj = identity.project_at_context(&tau, &randomness);
         let proof = plp::Prover::prove_identity(&identity, &proj, &seed)?;
 
         Ok(WitZkProof {
@@ -289,7 +289,7 @@ impl GuestMasterIdentity for OwnedIdentity {
         let seed = self.0.plp_seed();
         let identity = plp::MasterIdentity::from_seed(seed);
         // Same randomness as the projection at this tau. See `plp_prove_identity`.
-        let proj = plp::EphemeralProjection::for_proving(&tau, &randomness);
+        let proj = identity.project_at_context(&tau, &randomness);
         let proof = plp::Prover::prove_identity(&identity, &proj, seed)?;
 
         Ok(WitZkProof {

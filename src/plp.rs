@@ -25,8 +25,8 @@
 //!
 //! ## Domain Separators
 //!
-//! - Matrix generation: `"AETHEL_PLP_CTX_V1"`
-//! - Challenge hash: `"AETHEL_PLP_CHALLENGE_V1"`
+//! - Matrix generation: `"AETHEL_PLP_CTX_V2"`
+//! - Challenge hash: `"AETHEL_PLP_CHALLENGE_V3"`
 
 extern crate alloc;
 
@@ -482,19 +482,39 @@ fn sample_mask_from_xof(xof: &mut impl XofReader) -> Poly {
 
 /// Hash-to-challenge: produce a sparse ternary polynomial with exactly 60 ±1 coefficients.
 ///
-/// c = HashToPoly(SHAKE-256("AETHEL_PLP_CHALLENGE_V2" ∥ w ∥ tau ∥ salt))
+/// c = HashToPoly(SHAKE-256("AETHEL_PLP_CHALLENGE_V3" ∥ w ∥ b_τ ∥ tau ∥ salt))
 ///
-/// Binds the whole projection, not just the commitment. The previous version
-/// hashed `w` and the **first 8 bytes** of `tau` only, so a proof was bound to
-/// neither the rest of the context nor to `A`. Now that `A` varies per
-/// projection, an unbound challenge would let one proof be presented against a
-/// different projection at the same context; including `salt` ties the proof to
-/// exactly the `A` it was computed against, and including the full `tau`
-/// removes the 8-byte truncation while we are here.
-pub fn hash_to_challenge(w: &Poly, tau: &[u8; 32], salt: &[u8; 32]) -> Poly {
+/// Binds the statement being proven, not just the commitment and the context.
+/// V2 absorbed `w`, `tau` and `salt`, which binds `A_τ` transitively — `A` is
+/// fully determined by `(tau, salt)` — but never bound `b_τ` itself, and
+/// nothing else in the challenge determines it. That is the weak-Fiat-Shamir
+/// pattern: with `c` computable before `b_τ` is chosen, a party with no secret
+/// key can fix `z` and `w` freely, compute `c = H(w, tau, salt)` exactly as an
+/// honest prover would, and then solve `b = c⁻¹·(A·z − w)` in `R_q` — solvable
+/// because `q ≡ 1 (mod 512)` splits the ring completely, so a 60-sparse
+/// ternary `c` is invertible with overwhelming probability. The resulting
+/// `(b, w, c, z)` satisfies every check `Verifier::verify` runs, even though
+/// `b` is uniform-random with no `s` or small `e_τ` behind it: it is not an
+/// M-LWE sample, so nothing has actually been proven about any identity.
+/// Absorbing `b_τ` closes this the same way `credential::derive_challenge`
+/// already absorbs its `b_tau` argument — that construction had the binding
+/// right from the start; this one is catching up to it.
+///
+/// `A_τ` is not absorbed directly even though the spec's ordering is
+/// `A_τ ‖ b_τ ‖ W ‖ τ`: it is fully determined by `(tau, salt)`, both of which
+/// are absorbed below, so hashing it again would be redundant rather than
+/// additionally binding. The argument order here (`w`, `b_τ`, `tau`, `salt`)
+/// also departs from the spec's for the same reason it never mattered before —
+/// Fiat-Shamir binding needs every value absorbed unambiguously, not in a
+/// particular order, and every field here has a fixed length so concatenation
+/// order carries no information.
+pub fn hash_to_challenge(w: &Poly, public_b: &Poly, tau: &[u8; 32], salt: &[u8; 32]) -> Poly {
     let mut hasher = Shake256::default();
-    hasher.update(b"AETHEL_PLP_CHALLENGE_V2");
+    hasher.update(b"AETHEL_PLP_CHALLENGE_V3");
     for &c in w.coeffs.iter() {
+        hasher.update(&c.to_le_bytes());
+    }
+    for &c in public_b.coeffs.iter() {
         hasher.update(&c.to_le_bytes());
     }
     hasher.update(tau);
@@ -706,36 +726,6 @@ pub struct EphemeralProjection {
 }
 
 impl EphemeralProjection {
-    /// A projection carrying only `A_τ` and `τ`, with `public_b` left zero.
-    ///
-    /// Used by the prover path. [`Prover::prove_identity`] reads only
-    /// `matrix_a` and `tau` — the proof `(w, c, z)` is *independent of* `e_τ`,
-    /// because the verifier's `A_τ·z − c·b_τ ≈ w` check absorbs the `c·e_τ`
-    /// term within its norm tolerance. So proving needs no fresh randomness and
-    /// no real `b_τ`, and a proof made here verifies against any correctly
-    /// formed `b_τ = A_τ·s + (small e_τ)` the holder publishes separately via
-    /// [`MasterIdentity::project_at_context`].
-    ///
-    /// `pub(crate)` on purpose: the zero `public_b` is not a real projection and
-    /// must never escape as one.
-    ///
-    /// Takes `rho` because `A` is no longer recoverable from `tau` alone. The
-    /// prover must reconstruct the *same* `A` the projection was built under,
-    /// which means reconstructing the same salt, which means being given the
-    /// same `rho`. That is why `plp-prove-identity` and `master-identity.prove`
-    /// gained a randomness parameter: see 0X3-95.
-    pub(crate) fn for_proving(tau: &[u8], rho: &[u8]) -> Self {
-        let tau_padded = pad_tau(tau);
-        let salt = derive_projection_salt(rho, &tau_padded);
-        let matrix_a = derive_context_matrix(&tau_padded, &salt);
-        EphemeralProjection {
-            tau: tau_padded,
-            salt,
-            matrix_a,
-            public_b: Poly::zero(),
-        }
-    }
-
     /// Encode as `tau(32) ++ salt(32) ++ public_b.coeffs(N*4, LE)`.
     ///
     /// `matrix_a` is deliberately **not** on the wire. It is a function of `tau`
@@ -827,6 +817,15 @@ impl Prover {
     /// depends on a rejected response never being observable (that is the
     /// entire reason for rejecting it), so those values must not merely go
     /// unused — they must be wiped.
+    ///
+    /// `proj` MUST carry the real `public_b = A_τ·s + e_τ`, not a placeholder.
+    /// The challenge now binds `b_τ` (see [`hash_to_challenge`]), so whatever
+    /// this function reads from `proj.public_b` is what a verifier will need
+    /// to already hold in order to recompute the same challenge and accept
+    /// the proof. Build `proj` with [`MasterIdentity::project_at_context`]
+    /// (using the same `identity` and any `rho`, reused or fresh — freshness
+    /// only matters for `project_at_context`'s own tau-reuse guarantee, not
+    /// for this function).
     pub fn prove_identity(
         identity: &MasterIdentity,
         proj: &EphemeralProjection,
@@ -855,8 +854,8 @@ impl Prover {
             // 2. Compute commitment W = A_τ · y
             let mut w = proj.matrix_a.mul_schoolbook(&y);
 
-            // 3. Compute Fiat-Shamir challenge c = HashToPoly(W, τ, salt)
-            let mut challenge_c = hash_to_challenge(&w, &proj.tau, &proj.salt);
+            // 3. Compute Fiat-Shamir challenge c = HashToPoly(W, b_τ, τ, salt)
+            let mut challenge_c = hash_to_challenge(&w, &proj.public_b, &proj.tau, &proj.salt);
 
             // 4. Compute candidate response z = y + c · s
             let mut cs = challenge_c.mul_schoolbook(&identity.secret_key);
@@ -930,7 +929,8 @@ impl Verifier {
         }
 
         // 2. Re-compute Fiat-Shamir challenge c'
-        let recomputed_c = hash_to_challenge(&proof.commitment_w, &proj.tau, &proj.salt);
+        let recomputed_c =
+            hash_to_challenge(&proof.commitment_w, &proj.public_b, &proj.tau, &proj.salt);
 
         // Constant-time challenge comparison
         let mut mismatch = 0u32;
@@ -1102,8 +1102,8 @@ mod tests {
         for i in 0..N {
             y.coeffs[i] = ((i as u64 * 7919 + 13) % 100_000) as u32;
         }
-        let c1 = hash_to_challenge(&proj.matrix_a, &proj.tau, &[1u8; 32]);
-        let c2 = hash_to_challenge(&proj.matrix_a, &proj.tau, &[2u8; 32]);
+        let c1 = hash_to_challenge(&proj.matrix_a, &proj.public_b, &proj.tau, &[1u8; 32]);
+        let c2 = hash_to_challenge(&proj.matrix_a, &proj.public_b, &proj.tau, &[2u8; 32]);
         assert_ne!(c1.coeffs, c2.coeffs, "setup: challenges must differ");
 
         // z = y + c*s, with s the real secret this identity holds.
@@ -1362,10 +1362,138 @@ mod tests {
     #[test]
     fn test_hash_to_challenge_sparse() {
         let w = Poly::zero();
-        let c = hash_to_challenge(&w, &[0x11u8; 32], &[0x22u8; 32]);
+        let public_b = Poly::zero();
+        let c = hash_to_challenge(&w, &public_b, &[0x11u8; 32], &[0x22u8; 32]);
         // Count non-zero coefficients — should be exactly 60
         let nonzero = c.coeffs.iter().filter(|&&x| x != 0).count();
         assert_eq!(nonzero, 60, "challenge should have exactly 60 non-zero coefficients");
+    }
+
+    // ── Unbound b_τ in the Fiat-Shamir challenge (0X3-108) ───────────────────
+
+    /// The statement, not just the challenge equation. `Verifier::verify`
+    /// checks `‖z‖∞ < γ₁−β`, `c == H(w, tau, salt)` and `‖A·z − c·b − w‖∞ < 2β`
+    /// against whatever `(A, b)` the caller's projection carries. Before this
+    /// change, the challenge absorbed `w`, `tau` and `salt` but never `b_τ`, so
+    /// `c` was fully determined before `b_τ` entered the picture at all — the
+    /// weak-Fiat-Shamir pattern.
+    ///
+    /// A party with no secret key exploits that by working backwards: fix
+    /// `tau`/`salt` (which fixes `A`), pick any small `z`, pick any `w`, hash
+    /// those to get `c` — computed with no reference to `b` — then solve the
+    /// verification equation for `b`:
+    ///
+    /// ```text
+    /// A·z − c·b − w ≡ 0  ⟹  b = c⁻¹·(A·z − w)
+    /// ```
+    ///
+    /// `c` is invertible in `R_q` with overwhelming probability, because
+    /// `q = 8_380_417 ≡ 1 (mod 512)` splits the ring completely and a 60-sparse
+    /// ternary polynomial is generically nonzero in every NTT slot. The
+    /// resulting `(w, c, z)` satisfies checks 1 and 3 exactly (norm bound by
+    /// construction, verification equation with zero residual), and `b` looks
+    /// like any other projection — but it is uniform-random with no `s` or
+    /// small `e_τ` behind it, so nothing has actually been proven.
+    ///
+    /// This test mounts exactly that attack against the code as it stands
+    /// today (V3): the forger still has to *supply something* as the `b`
+    /// argument to `hash_to_challenge` to get a `c` to invert against, so it
+    /// uses a decoy (zero) — modelling a forger who has not yet realised the
+    /// projection they end up with won't be the one they hashed. `c` now
+    /// binds that decoy, but the projection built from the solved-for `b` does
+    /// not carry the decoy — it carries the real solved value. Re-deriving the
+    /// challenge from the real `(w, b, tau, salt)` at verification time (step
+    /// 2) therefore disagrees with the forger's `c`, and the proof is
+    /// rejected on challenge mismatch before the verification equation (step
+    /// 3, where the forgery is actually exact) is ever reached. Under V2 this
+    /// forgery verified outright, because no `b` was ever hashed to disagree
+    /// with.
+    #[test]
+    fn a_forged_projection_with_no_secret_key_is_rejected() {
+        let tau = pad_tau(b"forgery-target-context");
+        let salt = [0x9au8; 32];
+        let matrix_a = derive_context_matrix(&tau, &salt);
+
+        // Free choice: any response inside the norm bound.
+        let mut z = Poly::zero();
+        for i in 0..N {
+            z.coeffs[i] = 1;
+        }
+        assert!(
+            z.infinity_norm() < REJECTION_THRESHOLD as i64,
+            "test setup: z must satisfy the norm bound the same way an honest response would"
+        );
+
+        // Free choice: any commitment.
+        let w = Poly::zero();
+
+        // The forger has not chosen b_τ yet — hash a decoy to get a
+        // candidate c, exactly as a party running the old (V2) attack would
+        // have hashed nothing at all.
+        let decoy_b = Poly::zero();
+        let c = hash_to_challenge(&w, &decoy_b, &tau, &salt);
+
+        // Solve the verification equation for b: A·z − c·b − w = 0.
+        let az_minus_w = attack_sub(&matrix_a.mul_schoolbook(&z), &w);
+        let forged_b = attack_ring_divide(&az_minus_w, &c)
+            .expect("c should be invertible in R_q with overwhelming probability");
+
+        // Confirm the forgery is exact against the equation it was built to
+        // satisfy — otherwise a rejection below would prove nothing about the
+        // binding fix specifically.
+        let check_w = matrix_a
+            .mul_schoolbook(&z)
+            .sub(&c.mul_schoolbook(&forged_b));
+        assert_eq!(
+            check_w.coeffs, w.coeffs,
+            "test setup: the solved-for b should make the verification equation exact"
+        );
+
+        let proj = EphemeralProjection {
+            tau,
+            salt,
+            matrix_a,
+            public_b: forged_b,
+        };
+        let proof = ZkIdentityProof {
+            commitment_w: w,
+            challenge_c: c,
+            response_z: z,
+        };
+
+        assert!(
+            !Verifier::verify(&proj, &proof),
+            "a projection/proof pair forged with no secret key, by solving the \
+             verification equation for b_τ after fixing the challenge, was \
+             ACCEPTED. The challenge must bind b_τ so it cannot be fixed before \
+             b_τ is chosen — see hash_to_challenge and 0X3-108."
+        );
+    }
+
+    /// The property the fix above rests on, stated directly rather than via
+    /// the exploit: the challenge must actually depend on `b_τ`. Without this,
+    /// the forgery test above could pass for a reason unrelated to the fix —
+    /// e.g. if `hash_to_challenge` took `public_b` as a parameter but never
+    /// read it.
+    #[test]
+    fn two_projections_differing_only_in_public_b_produce_different_challenges() {
+        let w = Poly::zero();
+        let tau = [0x11u8; 32];
+        let salt = [0x22u8; 32];
+
+        let mut b1 = Poly::zero();
+        b1.coeffs[0] = 1;
+        let mut b2 = Poly::zero();
+        b2.coeffs[0] = 2;
+
+        let c1 = hash_to_challenge(&w, &b1, &tau, &salt);
+        let c2 = hash_to_challenge(&w, &b2, &tau, &salt);
+
+        assert_ne!(
+            c1.coeffs, c2.coeffs,
+            "hash_to_challenge produced the same challenge for two projections \
+             differing only in public_b — b_τ is not actually bound"
+        );
     }
 
     // ── The averaging attack on a reused tau (AETHEL-F-02 / 0X3-95) ──────────

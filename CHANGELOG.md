@@ -7,6 +7,33 @@ adheres to the breaking-change and deprecation rules in
 [`STABILITY.md`](./STABILITY.md) rather than strict SemVer prior to `1.0.0` — see that
 document for what counts as breaking inside `0.x`.
 
+## [Unreleased]
+
+### Fixed
+
+- **The Fiat-Shamir challenge now binds the projection it proves knowledge of
+  (0X3-108).** The challenge absorbed the commitment, τ, and salt, which binds
+  `A_τ` transitively (it is fully determined by τ and salt), but it never
+  bound `b_τ` itself, and nothing else in the challenge determined it.
+
+  That let a party with no secret key work backwards: fix a small response
+  and an arbitrary commitment, compute the challenge exactly as an honest
+  prover would (it never depended on `b_τ`), then solve the verification
+  equation for the one `b_τ` that makes the proof check out. The resulting
+  projection carries no identity behind it: it is uniform-random, with no
+  secret key and no small error term, yet comes with a proof that verifies.
+
+  The challenge now absorbs `b_τ` as well, so it can no longer be computed
+  before the statement is chosen. `credential::derive_challenge` already
+  absorbed its `b_tau` argument; this brings PLP's own prove/verify pair in
+  line with it.
+
+### Changed (breaking)
+
+- **Proofs from before this fix do not verify under this version, and the
+  reverse.** The challenge domain separator moved to
+  `AETHEL_PLP_CHALLENGE_V3`.
+
 ## [0.3.0] - 2026-09-01
 
 ### Fixed

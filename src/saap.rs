@@ -899,6 +899,7 @@ mod soundness_tests {
         let commitment_w = Poly::zero();
         let challenge_c = crate::plp::hash_to_challenge(
             &commitment_w,
+            &projection.public_b,
             &projection.tau,
             &projection.salt,
         );
