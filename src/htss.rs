@@ -56,6 +56,17 @@
 //!    intermediate node with each other, by construction of
 //!    `compute_orthogonal_paths` — a graph-theoretic property of the modeled
 //!    routing, not a live security boundary.
+//! 3. **Share authentication, to a root the caller already trusts**: every
+//!    share [`SecretSharer::reconstruct_key_material`] is given is checked
+//!    against a caller-supplied Merkle root before interpolation runs, so a
+//!    well-formed share that was never part of the sharing it claims to be
+//!    (distinct index, right width, wrong tree) is refused rather than
+//!    silently interpolated (0X3-105). This closes the gap
+//!    `InvalidShareSet`'s duplicate/cardinality checks (P3-12) could not: a
+//!    share list can pass every one of those and still not be genuine. It
+//!    does **not** authenticate the root itself — see the doc comment on
+//!    [`SecretSharer::reconstruct_key_material`] for what that means in
+//!    practice.
 
 extern crate alloc;
 
@@ -128,12 +139,25 @@ pub struct SecretSharer;
 /// information-theoretically independent of the secret, provided the
 /// coefficients were derived by [`SecretSharer::split_key_material`] rather
 /// than by the deprecated [`SecretSharer::split_secret`].
+///
+/// `path` proves this share's membership in the tree committed to by the
+/// [`SecretSharer::split_key_material`] root, without disclosing anything
+/// about the other shares beyond their hashes. It is a public value — it
+/// carries hash outputs, not raw share data — and it authenticates `(index,
+/// value)` only against a root the verifier already trusts. See
+/// [`SecretSharer::reconstruct_key_material`] for what that trust boundary is
+/// and is not.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HtssShare {
     /// Evaluation point x, in `1..=n`. Never zero — `f(0)` is the secret.
     pub index: u8,
     /// Per-limb evaluations `f_limb(index)`, little-endian `u32` each.
     pub value: Vec<u8>,
+    /// Merkle inclusion path for `(index, value)` against the sharing's root.
+    /// Flattened 32-byte hashes, concatenated: `32 * merkle_proof_len(index)`
+    /// bytes. See [`build_share_tree`] for the fixed tree shape this proves
+    /// membership in.
+    pub path: Vec<u8>,
 }
 
 /// Bytes of the shared payload carried by each limb.
@@ -145,6 +169,190 @@ const LIMB_BYTES: usize = 2;
 
 /// Serialized width of one limb evaluation inside a share's `value`.
 const LIMB_EVAL_BYTES: usize = 4;
+
+// ── Share-set authentication (AETHEL-P8-19 / 0X3-105) ──────────────────────────
+//
+// PR #21 (0X3-95's sibling on the HTSS side) made `htss-reconstruct` refuse a
+// share list that cannot determine any secret: a repeated index, or more
+// shares than the scheme issues. It could not and did not decide whether the
+// shares it does accept are *genuine* — three well-formed shares at distinct
+// indices interpolate whether or not any of them ever came out of a real
+// `split_key_material` call. Lagrange interpolation cannot tell the
+// difference; nothing about the algebra is wrong with a fabricated point.
+//
+// What follows binds every share to a single 32-byte root at split time, and
+// checks every share against that root at reconstruction time, using a fixed
+// 5-leaf Merkle tree. Fabricating a `(index, value)` pair that passes
+// verification against a root you did not build requires a second preimage
+// of SHA3-256 — not a weakness in the sharing scheme.
+//
+// # This authenticates shares to a root. It does not authenticate the root.
+//
+// `htss-reconstruct` verifies that the shares it is given are members of the
+// tree named by the `root` it is also given. It has no way to know whether
+// that `root` is the genuine one from a real split, because the root arrives
+// as ordinary caller input like everything else. A caller who receives
+// `(shares, root)` as one untrusted bundle and passes both straight through
+// gets no protection: an attacker can always mint a self-consistent bundle,
+// fabricated shares and a root built to match. The property this buys is only
+// as strong as the channel the caller used to obtain `root` — the same
+// caveat that applies to verifying a signature against an unauthenticated
+// public key. See the doc comment on `root` at each call site for what an
+// honest channel looks like.
+
+/// Number of siblings in a share's inclusion path, given its index.
+///
+/// The tree in [`build_share_tree`] has a fixed, asymmetric shape: shares 1-4
+/// sit three levels deep, share 5 hangs directly off the root at one level.
+/// Path length is therefore a pure function of `index`, so the wire format
+/// (see [`SecretSharer::split_key_material_bytes`]) never needs to carry it.
+fn merkle_proof_len(index: u8) -> Option<usize> {
+    match index {
+        1..=4 => Some(3),
+        5 => Some(1),
+        _ => None,
+    }
+}
+
+/// Domain-separated leaf hash: commits `index` and `value` together.
+///
+/// Binding both into one hash is what stops a valid proof for one share being
+/// replayed against a different index or a different value — an attacker
+/// changing either changes the leaf, and the fixed tree above it no longer
+/// folds to the same root.
+fn merkle_leaf_hash(index: u8, value: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha3_256::new();
+    hasher.update(b"AETHEL_HTSS_MERKLE_LEAF_V1");
+    hasher.update([index]);
+    hasher.update((value.len() as u32).to_le_bytes());
+    hasher.update(value);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&hasher.finalize());
+    out
+}
+
+/// Domain-separated internal-node hash.
+///
+/// A distinct domain separator from [`merkle_leaf_hash`] rather than a shared
+/// one is what stops a leaf being passed off as an internal node (or the
+/// reverse) — the classic Merkle second-preimage class of bug. `left` and
+/// `right` are ordered and fixed by position in [`build_share_tree`], not
+/// sorted, so there is no ambiguity to exploit there either.
+fn merkle_node_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Sha3_256::new();
+    hasher.update(b"AETHEL_HTSS_MERKLE_NODE_V1");
+    hasher.update(left);
+    hasher.update(right);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&hasher.finalize());
+    out
+}
+
+/// Build the fixed 5-leaf tree over one sharing's shares and return the root
+/// plus each share's inclusion path, in index order (`paths[0]` is index 1).
+///
+/// `TOTAL_SHARES` is 5 crate-wide and is not a runtime parameter, so this is
+/// the concrete 5-leaf shape rather than a generic n-ary builder — a reader
+/// can see the whole tree without tracing recursion:
+///
+/// ```text
+///            ROOT
+///           /    \
+///        N0123    L4      (share 5 hangs directly off the root)
+///        /   \
+///      N01   N23
+///      / \   / \
+///     L0 L1 L2 L3          (L_i = leaf for share index i+1)
+/// ```
+///
+/// The shape is unbalanced by construction (RFC 6962's method, specialized to
+/// n=5) rather than padded to a power of two with a duplicated leaf, which is
+/// the construction behind CVE-2012-2459-class Merkle malleability bugs.
+fn build_share_tree(leaves: &[[u8; 32]; TOTAL_SHARES]) -> ([u8; 32], [Vec<u8>; TOTAL_SHARES]) {
+    let (l0, l1, l2, l3, l4) = (leaves[0], leaves[1], leaves[2], leaves[3], leaves[4]);
+
+    let n01 = merkle_node_hash(&l0, &l1);
+    let n23 = merkle_node_hash(&l2, &l3);
+    let n0123 = merkle_node_hash(&n01, &n23);
+    let root = merkle_node_hash(&n0123, &l4);
+
+    let flat = |chunks: &[[u8; 32]]| -> Vec<u8> {
+        let mut out = Vec::with_capacity(chunks.len() * 32);
+        for c in chunks {
+            out.extend_from_slice(c);
+        }
+        out
+    };
+
+    let paths = [
+        flat(&[l1, n23, l4]),   // index 1: sibling leaf, sibling subtree, far leaf
+        flat(&[l0, n23, l4]),   // index 2
+        flat(&[l3, n01, l4]),   // index 3
+        flat(&[l2, n01, l4]),   // index 4
+        flat(&[n0123]),         // index 5: one level, straight off the root
+    ];
+
+    (root, paths)
+}
+
+/// Verify that `(index, value)` is a genuine leaf of the tree named by `root`,
+/// using `path` as produced by [`build_share_tree`].
+///
+/// Rejects before hashing anything if `path`'s length does not match what
+/// [`merkle_proof_len`] expects for `index` — a wrong-length path cannot be a
+/// valid proof for this fixed tree shape, so there is nothing to gain by
+/// hashing it anyway.
+fn verify_share_in_tree(index: u8, value: &[u8], path: &[u8], root: &[u8; 32]) -> bool {
+    let Some(expected_siblings) = merkle_proof_len(index) else {
+        return false;
+    };
+    if path.len() != expected_siblings * 32 {
+        return false;
+    }
+
+    let sibling = |i: usize| -> [u8; 32] {
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&path[i * 32..i * 32 + 32]);
+        out
+    };
+
+    let leaf = merkle_leaf_hash(index, value);
+
+    let computed = match index {
+        1 | 3 => {
+            // This share's leaf is the LEFT child of its pair.
+            let pair = merkle_node_hash(&leaf, &sibling(0));
+            let quad = if index == 1 {
+                merkle_node_hash(&pair, &sibling(1))
+            } else {
+                merkle_node_hash(&sibling(1), &pair)
+            };
+            merkle_node_hash(&quad, &sibling(2))
+        }
+        2 | 4 => {
+            // This share's leaf is the RIGHT child of its pair.
+            let pair = merkle_node_hash(&sibling(0), &leaf);
+            let quad = if index == 2 {
+                merkle_node_hash(&pair, &sibling(1))
+            } else {
+                merkle_node_hash(&sibling(1), &pair)
+            };
+            merkle_node_hash(&quad, &sibling(2))
+        }
+        5 => merkle_node_hash(&sibling(0), &leaf),
+        _ => return false,
+    };
+
+    // Constant-time comparison, consistent with how this crate compares every
+    // other recomputed-vs-supplied value (plp::Verifier's challenge check,
+    // saap's constant-time confirmations). Not defending a secret here — root
+    // and path are public — but there is no cost to staying consistent.
+    let mut mismatch = 0u8;
+    for i in 0..32 {
+        mismatch |= computed[i] ^ root[i];
+    }
+    mismatch == 0
+}
 
 /// Largest secret [`SecretSharer::split_key_material`] will split.
 ///
@@ -185,7 +393,10 @@ impl SecretSharer {
     ///
     /// Refuses a secret larger than [`MAX_SECRET_BYTES`] with
     /// `InvalidInputLength`.
-    pub fn split_key_material(secret: &[u8], nonce: &[u8]) -> Result<Vec<HtssShare>, IdentityError> {
+    pub fn split_key_material(
+        secret: &[u8],
+        nonce: &[u8],
+    ) -> Result<(Vec<HtssShare>, [u8; 32]), IdentityError> {
         if secret.is_empty() || secret.len() > MAX_SECRET_BYTES {
             return Err(IdentityError::InvalidInputLength);
         }
@@ -203,6 +414,7 @@ impl SecretSharer {
             .map(|index| HtssShare {
                 index,
                 value: Vec::with_capacity(limb_count * LIMB_EVAL_BYTES),
+                path: Vec::new(), // filled in below, once every value exists
             })
             .collect();
 
@@ -240,7 +452,20 @@ impl SecretSharer {
 
         coeff_key.zeroize();
         payload.zeroize();
-        Ok(shares)
+
+        // Every share's value is final; bind the set together. Leaves commit
+        // (index, value), so the tree — and therefore the root — depends on
+        // both. See the module note above `merkle_proof_len`.
+        let mut leaves = [[0u8; 32]; TOTAL_SHARES];
+        for (i, share) in shares.iter().enumerate() {
+            leaves[i] = merkle_leaf_hash(share.index, &share.value);
+        }
+        let (root, paths) = build_share_tree(&leaves);
+        for (share, path) in shares.iter_mut().zip(paths) {
+            share.path = path;
+        }
+
+        Ok((shares, root))
     }
 
     /// Reconstruct key material from at least `THRESHOLD_K` shares.
@@ -267,7 +492,31 @@ impl SecretSharer {
     /// scheme issues `TOTAL_SHARES` shares, so a longer list cannot be a valid
     /// share set whatever it contains, and interpolation is O(k**2) per limb, so
     /// accepting an unbounded one is quadratic work on unauthenticated input.
-    pub fn reconstruct_key_material(shares: &[HtssShare]) -> Result<Vec<u8>, IdentityError> {
+    ///
+    /// # `root` authenticates the shares, not itself
+    ///
+    /// Every share is checked against `root` before interpolation runs (see
+    /// `merkle_proof_len` and `verify_share_in_tree`): a `(index, value, path)`
+    /// that does not fold to `root` is refused as `InvalidShareSet`, whatever
+    /// its index and width look like. That closes the gap the set-validation
+    /// above cannot: a share list can pass every check here and still not be
+    /// the shares [`Self::split_key_material`] actually produced, because
+    /// nothing about valid indices, widths or uniqueness distinguishes a real
+    /// share from a fabricated one at a free index.
+    ///
+    /// What this does **not** do is vouch for `root` itself. `root` is caller
+    /// input like everything else in this function's signature; reconstruction
+    /// has no independent way to know it is the genuine value from a real
+    /// split rather than one an attacker minted to match their own fabricated
+    /// shares. The guarantee is only as strong as wherever the caller got
+    /// `root` from — the same trust requirement verifying a signature places
+    /// on the public key. A caller who receives `(shares, root)` as one
+    /// untrusted bundle and passes both straight through gets nothing extra
+    /// from this check.
+    pub fn reconstruct_key_material(
+        shares: &[HtssShare],
+        root: &[u8; 32],
+    ) -> Result<Vec<u8>, IdentityError> {
         if shares.len() < THRESHOLD_K {
             return Err(IdentityError::ThresholdNotMet);
         }
@@ -291,6 +540,15 @@ impl SecretSharer {
                 return Err(IdentityError::InvalidShareSet);
             }
             seen[share.index as usize] = true;
+        }
+
+        // Authenticate every share against the root before trusting any of
+        // them enough to interpolate. Cheap relative to interpolation itself,
+        // and it means a fabricated share never reaches the arithmetic below.
+        for share in shares {
+            if !verify_share_in_tree(share.index, &share.value, &share.path, root) {
+                return Err(IdentityError::InvalidShareSet);
+            }
         }
 
         let limb_count = width / LIMB_EVAL_BYTES;
@@ -329,32 +587,48 @@ impl SecretSharer {
         Ok(secret)
     }
 
-    /// Split key material and serialize the shares for a byte-oriented boundary.
+    /// Split key material and serialize the root and shares for a
+    /// byte-oriented boundary.
     ///
     /// Wire format, so a caller in another language can parse it without this
     /// crate:
     ///
     /// ```text
-    /// [count: u8][width: u32 LE][ index: u8, value: width bytes ] × count
+    /// [root: 32 bytes][count: u8][width: u32 LE]
+    ///   [ index: u8, value: width bytes, path: merkle_proof_len(index)*32 bytes ] × count
     /// ```
     ///
-    /// Deliberately not `#[cfg(feature = "wasm")]`: the WASM export is a thin
-    /// wrapper over this, so the logic behind the artifact's boundary is
-    /// reachable by native tests. A boundary that can only be tested by building
-    /// for WASM is a boundary that does not get tested.
+    /// `path`'s length is not itself carried on the wire: for this crate's
+    /// fixed 5-share tree it is a pure function of `index` (see
+    /// `merkle_proof_len`), so writing it would be redundant and a mismatch
+    /// would just be one more thing to validate for no benefit.
+    ///
+    /// The root travels in the same blob as the shares here for convenience.
+    /// See [`Self::reconstruct_key_material`] for why that means this
+    /// particular wire format authenticates shares to each other but not to
+    /// an attacker who controls the whole blob — a caller who needs that
+    /// guarantee keeps the root out of band and uses [`HtssShare`] directly.
+    ///
+    /// Not gated behind any target-specific feature: this is the boundary a
+    /// non-Rust caller parses, so it needs to be reachable and tested by
+    /// ordinary native tests rather than only by building for a specific
+    /// target.
     pub fn split_key_material_bytes(
         secret: &[u8],
         nonce: &[u8],
     ) -> Result<Vec<u8>, IdentityError> {
-        let shares = Self::split_key_material(secret, nonce)?;
+        let (shares, root) = Self::split_key_material(secret, nonce)?;
         let width = shares[0].value.len();
 
-        let mut out = Vec::with_capacity(1 + 4 + shares.len() * (1 + width));
+        let path_bytes: usize = shares.iter().map(|s| s.path.len()).sum();
+        let mut out = Vec::with_capacity(32 + 1 + 4 + shares.len() * (1 + width) + path_bytes);
+        out.extend_from_slice(&root);
         out.push(shares.len() as u8);
         out.extend_from_slice(&(width as u32).to_le_bytes());
         for share in &shares {
             out.push(share.index);
             out.extend_from_slice(&share.value);
+            out.extend_from_slice(&share.path);
         }
         Ok(out)
     }
@@ -362,39 +636,61 @@ impl SecretSharer {
     /// Parse the wire format written by [`Self::split_key_material_bytes`] and
     /// reconstruct.
     ///
-    /// Returns `ThresholdNotMet` below the threshold and `SerializationError`
-    /// for malformed input — never a sentinel value that a caller could mistake
-    /// for a recovered secret.
+    /// Returns `ThresholdNotMet` below the threshold, `SerializationError` for
+    /// malformed input, and `InvalidShareSet` for a well-formed share set that
+    /// fails the root check — never a sentinel value that a caller could
+    /// mistake for a recovered secret.
     pub fn reconstruct_key_material_bytes(bytes: &[u8]) -> Result<Vec<u8>, IdentityError> {
-        if bytes.len() < 5 {
+        if bytes.len() < 37 {
             return Err(IdentityError::SerializationError);
         }
-        let count = bytes[0] as usize;
+        let mut root = [0u8; 32];
+        root.copy_from_slice(&bytes[..32]);
+
+        let count = bytes[32] as usize;
         let mut width_bytes = [0u8; 4];
-        width_bytes.copy_from_slice(&bytes[1..5]);
+        width_bytes.copy_from_slice(&bytes[33..37]);
         let width = u32::from_le_bytes(width_bytes) as usize;
 
         if count == 0 || width == 0 {
             return Err(IdentityError::SerializationError);
         }
-        let expected = 5 + count * (1 + width);
-        if bytes.len() != expected {
+
+        let mut shares = Vec::with_capacity(count);
+        let mut off = 37;
+        for _ in 0..count {
+            if off >= bytes.len() {
+                return Err(IdentityError::SerializationError);
+            }
+            let index = bytes[off];
+            off += 1;
+
+            // Path length is derived from `index`, not read from the wire —
+            // see `split_key_material_bytes`'s doc comment. An index outside
+            // 1..=TOTAL_SHARES has no defined path length, so the blob is
+            // malformed rather than merely carrying a share that will later
+            // fail the root check.
+            let Some(sibling_count) = merkle_proof_len(index) else {
+                return Err(IdentityError::SerializationError);
+            };
+            let path_len = sibling_count * 32;
+
+            if off + width + path_len > bytes.len() {
+                return Err(IdentityError::SerializationError);
+            }
+            let value = bytes[off..off + width].to_vec();
+            off += width;
+            let path = bytes[off..off + path_len].to_vec();
+            off += path_len;
+
+            shares.push(HtssShare { index, value, path });
+        }
+
+        if off != bytes.len() {
             return Err(IdentityError::SerializationError);
         }
 
-        let mut shares = Vec::with_capacity(count);
-        let mut off = 5;
-        for _ in 0..count {
-            let index = bytes[off];
-            off += 1;
-            shares.push(HtssShare {
-                index,
-                value: bytes[off..off + width].to_vec(),
-            });
-            off += width;
-        }
-
-        Self::reconstruct_key_material(&shares)
+        Self::reconstruct_key_material(&shares, &root)
     }
 
     /// Absorb the secret once, into a fixed-size coefficient key.
@@ -717,6 +1013,97 @@ mod tests {
     }
 
     use super::*;
+
+    // ── Merkle tree math (0X3-105) ──────────────────────────────────────────
+    //
+    // `build_share_tree` and `verify_share_in_tree` are hand-derived: five
+    // explicit code paths, one per index, rather than a generic recursive
+    // walk. These pin that the two sides actually agree, rather than trusting
+    // the derivation by inspection.
+
+    /// Every index's path, built by `build_share_tree`, must verify against
+    /// the root `build_share_tree` returned — for every index, not just one,
+    /// since the five verification branches are independent code paths and a
+    /// mistake in any one of them would not show up in the others.
+    #[test]
+    fn every_share_verifies_against_the_tree_it_was_built_from() {
+        let leaves: [[u8; 32]; TOTAL_SHARES] =
+            core::array::from_fn(|i| merkle_leaf_hash((i + 1) as u8, &[i as u8; 4]));
+        let (root, paths) = build_share_tree(&leaves);
+
+        for i in 0..TOTAL_SHARES {
+            let index = (i + 1) as u8;
+            let value = [i as u8; 4];
+            assert!(
+                verify_share_in_tree(index, &value, &paths[i], &root),
+                "index {index}'s own path did not verify against the tree it came from"
+            );
+        }
+    }
+
+    /// The path length `merkle_proof_len` predicts must match what
+    /// `build_share_tree` actually produces, for every index — this is the
+    /// invariant the wire format in `split_key_material_bytes` depends on to
+    /// avoid carrying an explicit length.
+    #[test]
+    fn proof_length_matches_what_the_tree_builder_produces() {
+        let leaves = [[0u8; 32]; TOTAL_SHARES];
+        let (_, paths) = build_share_tree(&leaves);
+        for i in 0..TOTAL_SHARES {
+            let index = (i + 1) as u8;
+            let expected = merkle_proof_len(index).expect("1..=5 is always Some") * 32;
+            assert_eq!(
+                paths[i].len(),
+                expected,
+                "merkle_proof_len({index}) disagrees with build_share_tree's own output"
+            );
+        }
+    }
+
+    /// Changing any single field — the index, the value, or one byte of the
+    /// path — must break verification. This is what "authenticates (index,
+    /// value) together" actually means, checked rather than asserted in prose.
+    #[test]
+    fn verification_is_sensitive_to_every_field() {
+        let leaves: [[u8; 32]; TOTAL_SHARES] =
+            core::array::from_fn(|i| merkle_leaf_hash((i + 1) as u8, &[i as u8; 4]));
+        let (root, paths) = build_share_tree(&leaves);
+
+        // Baseline: index 2's own data verifies.
+        let index = 2u8;
+        let value = [1u8; 4];
+        assert!(verify_share_in_tree(index, &value, &paths[1], &root));
+
+        // Wrong index, same value and path.
+        assert!(!verify_share_in_tree(3, &value, &paths[1], &root));
+
+        // Wrong value, same index and path.
+        assert!(!verify_share_in_tree(index, &[9u8; 4], &paths[1], &root));
+
+        // Wrong path (another share's), same index and value.
+        assert!(!verify_share_in_tree(index, &value, &paths[0], &root));
+
+        // Corrupted path (one flipped byte), same index and value.
+        let mut tampered_path = paths[1].clone();
+        tampered_path[0] ^= 0x01;
+        assert!(!verify_share_in_tree(index, &value, &tampered_path, &root));
+
+        // Corrupted root, everything else genuine.
+        let mut tampered_root = root;
+        tampered_root[0] ^= 0x01;
+        assert!(!verify_share_in_tree(index, &value, &paths[1], &tampered_root));
+    }
+
+    /// Index 0 and index 6 are outside the scheme; a path of any length must
+    /// be refused for them rather than accepted or panicking on an unmapped
+    /// case.
+    #[test]
+    fn verification_refuses_indices_outside_the_scheme() {
+        assert!(!verify_share_in_tree(0, &[0u8; 4], &[0u8; 96], &[0u8; 32]));
+        assert!(!verify_share_in_tree(6, &[0u8; 4], &[0u8; 96], &[0u8; 32]));
+        assert_eq!(merkle_proof_len(0), None);
+        assert_eq!(merkle_proof_len(6), None);
+    }
 
     #[test]
     fn test_htss_split_reconstruct() {

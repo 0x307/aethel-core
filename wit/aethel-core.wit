@@ -265,13 +265,34 @@ interface secret-sharing {
   record htss-share {
     index: u8,
     value: list<u8>,
+    /// Merkle inclusion path proving `(index, value)` is a genuine member of
+    /// the tree named by the `root` returned alongside this share from
+    /// `htss-split`. Flattened 32-byte hashes; length is a fixed function of
+    /// `index` for this scheme's 5-share tree, so it carries no length
+    /// prefix of its own.
+    path: list<u8>,
   }
 
-  /// Split key material into 5 Shamir shares (3-of-5 threshold).
-  htss-split: func(secret: list<u8>) -> result<list<htss-share>, identity-error>;
+  /// Split key material into 5 Shamir shares (3-of-5 threshold), plus the
+  /// 32-byte root that authenticates them as a set.
+  ///
+  /// Reconstruction checks every supplied share against a `root` (see
+  /// `htss-reconstruct`), so a share list that was never produced by a real
+  /// split is refused rather than silently interpolated into a value nobody
+  /// ever shared. What this does not do is vouch for `root` itself: `root` is
+  /// ordinary data once it leaves this call, and the guarantee is only as
+  /// strong as the channel the caller uses to keep it — the same requirement
+  /// verifying a signature places on the public key. Bundling `root` back
+  /// together with the shares in one untrusted store defeats the point.
+  htss-split: func(secret: list<u8>) -> result<tuple<list<htss-share>, list<u8>>, identity-error>;
 
-  /// Reconstruct key material from threshold shares.
-  htss-reconstruct: func(shares: list<htss-share>) -> result<list<u8>, identity-error>;
+  /// Reconstruct key material from threshold shares, authenticated against
+  /// `root` from the matching `htss-split` call.
+  ///
+  /// Every supplied share's `path` is checked against `root` before
+  /// interpolation runs; a share that does not check out, whatever its index
+  /// or width, is refused as `invalid-share-set`. `root` must be 32 bytes.
+  htss-reconstruct: func(shares: list<htss-share>, root: list<u8>) -> result<list<u8>, identity-error>;
 }
 
 world aethel-core {

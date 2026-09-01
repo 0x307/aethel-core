@@ -372,26 +372,45 @@ impl SecretSharingGuest for Component {
     /// so a caller holding three has the secret. That is the scheme working as
     /// designed, not a leak, but it does mean shares must be distributed to
     /// distinct custodians. The WIT cannot enforce that and does not pretend to.
-    fn htss_split(secret: Vec<u8>) -> Result<Vec<WitShare>, WitError> {
-        let shares = htss::SecretSharer::split_key_material(&secret, COMPONENT_SPLIT_NONCE)?;
-        Ok(shares
+    ///
+    /// **The root is not secret and is not optional.** `htss-split` now also
+    /// returns a 32-byte root; `htss-reconstruct` needs it to tell a genuine
+    /// share from a fabricated one (0X3-105). The root discloses nothing about
+    /// the secret — it is a hash-based commitment to the share set, not to the
+    /// secret itself — but it is load-bearing: keep it somewhere a share
+    /// custodian cannot also tamper with, or the authentication step is
+    /// checking fabricated shares against a fabricated root. See
+    /// `SecretSharer::reconstruct_key_material`'s doc comment for the exact
+    /// trust boundary.
+    fn htss_split(secret: Vec<u8>) -> Result<(Vec<WitShare>, Vec<u8>), WitError> {
+        let (shares, root) = htss::SecretSharer::split_key_material(&secret, COMPONENT_SPLIT_NONCE)?;
+        let wit_shares = shares
             .into_iter()
             .map(|s| WitShare {
                 index: s.index,
                 value: s.value,
+                path: s.path,
             })
-            .collect())
+            .collect();
+        Ok((wit_shares, root.to_vec()))
     }
 
-    fn htss_reconstruct(shares: Vec<WitShare>) -> Result<Vec<u8>, WitError> {
+    fn htss_reconstruct(shares: Vec<WitShare>, root: Vec<u8>) -> Result<Vec<u8>, WitError> {
+        if root.len() != 32 {
+            return Err(WitError::InvalidInputLength);
+        }
+        let mut root_arr = [0u8; 32];
+        root_arr.copy_from_slice(&root);
+
         let native: Vec<htss::HtssShare> = shares
             .into_iter()
             .map(|s| htss::HtssShare {
                 index: s.index,
                 value: s.value,
+                path: s.path,
             })
             .collect();
-        Ok(htss::SecretSharer::reconstruct_key_material(&native)?)
+        Ok(htss::SecretSharer::reconstruct_key_material(&native, &root_arr)?)
     }
 }
 

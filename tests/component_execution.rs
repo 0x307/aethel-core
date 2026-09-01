@@ -406,21 +406,21 @@ fn htss_round_trips_and_reports_threshold_not_met() {
     let secret = b"32-byte key material for HTSS !!".to_vec();
     assert_eq!(secret.len(), 32, "test setup");
 
-    let shares = sharing
+    let (shares, root) = sharing
         .call_htss_split(&mut store, &secret)
         .expect("host call")
         .expect("split");
     assert_eq!(shares.len(), 5, "expected a 3-of-5 split");
 
     let recovered = sharing
-        .call_htss_reconstruct(&mut store, &shares[..3])
+        .call_htss_reconstruct(&mut store, &shares[..3], &root)
         .expect("host call")
         .expect("reconstruct");
     assert_eq!(recovered, secret, "key material did not survive the component round trip");
 
     // Two shares must be an error, not a wrong answer and not an empty vector.
     let below = sharing
-        .call_htss_reconstruct(&mut store, &shares[..2])
+        .call_htss_reconstruct(&mut store, &shares[..2], &root)
         .expect("host call");
     match below {
         Err(aethel::core::types::IdentityError::ThresholdNotMet) => {}
@@ -446,7 +446,7 @@ fn htss_refuses_a_share_set_with_a_repeated_index() {
     let sharing = bindings.aethel_core_secret_sharing();
 
     let secret = b"32-byte key material for HTSS !!".to_vec();
-    let shares = sharing
+    let (shares, root) = sharing
         .call_htss_split(&mut store, &secret)
         .expect("host call")
         .expect("split");
@@ -455,12 +455,95 @@ fn htss_refuses_a_share_set_with_a_repeated_index() {
     // index. Every other check the implementation makes passes.
     let repeated = vec![shares[0].clone(), shares[0].clone(), shares[1].clone()];
     match sharing
-        .call_htss_reconstruct(&mut store, &repeated)
+        .call_htss_reconstruct(&mut store, &repeated, &root)
         .expect("host call")
     {
         Err(aethel::core::types::IdentityError::InvalidShareSet) => {}
         Err(other) => panic!("expected invalid-share-set, got {:?}", other),
         Ok(_) => panic!("a share set with a repeated index reconstructed something"),
+    }
+}
+
+/// Distinct-index shares from one sharing must not authenticate against a
+/// different sharing's root, through the WIT boundary (0X3-105).
+///
+/// This is the case the repeated-index test above cannot cover: three
+/// well-formed shares at three distinct indices, from a genuine split of
+/// SOME secret. Every check #21 added passes. Only the root ties them to the
+/// wrong sharing. Native version, with the full reasoning, is
+/// `tests/htss_key_material.rs::
+/// shares_from_one_sharing_do_not_authenticate_against_another_sharings_root`.
+#[test]
+fn htss_refuses_shares_authenticated_against_a_different_sharings_root() {
+    let (mut store, bindings) = instantiate();
+    let sharing = bindings.aethel_core_secret_sharing();
+
+    let (victim_shares, victim_root) = sharing
+        .call_htss_split(&mut store, &b"32-byte key material for HTSS !!".to_vec())
+        .expect("host call")
+        .expect("split victim");
+
+    // Same width as the victim's 32-byte secret above, so the spliced case
+    // below exercises the root check rather than tripping width-uniformity.
+    let attacker_payload: Vec<u8> = (0..32u8).map(|i| i ^ 0xAA).collect();
+    let (attacker_shares, _attacker_root) = sharing
+        .call_htss_split(&mut store, &attacker_payload)
+        .expect("host call")
+        .expect("split attacker");
+
+    match sharing
+        .call_htss_reconstruct(&mut store, &attacker_shares[..3], &victim_root)
+        .expect("host call")
+    {
+        Err(aethel::core::types::IdentityError::InvalidShareSet) => {}
+        Err(other) => panic!("expected invalid-share-set, got {:?}", other),
+        Ok(_) => panic!(
+            "shares from one sharing authenticated against a different sharing's root, \
+             through the component"
+        ),
+    }
+
+    // A single substituted share, spliced into an otherwise-genuine set, must
+    // fail the same way.
+    let mixed = vec![
+        victim_shares[0].clone(),
+        victim_shares[1].clone(),
+        attacker_shares[2].clone(),
+    ];
+    match sharing
+        .call_htss_reconstruct(&mut store, &mixed, &victim_root)
+        .expect("host call")
+    {
+        Err(aethel::core::types::IdentityError::InvalidShareSet) => {}
+        Err(other) => panic!("expected invalid-share-set, got {:?}", other),
+        Ok(_) => panic!("a single substituted share from a different sharing was accepted"),
+    }
+}
+
+/// A malformed-length root must be reported as `invalid-input-length`, not
+/// interpolated against or trusted to somehow match.
+///
+/// `htss_reconstruct` validates this before doing anything else with the
+/// bytes — `secret_as_seed` in `src/component.rs` is the same pattern for the
+/// 32-byte secret seed, which the WIT's `list<u8>` cannot express either.
+#[test]
+fn htss_reconstruct_refuses_a_wrong_length_root() {
+    let (mut store, bindings) = instantiate();
+    let sharing = bindings.aethel_core_secret_sharing();
+
+    let (shares, mut root) = sharing
+        .call_htss_split(&mut store, &b"32-byte key material for HTSS !!".to_vec())
+        .expect("host call")
+        .expect("split");
+    root.push(0); // 33 bytes now, not 32
+
+    match sharing
+        .call_htss_reconstruct(&mut store, &shares[..3], &root)
+        .expect("host call")
+    {
+        Err(aethel::core::types::IdentityError::InvalidInputLength) => {}
+        Err(other) => panic!("expected invalid-input-length, got {:?}", other),
+        Ok(_) => panic!("a 33-byte root was accepted"),
     }
 }
 
