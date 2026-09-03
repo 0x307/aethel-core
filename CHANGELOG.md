@@ -19,6 +19,9 @@ document for what counts as breaking inside `0.x`.
   version requirement: this crate only uses `pqc-sig`'s `SigPublicKey`/`SigAlgorithm`/
   `Signature`/`MlDsa65Keypair` surface, none of which changed between `0.1.0` and `0.3.0` per
   `pqc-sig`'s own migration notes for plain library consumers.
+- `component.sha256` updated to `375bf1f3c546fef84b45757417c39e22729b7df44063e8658bb6d0a973bc5218`,
+  since the dependency change above changes the compiled component's bytes. Verified
+  byte-identical across two independent builds in CI on the canonical platform.
 
 ## [0.3.1] - 2026-09-01
 
