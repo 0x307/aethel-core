@@ -7,6 +7,19 @@ adheres to the breaking-change and deprecation rules in
 [`STABILITY.md`](./STABILITY.md) rather than strict SemVer prior to `1.0.0` — see that
 document for what counts as breaking inside `0.x`.
 
+## [0.3.2] - 2026-09-03
+
+### Fixed
+
+- **`pqc-sig` dependency bumped from the yanked `0.1.0` to `0.3`.** `0.1.0` was yanked from
+  crates.io as part of CRA-2's consolidation onto a single `0.3.0` line; this crate's
+  requirement was never updated to follow. This surfaced downstream as a `cargo-deny`
+  advisories failure in any consumer resolving `aethel-core`'s dependency graph fresh
+  (`aethel-sdk`'s COR-1 re-sync PR, specifically). No source change was needed beyond the
+  version requirement: this crate only uses `pqc-sig`'s `SigPublicKey`/`SigAlgorithm`/
+  `Signature`/`MlDsa65Keypair` surface, none of which changed between `0.1.0` and `0.3.0` per
+  `pqc-sig`'s own migration notes for plain library consumers.
+
 ## [0.3.1] - 2026-09-01
 
 ### Fixed
