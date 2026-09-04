@@ -1,13 +1,13 @@
 [package]
 name = "aethel-core"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
-description = "Post-Quantum Ephemeral Identifier Engine — Polymorphic Lattice Projection (PLP), SAAP, and 5D Hypercube HTSS routing"
+description = "Post-quantum anonymous identity for Rust and WASM. A no_std alternative to static W3C DIDs: per-context identifiers, no reusable public key, zero-knowledge selective disclosure."
 authors = ["Kenneth Harper"]
 license = "Apache-2.0"
 repository = "https://github.com/0x307/aethel-core"
-keywords = ["post-quantum", "identity", "lattice", "zero-knowledge"]
-categories = ["cryptography", "no-std"]
+keywords = ["post-quantum", "identity", "did", "wasm", "zero-knowledge"]
+categories = ["cryptography", "no-std", "wasm"]
 readme = "README.md"
 rust-version = "1.85"
 build = "build.rs"
