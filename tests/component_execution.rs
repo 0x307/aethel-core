@@ -917,10 +917,15 @@ fn a_credential_can_be_issued_and_presented_through_the_component() {
         .expect("host call")
         .expect("project");
 
+    let issuer = identity
+        .issuer_public_parameters()
+        .call_derive(&mut store, ISSUER_SEED)
+        .expect("host call")
+        .expect("derive issuer public parameters");
     let verified = identity
         .call_saap_verify_presentation(
             &mut store,
-            ISSUER_SEED,
+            issuer,
             &presentation,
             &projection,
             b"context-alpha",
@@ -980,10 +985,15 @@ fn a_presentation_fails_against_another_identity_through_the_component() {
         .expect("host call")
         .expect("project");
 
+    let issuer = identity
+        .issuer_public_parameters()
+        .call_derive(&mut store, ISSUER_SEED)
+        .expect("host call")
+        .expect("derive issuer public parameters");
     let verified = identity
         .call_saap_verify_presentation(
             &mut store,
-            ISSUER_SEED,
+            issuer,
             &presentation,
             &stranger_projection,
             b"context-alpha",
@@ -1035,10 +1045,15 @@ fn rewriting_a_disclosed_attribute_is_caught_through_the_component() {
 
     presentation.disclosed_values[0] += 1;
 
+    let issuer = identity
+        .issuer_public_parameters()
+        .call_derive(&mut store, ISSUER_SEED)
+        .expect("host call")
+        .expect("derive issuer public parameters");
     let verified = identity
         .call_saap_verify_presentation(
             &mut store,
-            ISSUER_SEED,
+            issuer,
             &presentation,
             &projection,
             b"context-alpha",
@@ -1086,10 +1101,15 @@ fn a_presentation_cannot_certify_its_own_context() {
         .expect("host call")
         .expect("project");
 
+    let issuer = identity
+        .issuer_public_parameters()
+        .call_derive(&mut store, ISSUER_SEED)
+        .expect("host call")
+        .expect("derive issuer public parameters");
     let verified = identity
         .call_saap_verify_presentation(
             &mut store,
-            ISSUER_SEED,
+            issuer,
             &presentation,
             &projection,
             b"context-beta",
@@ -1138,10 +1158,15 @@ fn a_presentation_fails_under_a_different_issuer() {
         .expect("host call")
         .expect("project");
 
+    let issuer = identity
+        .issuer_public_parameters()
+        .call_derive(&mut store, b"a different issuer seed entirely")
+        .expect("host call")
+        .expect("derive issuer public parameters");
     let verified = identity
         .call_saap_verify_presentation(
             &mut store,
-            b"a different issuer seed entirely",
+            issuer,
             &presentation,
             &projection,
             b"context-alpha",
@@ -1209,6 +1234,12 @@ fn two_presentations_of_one_credential_are_not_linkable() {
         "two presentations reused the same challenge"
     );
 
+    let issuer = identity
+        .issuer_public_parameters()
+        .call_derive(&mut store, ISSUER_SEED)
+        .expect("host call")
+        .expect("derive issuer public parameters");
+
     // Both must still verify, or "unlinkable" was bought by breaking them.
     for (p, tau) in [(&first, &b"context-one"[..]), (&second, &b"context-two"[..])] {
         let projection = ids
@@ -1217,7 +1248,7 @@ fn two_presentations_of_one_credential_are_not_linkable() {
             .expect("project");
         assert!(
             identity
-                .call_saap_verify_presentation(&mut store, ISSUER_SEED, p, &projection, tau)
+                .call_saap_verify_presentation(&mut store, issuer, p, &projection, tau)
                 .expect("host call")
                 .expect("verify"),
             "an unlinkable presentation stopped verifying"
@@ -1466,5 +1497,166 @@ fn a_reopened_identity_projects_identically() {
     assert_eq!(
         a.public_b, b.public_b,
         "the reopened identity projects to a different value"
+    );
+}
+
+/// Public parameters have to travel to every verifier, so they have to survive
+/// a wire round trip and still verify the same presentations.
+#[test]
+fn issuer_public_parameters_round_trip_through_serialisation() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+    let ids = identity.master_identity();
+    let creds = identity.credential();
+    let params = identity.issuer_public_parameters();
+
+    let holder = ids
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+    let cred = creds
+        .call_issue(&mut store, holder, ISSUER_SEED, &ATTRS, ISSUE_R)
+        .expect("host call")
+        .expect("issue");
+    let presentation = creds
+        .call_present(
+            &mut store,
+            cred,
+            holder,
+            b"context-alpha",
+            PROJ_R,
+            disclose_first(),
+            BLIND_R,
+            PRES_R,
+        )
+        .expect("host call")
+        .expect("present");
+    let projection = ids
+        .call_project_at_context(&mut store, holder, b"context-alpha", PROJ_R)
+        .expect("host call")
+        .expect("project");
+
+    let issuer = params
+        .call_derive(&mut store, ISSUER_SEED)
+        .expect("host call")
+        .expect("derive");
+    let published = params
+        .call_serialize(&mut store, issuer)
+        .expect("host call");
+
+    // The published form is the whole of what a verifier needs, and it is not
+    // the seed: a verifier that only ever sees these bytes cannot issue.
+    assert_ne!(
+        published.as_slice(),
+        ISSUER_SEED,
+        "published issuer parameters were the issuer seed itself"
+    );
+
+    let reloaded = params
+        .call_deserialize(&mut store, &published)
+        .expect("host call")
+        .expect("deserialize");
+    let round_tripped = params
+        .call_serialize(&mut store, reloaded)
+        .expect("host call");
+    assert_eq!(published, round_tripped, "serialisation did not round trip");
+
+    let verified = identity
+        .call_saap_verify_presentation(
+            &mut store,
+            reloaded,
+            &presentation,
+            &projection,
+            b"context-alpha",
+        )
+        .expect("host call")
+        .expect("verify");
+
+    assert!(
+        verified,
+        "a presentation did not verify against reloaded public parameters"
+    );
+}
+
+/// Published parameters are a fixed 32 bytes. Anything else is not a parameter
+/// set that this world can have produced.
+#[test]
+fn deserialising_wrong_length_parameters_is_refused() {
+    let (mut store, bindings) = instantiate();
+    let params = bindings.aethel_core_identity().issuer_public_parameters();
+
+    for bad in [&b""[..], &b"too short"[..], &[7u8; 33][..]] {
+        let result = params
+            .call_deserialize(&mut store, bad)
+            .expect("host call");
+        assert!(
+            matches!(result, Err(aethel::core::types::IdentityError::InvalidInputLength)),
+            "a {}-byte parameter blob was accepted",
+            bad.len()
+        );
+    }
+}
+
+/// Deriving public parameters must not be an identity function on the seed, and
+/// two issuers must not collide. This is the property that makes the published
+/// form safe to hand out: it is a SHAKE-256 image of the seed, so recovering
+/// the seed from it is a preimage search.
+#[test]
+fn public_parameters_are_derived_not_copied() {
+    let (mut store, bindings) = instantiate();
+    let params = bindings.aethel_core_identity().issuer_public_parameters();
+
+    let one = params
+        .call_derive(&mut store, ISSUER_SEED)
+        .expect("host call")
+        .expect("derive");
+    let two = params
+        .call_derive(&mut store, b"a different issuer seed entirely")
+        .expect("host call")
+        .expect("derive");
+
+    let a = params.call_serialize(&mut store, one).expect("host call");
+    let b = params.call_serialize(&mut store, two).expect("host call");
+
+    assert_ne!(a, b, "two issuers published identical parameters");
+    assert_eq!(a.len(), 32, "published parameters were not 32 bytes");
+
+    // Deterministic, or a verifier could not pin them.
+    let again = params
+        .call_derive(&mut store, ISSUER_SEED)
+        .expect("host call")
+        .expect("derive");
+    let a_again = params.call_serialize(&mut store, again).expect("host call");
+    assert_eq!(a, a_again, "deriving twice from one seed disagreed");
+}
+
+/// An issuer seed is secret key material and carries the same 32-byte floor as
+/// the rest of this world's secrets.
+#[test]
+fn a_short_issuer_seed_is_refused() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+    let params = identity.issuer_public_parameters();
+
+    let result = params
+        .call_derive(&mut store, b"too short")
+        .expect("host call");
+    assert!(
+        matches!(result, Err(aethel::core::types::IdentityError::InvalidInputLength)),
+        "a 9-byte issuer seed was accepted"
+    );
+
+    let holder = identity
+        .master_identity()
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+    let issued = identity
+        .credential()
+        .call_issue(&mut store, holder, b"too short", &ATTRS, ISSUE_R)
+        .expect("host call");
+    assert!(
+        matches!(issued, Err(aethel::core::types::IdentityError::InvalidInputLength)),
+        "a credential was issued under a 9-byte issuer seed"
     );
 }

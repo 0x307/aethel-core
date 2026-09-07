@@ -115,7 +115,8 @@ pub const IDENTITY_SLOT: usize = 0;
 /// leaks the secret it was protecting.
 const MAX_REJECTION_ITERATIONS: usize = 32;
 
-const DOMAIN_B1: &[u8] = b"AETHEL_SAAP_B1_V1";
+const DOMAIN_B1: &[u8] = b"AETHEL_SAAP_B1_V2";
+const DOMAIN_ISSUER_PUBLIC: &[u8] = b"AETHEL_SAAP_ISSUER_PUBLIC_V1";
 const DOMAIN_CHALLENGE: &[u8] = b"AETHEL_SAAP_CHALLENGE_V2";
 const DOMAIN_ISSUE_RANDOMNESS: &[u8] = b"AETHEL_SAAP_ISSUE_R_V1";
 const DOMAIN_BLIND: &[u8] = b"AETHEL_SAAP_BLIND_V1";
@@ -207,27 +208,61 @@ fn xof_for(domain: &[u8], parts: &[&[u8]]) -> sha3::Shake256Reader {
 
 // ── Issuer parameters ────────────────────────────────────────────────────────
 
-/// The public expansion matrix `B_1 ∈ R_q^{T×L}`, derived from an issuer seed.
+/// The public expansion matrix `B_1 ∈ R_q^{T×L}`, together with the public seed
+/// it was expanded from.
 ///
-/// Deterministic in the seed, so a verifier reconstructs the issuer's matrix
-/// from the issuer's public identity rather than being handed it in the proof.
-/// That is what makes "a credential nobody issued" fail: forging one requires
-/// finding a short opening under *this* matrix.
+/// This is the **public half** of an issuer's key pair. It is what the
+/// verification relation is checked against, and it is derivable from the
+/// issuer seed but not the other way round: the seed is hashed through
+/// SHAKE-256 to produce `public_seed`, and recovering the seed from it is a
+/// preimage search against SHAKE-256.
+///
+/// The seed used to be expanded into `B_1` directly, which left the parameters
+/// with no compact publishable form: the only short representation of `B_1` was
+/// the seed itself, so handing a verifier something it could pin meant handing
+/// it the issuing secret. Interposing a public seed separates the two. `B_1` is
+/// still a deterministic expansion, so a verifier reconstructs the issuer's
+/// matrix rather than being handed it in the proof, and an inconsistent `B_1`
+/// stays unrepresentable.
 pub struct IssuerParams {
+    public_seed: [u8; PUBLIC_SEED_BYTES],
     b1: [[Polynomial; CRED_L]; CRED_T],
 }
 
+/// Length of an issuer's public seed, and of the issuer seed's minimum.
+pub const PUBLIC_SEED_BYTES: usize = 32;
+
 impl IssuerParams {
-    /// Expand an issuer's public parameters from its seed.
-    pub fn from_seed(issuer_seed: &[u8]) -> Self {
+    /// Derive an issuer's public parameters from its secret seed.
+    ///
+    /// Requires at least 32 bytes. The seed is the issuer's authority: whoever
+    /// holds it can issue credentials. What comes back does not carry it.
+    pub fn from_seed(issuer_seed: &[u8]) -> Result<Self, IdentityError> {
+        if issuer_seed.len() < PUBLIC_SEED_BYTES {
+            return Err(IdentityError::InvalidInputLength);
+        }
+        let mut public_seed = [0u8; PUBLIC_SEED_BYTES];
+        xof_for(DOMAIN_ISSUER_PUBLIC, &[issuer_seed]).read(&mut public_seed);
+        Ok(Self::from_public_seed(&public_seed))
+    }
+
+    /// Expand public parameters from an already-published public seed.
+    pub fn from_public_seed(public_seed: &[u8; PUBLIC_SEED_BYTES]) -> Self {
         let mut b1 = [[Polynomial::zero(); CRED_L]; CRED_T];
         for row in 0..CRED_T {
             for col in 0..CRED_L {
-                let mut xof = xof_for(DOMAIN_B1, &[issuer_seed, &[row as u8, col as u8]]);
+                let mut xof = xof_for(DOMAIN_B1, &[public_seed, &[row as u8, col as u8]]);
                 b1[row][col] = sample_uniform(&mut xof);
             }
         }
-        Self { b1 }
+        Self { public_seed: *public_seed, b1 }
+    }
+
+    /// The published form of these parameters.
+    ///
+    /// Safe to hand to anyone: it grants verification and nothing else.
+    pub fn public_seed(&self) -> &[u8; PUBLIC_SEED_BYTES] {
+        &self.public_seed
     }
 
     /// `B_1 · v` for a length-`L` vector.
@@ -880,7 +915,7 @@ mod tests {
     }
 
     fn fixture(seed: u8, tau: &'static [u8]) -> Fixture {
-        let params = IssuerParams::from_seed(ISSUER_SEED);
+        let params = IssuerParams::from_seed(ISSUER_SEED).unwrap();
         let id = identity(seed);
         let cred = Credential::issue(&params, &id, &attrs(), ISSUE_R).expect("issue");
         let blinded = BlindedCredential::new(&params, &cred, BLIND_R).expect("blind");
@@ -933,11 +968,63 @@ mod tests {
         );
     }
 
+    /// The published parameters must not be the seed. If they were, handing a
+    /// verifier what it needs would hand it the power to issue, which is the
+    /// whole reason this split exists.
+    #[test]
+    fn public_parameters_are_not_the_issuer_seed() {
+        let params = IssuerParams::from_seed(ISSUER_SEED).unwrap();
+        assert_ne!(
+            params.public_seed().as_slice(),
+            ISSUER_SEED,
+            "the published parameters were the issuer seed verbatim"
+        );
+    }
+
+    /// Publishing has to be deterministic, or a verifier could not pin an
+    /// issuer, and distinct, or two issuers would be indistinguishable.
+    #[test]
+    fn deriving_public_parameters_is_deterministic_and_issuer_specific() {
+        let a = IssuerParams::from_seed(ISSUER_SEED).unwrap();
+        let b = IssuerParams::from_seed(ISSUER_SEED).unwrap();
+        let other = IssuerParams::from_seed(b"a different issuer seed entirely").unwrap();
+
+        assert_eq!(a.public_seed(), b.public_seed(), "derivation was not deterministic");
+        assert_ne!(a.public_seed(), other.public_seed(), "two issuers collided");
+    }
+
+    /// A verifier reconstructs `B_1` from the published seed alone, and gets the
+    /// same matrix the issuer used. Checked through the relation rather than by
+    /// comparing matrices, because the relation is what a verifier depends on.
+    #[test]
+    fn parameters_rebuilt_from_the_published_seed_verify_the_same_presentation() {
+        let f = fixture(0x42, b"context-alpha");
+        let p = prove(&f.params, &f.blinded, &f.id, &f.proj, f.tau, RHO, 0b0000_0001, PRES_R)
+            .expect("prove");
+
+        let published = *f.params.public_seed();
+        let verifier_side = IssuerParams::from_public_seed(&published);
+
+        let ok = verify(&verifier_side, &p, f.blinded.commitment(), &f.proj, f.tau)
+            .expect("verify");
+        assert!(ok, "a presentation did not verify under rebuilt public parameters");
+    }
+
+    /// An issuer seed is secret key material, and carries the same 32-byte floor
+    /// as every other secret in this crate.
+    #[test]
+    fn a_short_issuer_seed_is_refused() {
+        assert!(matches!(
+            IssuerParams::from_seed(b"too short"),
+            Err(IdentityError::InvalidInputLength)
+        ));
+    }
+
     /// AC: a credential the issuer never issued fails the membership relation.
     #[test]
     fn a_credential_from_another_issuer_fails() {
         let f = fixture(0x42, b"context-alpha");
-        let rogue = IssuerParams::from_seed(b"a different issuer seed entirely");
+        let rogue = IssuerParams::from_seed(b"a different issuer seed entirely").unwrap();
 
         let p = prove(&f.params, &f.blinded, &f.id, &f.proj, f.tau, RHO, 0b0000_0001, PRES_R)
             .expect("prove");
@@ -1008,7 +1095,7 @@ mod tests {
     /// unlinkable. Asserted, not argued.
     #[test]
     fn two_presentations_under_different_contexts_are_unlinkable() {
-        let params = IssuerParams::from_seed(ISSUER_SEED);
+        let params = IssuerParams::from_seed(ISSUER_SEED).unwrap();
         let id = identity(0x42);
         let cred = Credential::issue(&params, &id, &attrs(), ISSUE_R).expect("issue");
 
@@ -1045,7 +1132,7 @@ mod tests {
     /// AC: an undisclosed attribute cannot be recovered from a transcript.
     #[test]
     fn an_undisclosed_attribute_does_not_appear_in_the_transcript() {
-        let params = IssuerParams::from_seed(ISSUER_SEED);
+        let params = IssuerParams::from_seed(ISSUER_SEED).unwrap();
         let id = identity(0x42);
         let secret_attr = 0x0011_2233u64;
         let mut values = attrs();
@@ -1111,7 +1198,7 @@ mod tests {
 
     #[test]
     fn short_randomness_is_refused() {
-        let params = IssuerParams::from_seed(ISSUER_SEED);
+        let params = IssuerParams::from_seed(ISSUER_SEED).unwrap();
         let id = identity(0x42);
         assert!(matches!(
             Credential::issue(&params, &id, &attrs(), b"short"),
@@ -1125,7 +1212,7 @@ mod tests {
     /// `YYYYMMDD` and any unix timestamp.
     #[test]
     fn attributes_larger_than_q_round_trip() {
-        let params = IssuerParams::from_seed(ISSUER_SEED);
+        let params = IssuerParams::from_seed(ISSUER_SEED).unwrap();
         let id = identity(0x42);
 
         let big = [
