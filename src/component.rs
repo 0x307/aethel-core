@@ -56,7 +56,8 @@ wit_bindgen::generate!({
 
 use exports::aethel::core::identity::{
     Credential as WitCredential, DisclosureAttributes, EphemeralProjection as WitProjection,
-    Guest as IdentityGuest, GuestCredential, GuestMasterIdentity,
+    Guest as IdentityGuest, GuestCredential, GuestIssuerPublicParameters, GuestMasterIdentity,
+    IssuerPublicParameters as WitIssuerPublicParameters, IssuerPublicParametersBorrow,
     MasterIdentity as WitMasterIdentity, MasterIdentityBorrow,
     SaapPresentation as WitSaapPresentation, ZkIdentityProof as WitZkProof,
 };
@@ -179,9 +180,10 @@ impl IdentityGuest for Component {
 
     type MasterIdentity = OwnedIdentity;
     type Credential = OwnedCredential;
+    type IssuerPublicParameters = OwnedIssuerParams;
 
     fn saap_verify_presentation(
-        issuer_seed: Vec<u8>,
+        issuer: IssuerPublicParametersBorrow<'_>,
         presentation: WitSaapPresentation,
         projection: WitProjection,
         tau: Vec<u8>,
@@ -217,8 +219,8 @@ impl IdentityGuest for Component {
             z_e: credential::unflatten::<1>(&presentation.z_e)?[0],
         };
 
-        let params = credential::IssuerParams::from_seed(&issuer_seed);
-        credential::verify(&params, &native, &t_blind, &proj, &tau).map_err(Into::into)
+        let params = &issuer.get::<OwnedIssuerParams>().0;
+        credential::verify(params, &native, &t_blind, &proj, &tau).map_err(Into::into)
     }
 
     fn verify_signature(
@@ -423,12 +425,15 @@ export!(Component);
 /// and it returns disclosed values, a fresh blinded commitment and the
 /// responses, none of which is key material.
 ///
-/// The issuer seed is kept alongside the credential because presenting needs
-/// the same `B_1` the credential was issued under, and asking the caller to
-/// supply it again on every presentation would be one more thing to get wrong.
+/// The issuer's **public** parameters are kept alongside the credential because
+/// presenting needs the same `B_1` the credential was issued under, and asking
+/// the caller to supply it again on every presentation would be one more thing
+/// to get wrong. The seed is not kept: it is consumed at issuance and dropped,
+/// so a holder's runtime does not sit on the issuing secret for the lifetime of
+/// the credential. It used to.
 pub struct OwnedCredential {
     credential: credential::Credential,
-    issuer_seed: Vec<u8>,
+    params: credential::IssuerParams,
 }
 
 impl GuestCredential for OwnedCredential {
@@ -445,11 +450,11 @@ impl GuestCredential for OwnedCredential {
         values.copy_from_slice(&attributes);
 
         let identity = plp::MasterIdentity::from_seed(holder.get::<OwnedIdentity>().0.plp_seed());
-        let params = credential::IssuerParams::from_seed(&issuer_seed);
+        let params = credential::IssuerParams::from_seed(&issuer_seed)?;
         let cred =
             credential::Credential::issue(&params, &identity, &values, &issuance_randomness)?;
 
-        Ok(WitCredential::new(OwnedCredential { credential: cred, issuer_seed }))
+        Ok(WitCredential::new(OwnedCredential { credential: cred, params }))
     }
 
     fn present(
@@ -468,12 +473,14 @@ impl GuestCredential for OwnedCredential {
         let identity = plp::MasterIdentity::from_seed(holder.get::<OwnedIdentity>().0.plp_seed());
         let projection = identity.project_at_context(&tau, &projection_randomness);
 
-        let params = credential::IssuerParams::from_seed(&self.issuer_seed);
-        let blinded =
-            credential::BlindedCredential::new(&params, &self.credential, &blinding_randomness)?;
+        let blinded = credential::BlindedCredential::new(
+            &self.params,
+            &self.credential,
+            &blinding_randomness,
+        )?;
 
         let presentation = credential::prove(
-            &params,
+            &self.params,
             &blinded,
             &identity,
             &projection,
@@ -494,5 +501,31 @@ impl GuestCredential for OwnedCredential {
             z_s: presentation.z_s.coeffs.to_vec(),
             z_e: presentation.z_e.coeffs.to_vec(),
         })
+    }
+}
+
+/// The component-side owner of a [`credential::IssuerParams`].
+///
+/// A resource rather than a record so that the only way to obtain one is to
+/// derive it from a seed or to deserialise published bytes. A record of raw
+/// bytes would be structurally interchangeable with the seed, which is the
+/// confusion this type exists to prevent.
+pub struct OwnedIssuerParams(credential::IssuerParams);
+
+impl GuestIssuerPublicParameters for OwnedIssuerParams {
+    fn derive(issuer_seed: Vec<u8>) -> Result<WitIssuerPublicParameters, WitError> {
+        let params = credential::IssuerParams::from_seed(&issuer_seed)?;
+        Ok(WitIssuerPublicParameters::new(OwnedIssuerParams(params)))
+    }
+
+    fn serialize(&self) -> Vec<u8> {
+        self.0.public_seed().to_vec()
+    }
+
+    fn deserialize(bytes: Vec<u8>) -> Result<WitIssuerPublicParameters, WitError> {
+        let seed: [u8; credential::PUBLIC_SEED_BYTES] =
+            bytes.as_slice().try_into().map_err(|_| WitError::InvalidInputLength)?;
+        let params = credential::IssuerParams::from_public_seed(&seed);
+        Ok(WitIssuerPublicParameters::new(OwnedIssuerParams(params)))
     }
 }

@@ -160,13 +160,18 @@ artifact was not built from this source.
 | `plp-prove-identity` | Implemented |
 | `plp-verify` | Implemented |
 | `saap-verify-presentation` | Implemented |
+| `issuer-public-parameters` | Implemented |
 | `verify-signature` | Implemented |
 | `htss-split` | Implemented (fixed internal nonce, see `src/component.rs`) |
 | `htss-reconstruct` | Implemented |
 
 Selective disclosure runs through the `credential` resource (`issue` / `present`) and
 `saap-verify-presentation`, anchored on the PLP projection `b_τ = A_τ·s + e_τ`, whose noise is
-what makes it publishable. An earlier `attestation` interface exported a narrower
+what makes it publishable. Issuing and verifying take opposite halves of the issuer's key
+pair: `issue` takes the issuer seed, `saap-verify-presentation` takes the
+`issuer-public-parameters` derived from it, so a verifier holds no secret and issuer and
+verifier can be separate parties. What those parameters do and do not vouch for is stated on
+the type in the WIT, and at length in [`docs/ISSUER-AUTHENTICATION.md`](docs/ISSUER-AUTHENTICATION.md). An earlier `attestation` interface exported a narrower
 `saap-prove` / `saap-verify` pair whose verify half could only ever deny — it needed a public
 key `t = A_τ·sk` that its signature could not carry and that, having no error term, was an
 exact linear image of the secret. That interface was removed in 0.1.5 rather than kept as a

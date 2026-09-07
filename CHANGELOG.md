@@ -7,6 +7,88 @@ adheres to the breaking-change and deprecation rules in
 [`STABILITY.md`](./STABILITY.md) rather than strict SemVer prior to `1.0.0` — see that
 document for what counts as breaking inside `0.x`.
 
+## [0.4.0] - 2026-09-06
+
+### Changed
+
+- **Verification no longer takes the issuer's secret (BREAKING).**
+  `saap-verify-presentation` took `issuer-seed`, the same value
+  `credential.issue` takes. Every party able to verify a presentation therefore
+  held the authority to issue credentials that would verify under the same
+  issuer, so an issuer could not let a third party verify, a verifier could not
+  be a public endpoint, and issuer and verifier could not be separate
+  organisations. Two independent readers found this from the published
+  documentation alone during blind testing of the Rust SDK.
+
+  The issuer's public parameters are now a distinct type in the world,
+  `issuer-public-parameters`, derived from the seed and carrying no part of it.
+  `saap-verify-presentation` takes those. `credential.issue` continues to take
+  the seed, as it must. There is no seed-taking verification entry point left,
+  deliberately: keeping one would leave the wrong wiring available to anyone who
+  reached for the familiar signature.
+
+  Public parameters serialise to 32 bytes, round-trip through `deserialize`, and
+  are safe to publish: the seed is hashed through SHAKE-256 to produce them, so
+  recovering it is a preimage search. What they do and do not grant is stated on
+  the type itself, including the limit. The verification relation checks a short
+  opening under `B_1`, not issuer authorisation, so these parameters separate the
+  verifying role from the issuing role but are not on their own a forgery
+  barrier. `docs/ISSUER-AUTHENTICATION.md` is new and states that gap and the
+  construction that closes it.
+
+  **Migration:** derive the parameters once and hold them, instead of passing the
+  seed per call.
+
+  ```rust
+  // before
+  let ok = identity::saap_verify_presentation(&issuer_seed, &presentation, &projection, tau)?;
+
+  // after
+  let issuer = IssuerPublicParameters::derive(&issuer_seed)?;   // issuing side, once
+  let published = issuer.serialize();                            // 32 bytes, publish this
+
+  let issuer = IssuerPublicParameters::deserialize(&published)?; // verifying side, once
+  let ok = identity::saap_verify_presentation(&issuer, &presentation, &projection, tau)?;
+  ```
+
+  A verifier that only ever holds `published` cannot issue. A presentation
+  verifies against parameters derived from the seed it was issued under and
+  against no other issuer's, asserted by test on both sides of the component
+  boundary.
+
+- **An issuer seed must be at least 32 bytes.** It is secret key material and now
+  carries the same floor as the rest of this world's secrets. `credential.issue`
+  and `issuer-public-parameters.derive` both return `invalid-input-length` for a
+  shorter one. Previously any length was accepted, including empty.
+
+- **`B_1` is expanded from the issuer's public seed rather than the issuer seed
+  (BREAKING at the wire level).** Interposing the public seed is what gives the
+  parameters a compact publishable form; expanding straight from the issuer seed
+  left the seed as the only short representation of `B_1`, so handing a verifier
+  something it could pin meant handing it the issuing secret. Credentials issued
+  under a previous version do not verify under this one and must be reissued.
+
+### Security
+
+- **A credential resource no longer retains the issuer seed.** It kept the seed
+  for the lifetime of the handle so that `present` could re-expand `B_1`, which
+  left the issuing secret sitting in the holder's runtime after issuance. It now
+  keeps the derived public parameters instead, and the seed is dropped once
+  issuance is done.
+
+### Fixed
+
+- `component.sha256` updated to
+  `5fee03ee725d32da4949d8d0769dc48fe2f68d5b664b33bdd928a889b7f50dd4`. The reshaped world and
+  the version string both move the compiled component's bytes. Verified byte-identical across
+  two independent builds in CI on the canonical platform.
+- **`pqc-sig` bumped from the yanked `0.3.0` to `0.3.1`.** `0.3.0` was yanked after 0.3.2
+  moved onto it, so the same `cargo-deny` advisories failure that fix addressed came back
+  from a different version. The requirement was already `0.3` and needed no change; only the
+  lockfile was pinned to the yanked release. `0.3.1` is currently the only unyanked version
+  of that crate. No source change: this crate uses `SigPublicKey`/`SigAlgorithm`/`Signature`/
+  `MlDsa65Keypair`, none of which changed.
+
 ## [0.3.2] - 2026-09-03
 
 ### Fixed
