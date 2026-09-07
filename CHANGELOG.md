@@ -78,6 +78,10 @@ document for what counts as breaking inside `0.x`.
 
 ### Fixed
 
+- `component.sha256` updated to
+  `5fee03ee725d32da4949d8d0769dc48fe2f68d5b664b33bdd928a889b7f50dd4`. The reshaped world and
+  the version string both move the compiled component's bytes. Verified byte-identical across
+  two independent builds in CI on the canonical platform.
 - **`pqc-sig` bumped from the yanked `0.3.0` to `0.3.1`.** `0.3.0` was yanked after 0.3.2
   moved onto it, so the same `cargo-deny` advisories failure that fix addressed came back
   from a different version. The requirement was already `0.3` and needed no change; only the
