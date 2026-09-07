@@ -76,6 +76,15 @@ document for what counts as breaking inside `0.x`.
   keeps the derived public parameters instead, and the seed is dropped once
   issuance is done.
 
+### Fixed
+
+- **`pqc-sig` bumped from the yanked `0.3.0` to `0.3.1`.** `0.3.0` was yanked after 0.3.2
+  moved onto it, so the same `cargo-deny` advisories failure that fix addressed came back
+  from a different version. The requirement was already `0.3` and needed no change; only the
+  lockfile was pinned to the yanked release. `0.3.1` is currently the only unyanked version
+  of that crate. No source change: this crate uses `SigPublicKey`/`SigAlgorithm`/`Signature`/
+  `MlDsa65Keypair`, none of which changed.
+
 ## [0.3.2] - 2026-09-03
 
 ### Fixed
