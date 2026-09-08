@@ -20,19 +20,20 @@ the one committed number in that posture; everything else is best-effort.
 This project ships `0.x`. Security fixes land on the latest published minor version. Older
 `0.x` minors are not backported to, consistent with the stated stability policy.
 
-## Known limitations in 0.4.0
+## Known limitations
 
-A cryptographic review of the identity and credential paths completed on 2026-09-08.
-Three properties this crate has described are weaker in the shipped implementation
-than the descriptions imply. They are recorded here rather than in a private tracker
-because the affected code is published.
+A cryptographic review of the identity and credential paths completed on 2026-09-08
+found three properties this crate had described as stronger than the implementation
+provided. They are recorded here rather than in a private tracker because the
+affected code was published, and each entry says which releases it applies to. Two
+are closed in `0.5.0`; one is open.
 
 None of these are reports from a third party, and none are being withheld pending a
 fix. The work to strengthen each is scoped and in progress.
 
 ### The projection ran below the module rank its specification requires
 
-**Fixed in the next release, not in 0.4.0.**
+**Affects 0.4.0 and earlier. Fixed in 0.5.0.**
 
 `AETHEL-SPEC-001` §3.2 sets a module rank of `k = 4` for the parameter profile this
 crate targets, and §9.2 states that implementations must not reduce it below that.
@@ -49,6 +50,8 @@ identities rather than attempting to carry them forward.
 
 ### The credential commitment does not provide the hiding property claimed for it
 
+**Open. Affects 0.4.0 and 0.5.0.**
+
 `AETHEL-SPEC-001` §7 specifies the credential commitment matrix with a randomness
 dimension smaller than its commitment dimension. A BDLOP commitment is hiding only
 when that relationship runs the other way, so that the randomness term is
@@ -60,23 +63,30 @@ it commits to, disclosed or not, and do not rely on two presentations of one
 credential being unlinkable. The specification is being corrected before the
 implementation follows it.
 
-### The rejection-sampling bound is not derived from the challenge space
+### The rejection-sampling bound was not derived from the challenge space
 
-The challenge polynomial has 60 non-zero coefficients, while `β = 78` is the value
-that corresponds to a challenge of weight 39. The rejection-sampling argument
+**Affects 0.4.0 and earlier. Fixed in 0.5.0.**
+
+In `0.4.0` the challenge polynomial had 60 non-zero coefficients while `β = 78` is
+the value corresponding to a challenge of weight 39. The rejection-sampling argument
 requires `β` to be at least the largest coefficient of the challenge multiplied by
-the witness, and at weight 60 it is not.
+the witness, and at weight 60 it was not. Measured behaviour stayed far from the
+bound, so the practical leakage was negligible, but the argument did not carry as
+written and the extraction bounds stated for every other relation depend on the
+true value.
 
-Measured behaviour stays far from the bound, so the practical leakage is negligible.
-It is recorded because the argument does not carry as written, and because the
-extraction bounds stated for every other relation depend on the true value.
+The challenge weight is now 39, which makes `β = 78` and `γ₁ = 2^17` correct as
+written and the parameter set exactly the profile the specification defines. The
+relationship is asserted at compile time, so raising the weight without raising the
+bound fails the build rather than silently invalidating the argument.
 
 ### What to do with this today
 
 `aethel-core` is `0.x` and the README already says not to use it in production
 without a formal audit. That guidance stands and these findings sharpen it.
 
-The `plp` identity path now runs at its specified module rank. The credential path
-should still be treated as pre-release: the commitment shape above is a defect in
-the specification, and correcting the specification comes before changing the
-implementation to follow it.
+The `plp` identity path now runs at its specified module rank with a rejection
+bound derived from its challenge space. The credential path should still be treated
+as pre-release: the commitment shape above is a defect in the specification, and
+correcting the specification comes before changing the implementation to follow
+it.

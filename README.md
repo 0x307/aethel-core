@@ -14,7 +14,7 @@ implementing three post-quantum identity primitives, compiled natively or to
 - **Selective Attribute Attestation Protocol (SAAP)** — BDLOP vector commitment with
   selective disclosure and norm-bound verification. The commitment does not currently
   provide the hiding property the design calls for; see
-  [`SECURITY.md`](./SECURITY.md#known-limitations-in-040) before relying on undisclosed
+  [`SECURITY.md`](./SECURITY.md#known-limitations) before relying on undisclosed
   attributes staying undisclosed.
 - **5D Hypercube Threshold Secret Sharing (HTSS)** — Shamir 3-of-5 secret sharing routed over
   a Q_5 hypercube graph (32 nodes, 80 edges).
@@ -62,12 +62,12 @@ integration tests + 1 doctest, all passing on default features):
 | Module rank `k` | 4 (`plp::MODULE_K`) |
 | Noise `η` | 2 (Centered Binomial Distribution) |
 | Masking bound `γ₁` | 131,072 (2^17) |
-| Challenge weight | 60 non-zero coefficients in `{±1}` |
-| Rejection bound `β` | 78, which corresponds to a challenge of weight 39 rather than 60 (see [`SECURITY.md`](./SECURITY.md#known-limitations-in-040)) |
-| Fixed iteration ceiling | 16 in `sampling`; the credential rejection loop allows 32 |
+| Challenge weight | 39 non-zero coefficients in `{±1}` (`plp::CHALLENGE_WEIGHT`) |
+| Rejection bound `β` | 78, which is `39 × 2` and is checked against the challenge weight at compile time |
+| Rejection ceiling | 48 for an identity proof, 192 for a credential presentation |
 | PLP matrix domain separator | `"AETHEL_PLP_CTX_V3"` |
 | PLP challenge domain separator | `"AETHEL_PLP_CHALLENGE_V4"` |
-| SAAP challenge domain separator | `"AETHEL_SAAP_CHALLENGE_V2"` |
+| SAAP challenge domain separator | `"AETHEL_SAAP_CHALLENGE_V3"` |
 
 ## Modules
 

@@ -245,7 +245,10 @@ pub fn verify_response_norm(z: &VectorK) -> u32 {
 
 /// Derive a sparse ternary challenge polynomial from an XOF reader.
 ///
-/// Produces exactly 60 ±1 coefficients using rejection sampling.
+/// Produces exactly [`crate::plp::CHALLENGE_WEIGHT`] coefficients in `{±1}`
+/// using rejection sampling. The weight is shared with `plp` deliberately:
+/// `BETA` is derived from it, and two challenge spaces with one bound would
+/// mean the bound is wrong for at least one of them.
 pub fn hash_to_challenge_from_xof(xof: &mut impl XofReader) -> Polynomial {
     let mut c_poly = Polynomial::zero();
 
@@ -257,7 +260,7 @@ pub fn hash_to_challenge_from_xof(xof: &mut impl XofReader) -> Polynomial {
     let mut used = [false; RING_N];
     let mut pos_buf = [0u8; 1];
 
-    while count < 60 {
+    while count < crate::plp::CHALLENGE_WEIGHT {
         xof.read(&mut pos_buf);
         let pos = pos_buf[0] as usize;
         if pos >= RING_N {
@@ -745,7 +748,10 @@ mod tests {
         let w = VectorK::zero();
         let c = recompute_challenge(&w, b"tau", 0u64, &AttributePayload::zero());
         let nonzero = c.coeffs.iter().filter(|&&x| x != 0).count();
-        assert_eq!(nonzero, 60, "challenge should have exactly 60 non-zero coefficients");
+        assert_eq!(
+            nonzero, crate::plp::CHALLENGE_WEIGHT,
+            "challenge should have exactly CHALLENGE_WEIGHT non-zero coefficients"
+        );
     }
 
     #[test]

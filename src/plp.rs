@@ -46,7 +46,53 @@ pub const ETA: i32 = 2;
 /// Masking vector bound γ₁ = 2^17.
 pub const GAMMA1: i32 = 131_072;
 /// Rejection sampling bound β = 78.
+///
+/// `β` must be at least `‖c · w‖∞` for every witness `w` the protocol proves
+/// knowledge of, or the rejection-sampling argument does not hold: the accepted
+/// distribution of `z` stops being independent of the secret. For a challenge
+/// with `CHALLENGE_WEIGHT` non-zero coefficients in `{±1}` and a witness bounded
+/// by `ETA`, the worst case is `CHALLENGE_WEIGHT · ETA`.
+///
+/// `78 = 39 · 2` is therefore the value for a weight-39 challenge against a
+/// CBD(η=2) witness, which is what [`CHALLENGE_WEIGHT`] is set to. The crate
+/// previously paired this bound with a weight-60 challenge, whose worst case is
+/// 120, so the bound did not hold and the argument in `SECURITY-PROOFS.md` §7.4
+/// did not carry.
 pub const BETA: i32 = 78;
+
+/// Rejection-sampling attempts before [`Prover::prove_identity`] refuses.
+///
+/// A proof carries `MODULE_K` short responses, so `MODULE_K * N` coefficients
+/// must all fall inside `γ₁ - β`. At rank 4 that accepts about 54% of the time,
+/// and the 16 attempts this used to allow left roughly 1 honest proof in 280,000
+/// failing. At 48 the chance is about 5e-17, for an expected attempt count of
+/// under 2.
+///
+/// This scales with `MODULE_K`; revisit it if the rank moves.
+pub const PROVE_ITERATION_CEILING: u8 = 48;
+
+/// Number of non-zero coefficients in the Fiat-Shamir challenge.
+///
+/// `AETHEL-SPEC-001` §3.2 fixes `β = 78` and `γ₁ = 2^17` for AETHEL-SAAP-LEVEL1
+/// but defines no challenge space anywhere, which is why `β` had no derivation
+/// behind it. Weight 39 is the value those two parameters correspond to, so this
+/// makes the shipped parameter set exactly LEVEL1 rather than a mixture of two
+/// ML-DSA profiles.
+///
+/// Weight 39 over 256 positions with a sign each gives a challenge space of
+/// `C(256, 39) · 2^39`, far above 2^128, so soundness is unaffected. It is also
+/// ML-DSA-44's own challenge weight, paired there with the same `β` and `γ₁`.
+pub const CHALLENGE_WEIGHT: usize = 39;
+
+// The relationship BETA depends on, checked at compile time so it cannot drift
+// again. Raising CHALLENGE_WEIGHT without raising BETA, which is exactly what
+// happened between ML-DSA-44's bound and ML-DSA-87's challenge weight, now
+// fails the build rather than silently invalidating the rejection-sampling
+// argument.
+const _: () = assert!(
+    BETA as usize >= CHALLENGE_WEIGHT * ETA as usize,
+    "BETA must bound the infinity norm of c*w: a challenge with      CHALLENGE_WEIGHT nonzero ternary coefficients against a witness bounded      by ETA reaches CHALLENGE_WEIGHT * ETA, and rejection sampling is only      secret-independent when BETA is at least that."
+);
 /// Rejection threshold γ₁ - β.
 pub const REJECTION_THRESHOLD: i32 = GAMMA1 - BETA;
 /// Module rank k.
@@ -73,12 +119,12 @@ pub type PolyMat = [[Poly; MODULE_K]; MODULE_K];
 /// `A · v`, matrix times vector over `R_q`.
 fn mat_vec_mul(a: &PolyMat, v: &PolyVec) -> PolyVec {
     let mut out = [Poly::zero(); MODULE_K];
-    for (i, row) in a.iter().enumerate() {
+    for (slot, row) in out.iter_mut().zip(a.iter()) {
         let mut acc = Poly::zero();
-        for (j, cell) in row.iter().enumerate() {
-            acc = acc.add(&cell.mul_schoolbook(&v[j]));
+        for (cell, vj) in row.iter().zip(v.iter()) {
+            acc = acc.add(&cell.mul_schoolbook(vj));
         }
-        out[i] = acc;
+        *slot = acc;
     }
     out
 }
@@ -86,8 +132,8 @@ fn mat_vec_mul(a: &PolyMat, v: &PolyVec) -> PolyVec {
 /// `c · v`, scalar polynomial times vector.
 fn scalar_vec_mul(c: &Poly, v: &PolyVec) -> PolyVec {
     let mut out = [Poly::zero(); MODULE_K];
-    for i in 0..MODULE_K {
-        out[i] = c.mul_schoolbook(&v[i]);
+    for (slot, vi) in out.iter_mut().zip(v.iter()) {
+        *slot = c.mul_schoolbook(vi);
     }
     out
 }
@@ -95,8 +141,8 @@ fn scalar_vec_mul(c: &Poly, v: &PolyVec) -> PolyVec {
 /// Componentwise `a + b`.
 fn vec_add(a: &PolyVec, b: &PolyVec) -> PolyVec {
     let mut out = [Poly::zero(); MODULE_K];
-    for i in 0..MODULE_K {
-        out[i] = a[i].add(&b[i]);
+    for (slot, (ai, bi)) in out.iter_mut().zip(a.iter().zip(b.iter())) {
+        *slot = ai.add(bi);
     }
     out
 }
@@ -104,8 +150,8 @@ fn vec_add(a: &PolyVec, b: &PolyVec) -> PolyVec {
 /// Componentwise `a - b`.
 fn vec_sub(a: &PolyVec, b: &PolyVec) -> PolyVec {
     let mut out = [Poly::zero(); MODULE_K];
-    for i in 0..MODULE_K {
-        out[i] = a[i].sub(&b[i]);
+    for (slot, (ai, bi)) in out.iter_mut().zip(a.iter().zip(b.iter())) {
+        *slot = ai.sub(bi);
     }
     out
 }
@@ -567,7 +613,8 @@ fn sample_mask_from_xof(xof: &mut impl XofReader) -> Poly {
 
 // ── Challenge hash ────────────────────────────────────────────────────────────
 
-/// Hash-to-challenge: produce a sparse ternary polynomial with exactly 60 ±1 coefficients.
+/// Hash-to-challenge: produce a sparse ternary polynomial with exactly
+/// [`CHALLENGE_WEIGHT`] non-zero coefficients in `{±1}`.
 ///
 /// c = HashToPoly(SHAKE-256("AETHEL_PLP_CHALLENGE_V3" ∥ w ∥ b_τ ∥ tau ∥ salt))
 ///
@@ -578,7 +625,7 @@ fn sample_mask_from_xof(xof: &mut impl XofReader) -> Poly {
 /// pattern: with `c` computable before `b_τ` is chosen, a party with no secret
 /// key can fix `z` and `w` freely, compute `c = H(w, tau, salt)` exactly as an
 /// honest prover would, and then solve `b = c⁻¹·(A·z − w)` in `R_q` — solvable
-/// because `q ≡ 1 (mod 512)` splits the ring completely, so a 60-sparse
+/// because `q ≡ 1 (mod 512)` splits the ring completely, so a sparse
 /// ternary `c` is invertible with overwhelming probability. The resulting
 /// `(b, w, c, z)` satisfies every check `Verifier::verify` runs, even though
 /// `b` is uniform-random with no `s` or small `e_τ` behind it: it is not an
@@ -612,15 +659,16 @@ pub fn hash_to_challenge(w: &PolyVec, public_b: &PolyVec, tau: &[u8; 32], salt: 
     hasher.update(salt);
     let mut xof = hasher.finalize_xof();
 
-    // Sample 60 distinct positions in [0, N) without replacement
-    // Use Dilithium-style rejection sampling: build a set of 60 distinct indices
+    // Sample CHALLENGE_WEIGHT distinct positions in [0, N) without replacement
+    // Use Dilithium-style rejection sampling to build the distinct index set
     // by sampling bytes and using a running counter with rejection.
     let mut c_poly = Poly::zero();
 
-    // Use the standard approach: sample 60 positions using a sign+position byte stream
-    // Read bytes from XOF: use each byte as a position candidate (mod N) with sign from high bit
-    // Use rejection sampling to ensure exactly 60 distinct positions.
-    let mut signs = [0u8; 8]; // 64 sign bits
+    // Read bytes from XOF: use each byte as a position candidate (mod N) with
+    // sign from the sign-bit stream, rejecting duplicates and out-of-range.
+    // 8 bytes give 64 sign bits, which covers CHALLENGE_WEIGHT positions.
+    const _: () = assert!(CHALLENGE_WEIGHT <= 64, "the sign buffer holds 64 bits");
+    let mut signs = [0u8; 8];
     xof.read(&mut signs);
     let mut sign_bit = 0usize;
 
@@ -628,7 +676,7 @@ pub fn hash_to_challenge(w: &PolyVec, public_b: &PolyVec, tau: &[u8; 32], salt: 
     let mut used = [false; N];
     let mut pos_buf = [0u8; 1];
 
-    while count < 60 {
+    while count < CHALLENGE_WEIGHT {
         xof.read(&mut pos_buf);
         let pos = pos_buf[0] as usize;
         if pos >= N {
@@ -895,10 +943,11 @@ impl Prover {
     /// `response_z` triple (the ZK proof, safe to disclose by construction)
     /// leaves this function.
     ///
-    /// Uses a fixed 16-iteration loop with SHAKE-256 masking vectors.
+    /// Uses up to [`PROVE_ITERATION_CEILING`] attempts with SHAKE-256 masking
+    /// vectors, returning on the first response that clears the norm bound.
     ///
     /// Returns the first response that satisfies the norm bound, or
-    /// `Err(RejectionSamplingFailed)` if all 16 iterations are rejected. There
+    /// `Err(RejectionSamplingFailed)` if every attempt is rejected. There
     /// is deliberately **no fallback proof**: see the note above the error
     /// return for why emitting the last candidate was a key-recovery hazard
     /// rather than a convenience.
@@ -925,7 +974,7 @@ impl Prover {
         proj: &EphemeralProjection,
         seed: &[u8; 32],
     ) -> Result<ZkIdentityProof, IdentityError> {
-        for iter in 0u8..16 {
+        for iter in 0..PROVE_ITERATION_CEILING {
             // 1. Sample masking polynomial y ~ uniform [-γ₁, γ₁]
             let mut hasher = Shake256::default();
             hasher.update(b"AETHEL_MASK_V2");
@@ -995,7 +1044,7 @@ impl Prover {
         //    withhold. A response outside the bound is how a sigma protocol
         //    leaks its secret, which is the whole reason the bound is there.
         //
-        // Neither was reachable often — all 16 iterations rejecting is
+        // Neither was reachable often — every attempt rejecting is
         // negligible for honest parameters — but the derivation is deterministic
         // in τ, so an attacker can search τ for a context that lands here rather
         // than waiting for chance. `credential::prove` already returns this same
@@ -1316,7 +1365,7 @@ mod tests {
     // ── P3-15 / 0X3-85: the all-rejected fallback ────────────────────────────
     //
     // The sweep above covers the main proving path. These cover the path it
-    // could not reach: what `prove_identity` did when all 16 iterations were
+    // could not reach: what `prove_identity` did when all attempts were
     // rejected. It rebuilt a proof under `AETHEL_MASK_V1` from `(seed, 0)` with
     // tau absent — reintroducing in the fallback exactly the nonce reuse the
     // main path binds tau to prevent — and returned the result without
@@ -1474,9 +1523,12 @@ mod tests {
         let w = [Poly::zero(); MODULE_K];
         let public_b = [Poly::zero(); MODULE_K];
         let c = hash_to_challenge(&w, &public_b, &[0x11u8; 32], &[0x22u8; 32]);
-        // Count non-zero coefficients — should be exactly 60
+        // Count non-zero coefficients — should be exactly CHALLENGE_WEIGHT
         let nonzero = c.coeffs.iter().filter(|&&x| x != 0).count();
-        assert_eq!(nonzero, 60, "challenge should have exactly 60 non-zero coefficients");
+        assert_eq!(
+            nonzero, CHALLENGE_WEIGHT,
+            "challenge should have exactly CHALLENGE_WEIGHT non-zero coefficients"
+        );
     }
 
     // ── Unbound b_τ in the Fiat-Shamir challenge (0X3-108) ───────────────────
@@ -1498,7 +1550,7 @@ mod tests {
     /// ```
     ///
     /// `c` is invertible in `R_q` with overwhelming probability, because
-    /// `q = 8_380_417 ≡ 1 (mod 512)` splits the ring completely and a 60-sparse
+    /// `q = 8_380_417 ≡ 1 (mod 512)` splits the ring completely and a sparse
     /// ternary polynomial is generically nonzero in every NTT slot. The
     /// resulting `(w, c, z)` satisfies checks 1 and 3 exactly (norm bound by
     /// construction, verification equation with zero residual), and `b` looks
