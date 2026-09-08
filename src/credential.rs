@@ -78,6 +78,14 @@
 //! or set-membership predicate, and no function claims to. It is scoped out
 //! explicitly rather than stubbed, so that no caller can mistake an unevaluated
 //! predicate for a satisfied one.
+//!
+//! It is also not implementable here. A range claim needs a quadratic constraint
+//! that a linear sigma protocol cannot express, the verification relation holds
+//! only modulo `q` and so says nothing about a 64-bit value, and shortness of a
+//! masked response bounds `c * w` rather than `w`. What two accepting transcripts
+//! establish is a relaxed opening, which is what BDLOP binding is proved under and
+//! is adequate for the two relations that are built. It expresses no range. See
+//! `docs/PREDICATE-PROOFS.md`.
 
 use alloc::vec::Vec;
 

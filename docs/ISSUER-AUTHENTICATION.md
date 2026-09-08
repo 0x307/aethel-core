@@ -107,6 +107,31 @@ current sigma protocol.
   between holder and issuer rather than a single local call, because the issuer
   has to run the sampler over the holder's committed messages.
 
+## Why the signature cannot simply be proved in zero knowledge
+
+The natural question is whether the holder can prove knowledge of an ML-DSA
+signature over the commitment, rather than replacing the signature scheme. It
+cannot, and the reason is structural rather than a matter of cost.
+
+In ML-DSA the message binds to the signature only through the hash that produces
+the challenge: `c = H(mu || w1)`. Every algebraic part of verification, the
+matrix, the public key, the response, the challenge, and the norm check, is
+independent of the message. So a proof that establishes knowledge of a short
+`(z, c, w)` satisfying the verification equation is satisfied by **any**
+signature the issuer ever produced, on any message. It cannot attest which
+credential was signed, which is the entire content of the claim.
+
+Binding the message means proving a SHAKE-256 evaluation in zero knowledge,
+along with HighBits and the hint decomposition. That is a general-purpose proof
+system over millions of constraints, with post-quantum proof sizes above 100 KB.
+It is not a relation that can be added to this sigma protocol.
+
+One consequence worth stating plainly, because it is easy to assume otherwise:
+the issuer signature produced at issuance is useful to the **holder**, who
+learns the credential came from the issuer and can refuse a malformed one. It
+does nothing for the **verifier**, who never sees it. Adding the signature to
+issuance does not move the unforgeability question at all.
+
 ## Until then
 
 State the assumption rather than implying it is not there.

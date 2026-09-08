@@ -22,7 +22,7 @@ project: "aethel-core"
 
 Classical identity credentials (e.g., W3C Verifiable Credentials) rely on digital signatures over structured JSON-LD or JWT payloads. Verifying an attribute traditionally requires revealing the holder's public key or identifier alongside the signature, enabling verifiers to correlate identity state across multiple contexts.
 
-This section specifies the **Selective Attribute Attestation Protocol (SAAP)** for Aethel-ID. SAAP allows a Holder to prove arbitrary statements (e.g., membership, range bounds, predicate matching) about credential attributes without disclosing non-requested attributes, without exposing static identity identifiers, and without revealing the Issuer's signature object directly.
+This section specifies the **Selective Attribute Attestation Protocol (SAAP)** for Aethel-ID. SAAP allows a Holder to disclose a chosen subset of credential attributes without disclosing the rest, without exposing static identity identifiers, and without revealing the Issuer's signature object directly.
 
 ---
 
@@ -368,7 +368,16 @@ t_blind - (0 ∥ m_pub) = B_1 · r* + (0 ∥ m_hidden)  (mod q)
 > stubbed, so that no caller can mistake an unevaluated predicate for a satisfied
 > one. **A verifier cannot currently learn "age >= 21" from a SAAP presentation.**
 > Selective disclosure of whole attributes works; predicates over hidden
-> attributes do not. Tracked as follow-on work to 0X3-79.
+> attributes do not.
+
+> **This relation cannot be built inside this protocol.** The design below is
+> retained because it is what the relation would have to look like, not because
+> it is buildable here. Bit-ness is a quadratic constraint and this is a linear
+> sigma protocol; the verification relation holds only modulo `q` and is
+> therefore vacuous about 64-bit values; and shortness of a masked response
+> bounds `c * w` rather than `w`. See
+> [`PREDICATE-PROOFS.md`](./PREDICATE-PROOFS.md) for the full argument, what a
+> passing proof does establish, and the two options that remain.
 
 The design, for when it is built. For hidden numerical attributes (e.g., Age >= 21),
 the prover proves in ZK that:
