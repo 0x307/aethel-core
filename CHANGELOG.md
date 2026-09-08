@@ -27,6 +27,30 @@ document for what counts as breaking inside `0.x`.
 
 ### Changed
 
+- **The PLP identity path now runs at module rank 4 (BREAKING).**
+  `AETHEL-SPEC-001` §3.2 sets `k = 4` for the profile this crate targets and §9.2
+  forbids going below it. The implementation ran at rank 1, so the hardness
+  argument in `SECURITY-PROOFS.md`, written for a secret dimension of 1024 and a
+  BKZ block size of 400, did not describe the shipped code. The master secret,
+  context matrix, projection, error term, commitment and response are now
+  rank-4 module elements, sourced from `plp::MODULE_K`.
+
+  The rank is a single constant and every operation is generic in it, so moving
+  to LEVEL3 or LEVEL5 is a parameter change rather than a rewrite.
+
+  Three domain separators move, because the objects they derive are no longer the
+  same shape: `AETHEL_PLP_CTX_V2` to `V3`, `AETHEL_PLP_CHALLENGE_V3` to `V4`, and
+  `AETHEL_ERROR_V2` to `V3`. The WIT record types are unchanged, since
+  `public-b`, `commitment-w` and `response-z` were already `list<u32>` and only
+  their length moves. A projection or proof produced by `0.4.0` is rejected on
+  length rather than silently zero-extended. There is no migration path:
+  regenerate identities.
+
+  Measured over 500 identity proofs and 200 credential presentations, no honest
+  prover exhausted its rejection-sampling budget, so the existing iteration
+  ceilings absorb the lower per-iteration acceptance rate that four times as many
+  coefficients implies.
+
 - **Corrected published claims to match the implementation.** The README's
   parameter table stated a module rank of 4, and two domain separators that the
   code had already moved past. `docs/SAAP-SPEC.md` asserted context-isolated

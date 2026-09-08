@@ -59,14 +59,14 @@ integration tests + 1 doctest, all passing on default features):
 |-----------|-------|
 | Ring | `R_q = Z_q[X]/(X^256 + 1)` |
 | Modulus `q` | `8,380,417` |
-| Module rank `k` | 1 as implemented; the specification requires 4 (see [`SECURITY.md`](./SECURITY.md#known-limitations-in-040)) |
+| Module rank `k` | 4 (`plp::MODULE_K`) |
 | Noise `η` | 2 (Centered Binomial Distribution) |
 | Masking bound `γ₁` | 131,072 (2^17) |
 | Challenge weight | 60 non-zero coefficients in `{±1}` |
 | Rejection bound `β` | 78, which corresponds to a challenge of weight 39 rather than 60 (see [`SECURITY.md`](./SECURITY.md#known-limitations-in-040)) |
 | Fixed iteration ceiling | 16 in `sampling`; the credential rejection loop allows 32 |
-| PLP matrix domain separator | `"AETHEL_PLP_CTX_V2"` |
-| PLP challenge domain separator | `"AETHEL_PLP_CHALLENGE_V3"` |
+| PLP matrix domain separator | `"AETHEL_PLP_CTX_V3"` |
+| PLP challenge domain separator | `"AETHEL_PLP_CHALLENGE_V4"` |
 | SAAP challenge domain separator | `"AETHEL_SAAP_CHALLENGE_V2"` |
 
 ## Modules

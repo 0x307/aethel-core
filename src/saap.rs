@@ -896,7 +896,7 @@ mod soundness_tests {
 
         // Same free choices as the SAAP forgery: zero commitment, zero response,
         // challenge recomputed the way the verifier will recompute it.
-        let commitment_w = Poly::zero();
+        let commitment_w = [Poly::zero(); crate::plp::MODULE_K];
         let challenge_c = crate::plp::hash_to_challenge(
             &commitment_w,
             &projection.public_b,
@@ -906,7 +906,7 @@ mod soundness_tests {
         let proof = ZkIdentityProof {
             commitment_w,
             challenge_c,
-            response_z: Poly::zero(),
+            response_z: [Poly::zero(); crate::plp::MODULE_K],
         };
 
         assert!(

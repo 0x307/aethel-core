@@ -49,6 +49,82 @@ pub const GAMMA1: i32 = 131_072;
 pub const BETA: i32 = 78;
 /// Rejection threshold γ₁ - β.
 pub const REJECTION_THRESHOLD: i32 = GAMMA1 - BETA;
+/// Module rank k.
+///
+/// `AETHEL-SPEC-001` §3.2 sets `k = 4` for AETHEL-SAAP-LEVEL1, and §9.2 states
+/// that implementations MUST NOT reduce it below the profile minimum. The
+/// hardness of recovering `s` from `b_τ = A_τ·s + e_τ` comes from the secret
+/// dimension `k·N`, not from `N` alone: at `k = 1` the instance is a single
+/// Ring-LWE sample and the analysis in `SECURITY-PROOFS.md`, which is written
+/// for a secret dimension of 1024 and a BKZ block size of 400, does not
+/// describe it.
+///
+/// Everything downstream is generic in this constant. Moving to LEVEL3 (`k = 6`)
+/// or LEVEL5 (`k = 8`) is a change to this line plus the matching parameter
+/// profile, not a rewrite.
+pub const MODULE_K: usize = 4;
+
+/// A rank-`k` vector over `R_q`.
+pub type PolyVec = [Poly; MODULE_K];
+
+/// A `k × k` matrix over `R_q`, row-major.
+pub type PolyMat = [[Poly; MODULE_K]; MODULE_K];
+
+/// `A · v`, matrix times vector over `R_q`.
+fn mat_vec_mul(a: &PolyMat, v: &PolyVec) -> PolyVec {
+    let mut out = [Poly::zero(); MODULE_K];
+    for (i, row) in a.iter().enumerate() {
+        let mut acc = Poly::zero();
+        for (j, cell) in row.iter().enumerate() {
+            acc = acc.add(&cell.mul_schoolbook(&v[j]));
+        }
+        out[i] = acc;
+    }
+    out
+}
+
+/// `c · v`, scalar polynomial times vector.
+fn scalar_vec_mul(c: &Poly, v: &PolyVec) -> PolyVec {
+    let mut out = [Poly::zero(); MODULE_K];
+    for i in 0..MODULE_K {
+        out[i] = c.mul_schoolbook(&v[i]);
+    }
+    out
+}
+
+/// Componentwise `a + b`.
+fn vec_add(a: &PolyVec, b: &PolyVec) -> PolyVec {
+    let mut out = [Poly::zero(); MODULE_K];
+    for i in 0..MODULE_K {
+        out[i] = a[i].add(&b[i]);
+    }
+    out
+}
+
+/// Componentwise `a - b`.
+fn vec_sub(a: &PolyVec, b: &PolyVec) -> PolyVec {
+    let mut out = [Poly::zero(); MODULE_K];
+    for i in 0..MODULE_K {
+        out[i] = a[i].sub(&b[i]);
+    }
+    out
+}
+
+/// The largest infinity norm across all components.
+///
+/// Public because a holder of a [`ZkIdentityProof`] needs it to check the same
+/// bound the verifier checks, and the responses are now vectors rather than
+/// single ring elements.
+pub fn vec_infinity_norm(v: &PolyVec) -> i64 {
+    v.iter().map(|p| p.infinity_norm()).max().unwrap_or(0)
+}
+
+/// Wipe every component.
+fn vec_zeroize(v: &mut PolyVec) {
+    for p in v.iter_mut() {
+        p.zeroize();
+    }
+}
 
 // ── NTT parameters for q = 8_380_417 ─────────────────────────────────────────
 //
@@ -349,13 +425,17 @@ pub fn poly_mul_ntt(a: &Poly, b: &Poly) -> Poly {
 ///
 /// This is the single definition. `project_at_context` calls it too, so the
 /// projection and the proof witness cannot drift apart.
-pub(crate) fn derive_error_tau(rho: &[u8], tau: &[u8]) -> Poly {
+pub(crate) fn derive_error_tau(rho: &[u8], tau: &[u8]) -> PolyVec {
     let mut hasher = Shake256::default();
-    hasher.update(b"AETHEL_ERROR_V2");
+    hasher.update(b"AETHEL_ERROR_V3");
     hasher.update(rho);
     hasher.update(tau);
     let mut xof = hasher.finalize_xof();
-    sample_cbd_eta2_from_xof(&mut xof)
+    let mut out = [Poly::zero(); MODULE_K];
+    for slot in out.iter_mut() {
+        *slot = sample_cbd_eta2_from_xof(&mut xof);
+    }
+    out
 }
 
 /// Derive the public per-projection salt from the caller's secret randomness.
@@ -415,27 +495,34 @@ pub(crate) fn derive_projection_salt(rho: &[u8], tau: &[u8; 32]) -> [u8; 32] {
 /// `tau` is the **padded 32-byte** context tag, not the caller's raw slice. A
 /// verifier only ever holds the padded form, so keying the derivation on
 /// anything else would make `A` unreconstructable from a decoded projection.
-pub fn derive_context_matrix(tau: &[u8; 32], salt: &[u8; 32]) -> Poly {
+pub fn derive_context_matrix(tau: &[u8; 32], salt: &[u8; 32]) -> PolyMat {
     let mut hasher = Shake256::default();
-    hasher.update(b"AETHEL_PLP_CTX_V2");
+    hasher.update(b"AETHEL_PLP_CTX_V3");
     hasher.update(tau);
     hasher.update(salt);
     let mut xof = hasher.finalize_xof();
 
-    let mut poly = Poly::zero();
-    let mut coeff_idx = 0usize;
-    while coeff_idx < N {
-        let mut buf = [0u8; 3];
-        xof.read(&mut buf);
-        let val = (buf[0] as u32)
-            | ((buf[1] as u32) << 8)
-            | ((buf[2] as u32 & 0x7F) << 16);
-        if val < Q {
-            poly.coeffs[coeff_idx] = val;
-            coeff_idx += 1;
+    // One XOF stream, read row-major. The separator moves to V3 because the
+    // stream now produces k² polynomials rather than one, so a V2 matrix and a
+    // V3 matrix are different objects even at the same (tau, salt).
+    let mut mat = [[Poly::zero(); MODULE_K]; MODULE_K];
+    for row in mat.iter_mut() {
+        for cell in row.iter_mut() {
+            let mut coeff_idx = 0usize;
+            while coeff_idx < N {
+                let mut buf = [0u8; 3];
+                xof.read(&mut buf);
+                let val = (buf[0] as u32)
+                    | ((buf[1] as u32) << 8)
+                    | ((buf[2] as u32 & 0x7F) << 16);
+                if val < Q {
+                    cell.coeffs[coeff_idx] = val;
+                    coeff_idx += 1;
+                }
+            }
         }
     }
-    poly
+    mat
 }
 
 /// Sample a small polynomial from CBD η=2 using SHAKE-256 output.
@@ -508,14 +595,18 @@ fn sample_mask_from_xof(xof: &mut impl XofReader) -> Poly {
 /// Fiat-Shamir binding needs every value absorbed unambiguously, not in a
 /// particular order, and every field here has a fixed length so concatenation
 /// order carries no information.
-pub fn hash_to_challenge(w: &Poly, public_b: &Poly, tau: &[u8; 32], salt: &[u8; 32]) -> Poly {
+pub fn hash_to_challenge(w: &PolyVec, public_b: &PolyVec, tau: &[u8; 32], salt: &[u8; 32]) -> Poly {
     let mut hasher = Shake256::default();
-    hasher.update(b"AETHEL_PLP_CHALLENGE_V3");
-    for &c in w.coeffs.iter() {
-        hasher.update(&c.to_le_bytes());
+    hasher.update(b"AETHEL_PLP_CHALLENGE_V4");
+    for poly in w.iter() {
+        for &c in poly.coeffs.iter() {
+            hasher.update(&c.to_le_bytes());
+        }
     }
-    for &c in public_b.coeffs.iter() {
-        hasher.update(&c.to_le_bytes());
+    for poly in public_b.iter() {
+        for &c in poly.coeffs.iter() {
+            hasher.update(&c.to_le_bytes());
+        }
     }
     hasher.update(tau);
     hasher.update(salt);
@@ -579,7 +670,7 @@ pub fn hash_to_challenge(w: &Poly, public_b: &Poly, tau: &[u8; 32], salt: &[u8; 
 /// tried to print it.
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct MasterIdentity {
-    secret_key: Poly,
+    secret_key: PolyVec,
 }
 
 impl MasterIdentity {
@@ -588,7 +679,7 @@ impl MasterIdentity {
     /// `pub(crate)` deliberately: SAAP's identity-linkage relation needs `s` as
     /// a witness, and it must reach that code without becoming reachable from
     /// outside the crate. No public API returns this.
-    pub(crate) fn secret(&self) -> &Poly {
+    pub(crate) fn secret(&self) -> &PolyVec {
         &self.secret_key
     }
 
@@ -600,7 +691,10 @@ impl MasterIdentity {
         hasher.update(b"AETHEL_MASTER_KEY_V1");
         hasher.update(seed);
         let mut xof = hasher.finalize_xof();
-        let secret_key = sample_cbd_eta2_from_xof(&mut xof);
+        let mut secret_key = [Poly::zero(); MODULE_K];
+        for slot in secret_key.iter_mut() {
+            *slot = sample_cbd_eta2_from_xof(&mut xof);
+        }
         Self { secret_key }
     }
 
@@ -653,12 +747,12 @@ impl MasterIdentity {
         // Generate ephemeral error e_τ ← CBD η=2 from fresh secret randomness.
         let mut e_tau = derive_error_tau(rho, tau);
 
-        // b_τ = A · s + e_τ
-        let public_b = matrix_a.mul_schoolbook(&self.secret_key).add(&e_tau);
+        // b_τ = A · s + e_τ, now a matrix-vector product over R_q^k.
+        let public_b = vec_add(&mat_vec_mul(&matrix_a, &self.secret_key), &e_tau);
         // e_tau is secret-derived noise with no further use past this point —
         // wipe it explicitly rather than letting it fall out of scope (Poly is
         // Copy and cannot implement Drop, so nothing wipes it automatically).
-        e_tau.zeroize();
+        vec_zeroize(&mut e_tau);
 
         EphemeralProjection {
             tau: tau_padded,
@@ -701,8 +795,8 @@ pub fn checked_project_at_context(
 // ── Ephemeral Projection ──────────────────────────────────────────────────────
 
 /// Byte length of an [`EphemeralProjection`] as encoded by [`EphemeralProjection::to_bytes`]:
-/// `tau(32) + matrix_a coeffs(N*4) + public_b coeffs(N*4)`.
-pub const EPHEMERAL_PROJECTION_BYTE_LEN: usize = 32 + 32 + N * 4;
+/// `tau(32) + salt(32) + public_b coeffs(k*N*4)`.
+pub const EPHEMERAL_PROJECTION_BYTE_LEN: usize = 32 + 32 + MODULE_K * N * 4;
 
 /// Public projection for a given context τ.
 #[derive(Clone)]
@@ -720,9 +814,9 @@ pub struct EphemeralProjection {
     /// own salt. [`Verifier::verify`] re-derives it too and ignores whatever is
     /// in this field, so a hand-built struct with a doctored `A` cannot fool a
     /// verifier either.
-    pub matrix_a: Poly,
+    pub matrix_a: PolyMat,
     /// Public projection b_τ = A · s + e_τ.
-    pub public_b: Poly,
+    pub public_b: PolyVec,
 }
 
 impl EphemeralProjection {
@@ -736,7 +830,7 @@ impl EphemeralProjection {
         let mut out = alloc::vec![0u8; EPHEMERAL_PROJECTION_BYTE_LEN];
         out[..32].copy_from_slice(&self.tau);
         out[32..64].copy_from_slice(&self.salt);
-        for (i, &c) in self.public_b.coeffs.iter().enumerate() {
+        for (i, &c) in self.public_b.iter().flat_map(|p| p.coeffs.iter()).enumerate() {
             let offset = 64 + i * 4;
             out[offset..offset + 4].copy_from_slice(&c.to_le_bytes());
         }
@@ -758,12 +852,12 @@ impl EphemeralProjection {
         let mut salt = [0u8; 32];
         salt.copy_from_slice(&bytes[32..64]);
 
-        let mut public_b = Poly::zero();
-        for i in 0..N {
+        let mut public_b = [Poly::zero(); MODULE_K];
+        for i in 0..MODULE_K * N {
             let offset = 64 + i * 4;
             let mut b = [0u8; 4];
             b.copy_from_slice(&bytes[offset..offset + 4]);
-            public_b.coeffs[i] = u32::from_le_bytes(b);
+            public_b[i / N].coeffs[i % N] = u32::from_le_bytes(b);
         }
 
         // Derived, never read off the wire. See the field's doc comment.
@@ -778,12 +872,12 @@ impl EphemeralProjection {
 /// ZK sigma protocol proof (W, c, z).
 #[derive(Clone)]
 pub struct ZkIdentityProof {
-    /// Commitment W = A_τ · y.
-    pub commitment_w: Poly,
-    /// Fiat-Shamir challenge c.
+    /// Commitment W = A_τ · y, a rank-`k` vector.
+    pub commitment_w: PolyVec,
+    /// Fiat-Shamir challenge c. A single ring element regardless of rank.
     pub challenge_c: Poly,
-    /// Response z = y + c · s.
-    pub response_z: Poly,
+    /// Response z = y + c · s, a rank-`k` vector.
+    pub response_z: PolyVec,
 }
 
 // ── Prover ────────────────────────────────────────────────────────────────────
@@ -849,25 +943,31 @@ impl Prover {
             hasher.update(&proj.tau);
             hasher.update(&[iter]);
             let mut xof = hasher.finalize_xof();
-            let mut y = sample_mask_from_xof(&mut xof);
+            let mut y = [Poly::zero(); MODULE_K];
+            for slot in y.iter_mut() {
+                *slot = sample_mask_from_xof(&mut xof);
+            }
 
             // 2. Compute commitment W = A_τ · y
-            let mut w = proj.matrix_a.mul_schoolbook(&y);
+            let mut w = mat_vec_mul(&proj.matrix_a, &y);
 
             // 3. Compute Fiat-Shamir challenge c = HashToPoly(W, b_τ, τ, salt)
             let mut challenge_c = hash_to_challenge(&w, &proj.public_b, &proj.tau, &proj.salt);
 
             // 4. Compute candidate response z = y + c · s
-            let mut cs = challenge_c.mul_schoolbook(&identity.secret_key);
-            let mut z = y.add(&cs);
+            let mut cs = scalar_vec_mul(&challenge_c, &identity.secret_key);
+            let mut z = vec_add(&y, &cs);
 
             // y and cs are pure intermediates — never part of the returned
             // proof either way — safe to wipe immediately after use.
-            y.zeroize();
-            cs.zeroize();
+            vec_zeroize(&mut y);
+            vec_zeroize(&mut cs);
 
-            // 5. Rejection sampling: ||z||∞ < γ₁ - β
-            if z.infinity_norm() < REJECTION_THRESHOLD as i64 {
+            // 5. Rejection sampling: ||z||∞ < γ₁ - β, across every component.
+            //    One component out of bound rejects the whole response: the
+            //    argument is that the accepted distribution is independent of
+            //    the secret, and that has to hold for the vector, not per slot.
+            if vec_infinity_norm(&z) < REJECTION_THRESHOLD as i64 {
                 return Ok(ZkIdentityProof {
                     commitment_w: w,
                     challenge_c,
@@ -877,9 +977,9 @@ impl Prover {
 
             // Rejected: w/challenge_c/z must not survive to the next
             // iteration or fall out unwiped.
-            w.zeroize();
+            vec_zeroize(&mut w);
             challenge_c.zeroize();
-            z.zeroize();
+            vec_zeroize(&mut z);
         }
 
         // No fallback, for two independent reasons — this path used to rebuild
@@ -923,8 +1023,8 @@ impl Verifier {
     /// handed it the projection. Deriving it means the only thing a caller
     /// controls is the salt, and the salt is bound into the challenge.
     pub fn verify(proj: &EphemeralProjection, proof: &ZkIdentityProof) -> bool {
-        // 1. Check response norm bound: ||z||∞ < γ₁ - β
-        if proof.response_z.infinity_norm() >= REJECTION_THRESHOLD as i64 {
+        // 1. Check response norm bound: ||z||∞ < γ₁ - β on every component.
+        if vec_infinity_norm(&proof.response_z) >= REJECTION_THRESHOLD as i64 {
             return false;
         }
 
@@ -944,13 +1044,16 @@ impl Verifier {
         // 3. Verify equation: A · z - c · b_τ ≈ W
         // W' = A · z - c · b_τ, with A derived, not taken on trust.
         let matrix_a = derive_context_matrix(&proj.tau, &proj.salt);
-        let az = matrix_a.mul_schoolbook(&proof.response_z);
-        let cb = proof.challenge_c.mul_schoolbook(&proj.public_b);
-        let w_prime = az.sub(&cb);
+        let az = mat_vec_mul(&matrix_a, &proof.response_z);
+        let cb = scalar_vec_mul(&proof.challenge_c, &proj.public_b);
+        let w_prime = vec_sub(&az, &cb);
 
-        // In LWE with small noise, W and W' differ by c · e_τ (small)
-        let diff = w_prime.sub(&proof.commitment_w);
-        diff.infinity_norm() < (BETA as i64 * 2)
+        // In LWE with small noise, W and W' differ by c · e_τ, which stays
+        // small in every component. The bound is per component, not summed:
+        // a residual that is small in aggregate but large in one slot is not
+        // an honest transcript.
+        let diff = vec_sub(&w_prime, &proof.commitment_w);
+        vec_infinity_norm(&diff) < (BETA as i64 * 2)
     }
 }
 
@@ -1102,13 +1205,15 @@ mod tests {
         for i in 0..N {
             y.coeffs[i] = ((i as u64 * 7919 + 13) % 100_000) as u32;
         }
-        let c1 = hash_to_challenge(&proj.matrix_a, &proj.public_b, &proj.tau, &[1u8; 32]);
-        let c2 = hash_to_challenge(&proj.matrix_a, &proj.public_b, &proj.tau, &[2u8; 32]);
+        let c1 = hash_to_challenge(&proj.public_b, &proj.public_b, &proj.tau, &[1u8; 32]);
+        let c2 = hash_to_challenge(&proj.public_b, &proj.public_b, &proj.tau, &[2u8; 32]);
         assert_ne!(c1.coeffs, c2.coeffs, "setup: challenges must differ");
 
-        // z = y + c*s, with s the real secret this identity holds.
-        let z1 = y.add(&c1.mul_schoolbook(&identity.secret_key));
-        let z2 = y.add(&c2.mul_schoolbook(&identity.secret_key));
+        // z = y + c*s, on component 0. Mask reuse leaks each component
+        // independently, so recovering one is the faithful reduction of the
+        // attack this control exists to prove is live.
+        let z1 = y.add(&c1.mul_schoolbook(&identity.secret_key[0]));
+        let z2 = y.add(&c2.mul_schoolbook(&identity.secret_key[0]));
 
         let recovered = attack_ring_divide(&attack_sub(&z1, &z2), &attack_sub(&c1, &c2))
             .expect("control: the challenge difference should be invertible");
@@ -1127,7 +1232,7 @@ mod tests {
         for i in 0..N {
             assert_eq!(
                 attack_centered(recovered.coeffs[i] as i64),
-                attack_centered(identity.secret_key.coeffs[i] as i64),
+                attack_centered(identity.secret_key[0].coeffs[i] as i64),
                 "recovered coefficient {} does not match the real secret", i
             );
         }
@@ -1169,7 +1274,7 @@ mod tests {
             }
             attempts += 1;
 
-            let z_diff = attack_sub(&p1.response_z, &p2.response_z);
+            let z_diff = attack_sub(&p1.response_z[0], &p2.response_z[0]);
             let c_diff = attack_sub(&p1.challenge_c, &p2.challenge_c);
 
             let recovered = match attack_ring_divide(&z_diff, &c_diff) {
@@ -1249,11 +1354,11 @@ mod tests {
                 };
 
                 assert!(
-                    proof.response_z.infinity_norm() < REJECTION_THRESHOLD as i64,
+                    vec_infinity_norm(&proof.response_z) < REJECTION_THRESHOLD as i64,
                     "prove_identity returned a response outside the norm bound \
                      (norm {}, bound {}). That is the value rejection sampling \
                      exists to withhold, and returning it is how the secret leaks.",
-                    proof.response_z.infinity_norm(),
+                    vec_infinity_norm(&proof.response_z),
                     REJECTION_THRESHOLD
                 );
                 assert!(
@@ -1289,10 +1394,10 @@ mod tests {
 
         // Push one coefficient just past the rejection threshold, which is what
         // an all-rejected candidate looks like.
-        proof.response_z.coeffs[0] = REJECTION_THRESHOLD as u32 + 1;
+        proof.response_z[0].coeffs[0] = REJECTION_THRESHOLD as u32 + 1;
 
         assert!(
-            proof.response_z.infinity_norm() >= REJECTION_THRESHOLD as i64,
+            vec_infinity_norm(&proof.response_z) >= REJECTION_THRESHOLD as i64,
             "control: the constructed response should violate the norm bound"
         );
         assert!(
@@ -1345,24 +1450,29 @@ mod tests {
         let tau = &pad_tau(tau);
         let a1 = derive_context_matrix(tau, &salt);
         let a2 = derive_context_matrix(tau, &salt);
-        assert_eq!(a1.coeffs, a2.coeffs, "derivation must be deterministic in (tau, salt)");
+        let flat = |m: &PolyMat| {
+            m.iter()
+                .flat_map(|row| row.iter().flat_map(|p| p.coeffs.iter().copied()))
+                .collect::<alloc::vec::Vec<u32>>()
+        };
+        assert_eq!(flat(&a1), flat(&a2), "derivation must be deterministic in (tau, salt)");
 
         // And genuinely salt-dependent, which is the whole point of 0X3-95.
         let other = derive_context_matrix(tau, &[0xa5u8; 32]);
         assert_ne!(
-            a1.coeffs, other.coeffs,
+            flat(&a1), flat(&other),
             "a different salt at the same tau produced the same matrix"
         );
-        // All coefficients should be in [0, Q)
-        for &c in a1.coeffs.iter() {
+        // Every cell of the matrix must be reduced, not just the first.
+        for &c in flat(&a1).iter() {
             assert!(c < Q, "coefficient {} >= Q", c);
         }
     }
 
     #[test]
     fn test_hash_to_challenge_sparse() {
-        let w = Poly::zero();
-        let public_b = Poly::zero();
+        let w = [Poly::zero(); MODULE_K];
+        let public_b = [Poly::zero(); MODULE_K];
         let c = hash_to_challenge(&w, &public_b, &[0x11u8; 32], &[0x22u8; 32]);
         // Count non-zero coefficients — should be exactly 60
         let nonzero = c.coeffs.iter().filter(|&&x| x != 0).count();
@@ -1414,40 +1524,49 @@ mod tests {
         let salt = [0x9au8; 32];
         let matrix_a = derive_context_matrix(&tau, &salt);
 
-        // Free choice: any response inside the norm bound.
-        let mut z = Poly::zero();
-        for i in 0..N {
-            z.coeffs[i] = 1;
+        // Free choice: any response inside the norm bound. The forgery is
+        // per component, so the whole rank-k response is chosen freely.
+        let mut z = [Poly::zero(); MODULE_K];
+        for poly in z.iter_mut() {
+            for i in 0..N {
+                poly.coeffs[i] = 1;
+            }
         }
         assert!(
-            z.infinity_norm() < REJECTION_THRESHOLD as i64,
+            vec_infinity_norm(&z) < REJECTION_THRESHOLD as i64,
             "test setup: z must satisfy the norm bound the same way an honest response would"
         );
 
         // Free choice: any commitment.
-        let w = Poly::zero();
+        let w = [Poly::zero(); MODULE_K];
 
         // The forger has not chosen b_τ yet — hash a decoy to get a
         // candidate c, exactly as a party running the old (V2) attack would
         // have hashed nothing at all.
-        let decoy_b = Poly::zero();
+        let decoy_b = [Poly::zero(); MODULE_K];
         let c = hash_to_challenge(&w, &decoy_b, &tau, &salt);
 
-        // Solve the verification equation for b: A·z − c·b − w = 0.
-        let az_minus_w = attack_sub(&matrix_a.mul_schoolbook(&z), &w);
-        let forged_b = attack_ring_divide(&az_minus_w, &c)
-            .expect("c should be invertible in R_q with overwhelming probability");
+        // Solve the verification equation for b componentwise:
+        // (A·z)_i − c·b_i − w_i = 0. Raising the rank does not obstruct this;
+        // what stops the forgery is that c is bound to b, not the dimension.
+        let az = mat_vec_mul(&matrix_a, &z);
+        let mut forged_b = [Poly::zero(); MODULE_K];
+        for i in 0..MODULE_K {
+            let az_minus_w = attack_sub(&az[i], &w[i]);
+            forged_b[i] = attack_ring_divide(&az_minus_w, &c)
+                .expect("c should be invertible in R_q with overwhelming probability");
+        }
 
         // Confirm the forgery is exact against the equation it was built to
         // satisfy — otherwise a rejection below would prove nothing about the
         // binding fix specifically.
-        let check_w = matrix_a
-            .mul_schoolbook(&z)
-            .sub(&c.mul_schoolbook(&forged_b));
-        assert_eq!(
-            check_w.coeffs, w.coeffs,
-            "test setup: the solved-for b should make the verification equation exact"
-        );
+        let check_w = vec_sub(&mat_vec_mul(&matrix_a, &z), &scalar_vec_mul(&c, &forged_b));
+        for i in 0..MODULE_K {
+            assert_eq!(
+                check_w[i].coeffs, w[i].coeffs,
+                "test setup: the solved-for b should make the verification equation exact                  in component {i}"
+            );
+        }
 
         let proj = EphemeralProjection {
             tau,
@@ -1477,14 +1596,14 @@ mod tests {
     /// read it.
     #[test]
     fn two_projections_differing_only_in_public_b_produce_different_challenges() {
-        let w = Poly::zero();
+        let w = [Poly::zero(); MODULE_K];
         let tau = [0x11u8; 32];
         let salt = [0x22u8; 32];
 
-        let mut b1 = Poly::zero();
-        b1.coeffs[0] = 1;
-        let mut b2 = Poly::zero();
-        b2.coeffs[0] = 2;
+        let mut b1 = [Poly::zero(); MODULE_K];
+        b1[0].coeffs[0] = 1;
+        let mut b2 = [Poly::zero(); MODULE_K];
+        b2[0].coeffs[0] = 2;
 
         let c1 = hash_to_challenge(&w, &b1, &tau, &salt);
         let c2 = hash_to_challenge(&w, &b2, &tau, &salt);
@@ -1545,11 +1664,14 @@ mod tests {
             .map(|i| {
                 let rho = [i.wrapping_mul(7).wrapping_add(1); 32];
                 let e = derive_error_tau(&rho, &tau);
-                matrix_a.mul_schoolbook(&identity.secret_key).add(&e)
+                // Component 0 of b = A*s + e. The attack averages away the
+                // error term componentwise, so one component is the faithful
+                // reduction and keeps the control decisive.
+                vec_add(&mat_vec_mul(&matrix_a, &identity.secret_key), &e)[0]
             })
             .collect();
 
-        let target = matrix_a.mul_schoolbook(&identity.secret_key);
+        let target = mat_vec_mul(&matrix_a, &identity.secret_key)[0];
         let recovered = averaging_attack_recovered_coeffs(&samples, &target);
 
         assert!(
@@ -1586,14 +1708,12 @@ mod tests {
             "test setup: all projections must share tau"
         );
         assert_ne!(
-            projections[0].matrix_a.coeffs, projections[1].matrix_a.coeffs,
+            projections[0].matrix_a[0][0].coeffs, projections[1].matrix_a[0][0].coeffs,
             "test setup: two projections at one tau must not share A"
         );
 
-        let samples: Vec<Poly> = projections.iter().map(|p| p.public_b).collect();
-        let target = projections[0]
-            .matrix_a
-            .mul_schoolbook(&identity.secret_key);
+        let samples: Vec<Poly> = projections.iter().map(|p| p.public_b[0]).collect();
+        let target = mat_vec_mul(&projections[0].matrix_a, &identity.secret_key)[0];
 
         let recovered = averaging_attack_recovered_coeffs(&samples, &target);
 
@@ -1618,11 +1738,11 @@ mod tests {
         let b = identity.project_at_context(b"one-tau", &rho);
 
         assert_eq!(
-            a.matrix_a.coeffs, b.matrix_a.coeffs,
+            a.matrix_a[0][0].coeffs, b.matrix_a[0][0].coeffs,
             "same (tau, rho) is deterministic, so it must reproduce one matrix"
         );
         assert_eq!(
-            a.public_b.coeffs, b.public_b.coeffs,
+            a.public_b[0].coeffs, b.public_b[0].coeffs,
             "and therefore one projection: reusing rho gives the attacker nothing \
              new, but it also gives the holder no fresh sample"
         );
@@ -1646,7 +1766,7 @@ mod tests {
         let proj1 = identity.project_at_context(b"context_1", &test_rho());
         let proj2 = identity.project_at_context(b"context_2", &test_rho());
         // Projections should differ
-        assert_ne!(proj1.public_b.coeffs, proj2.public_b.coeffs);
+        assert_ne!(proj1.public_b[0].coeffs, proj2.public_b[0].coeffs);
         // Proof for context 1 should not verify against context 2
         let proof1 = Prover::prove_identity(&identity, &proj1, &seed)
             .expect("honest proving must not exhaust rejection sampling");
@@ -1667,11 +1787,18 @@ mod tests {
         let seed = test_seed();
         let identity = MasterIdentity::from_seed(&seed);
 
-        let all_zero = identity.secret_key.coeffs.iter().all(|&c| c == 0);
+        let all_zero = identity
+            .secret_key
+            .iter()
+            .all(|p| p.coeffs.iter().all(|&c| c == 0));
         assert!(!all_zero, "Secret key should not be all-zero (negligible probability)");
 
-        for &coeff in identity.secret_key.coeffs.iter() {
-            assert!(coeff < Q, "Secret key coefficient {} out of range [0, Q-1]", coeff);
+        // Every component, not just the first: a rank-k secret is only well
+        // formed if all k polynomials are reduced.
+        for poly in identity.secret_key.iter() {
+            for &coeff in poly.coeffs.iter() {
+                assert!(coeff < Q, "Secret key coefficient {} out of range [0, Q-1]", coeff);
+            }
         }
     }
 
@@ -1682,9 +1809,9 @@ mod tests {
 
         let keys_equal = identity_a
             .secret_key
-            .coeffs
             .iter()
-            .zip(identity_b.secret_key.coeffs.iter())
+            .flat_map(|p| p.coeffs.iter())
+            .zip(identity_b.secret_key.iter().flat_map(|p| p.coeffs.iter()))
             .all(|(a, b)| a == b);
 
         assert!(!keys_equal, "Two independently generated secret keys should differ");
@@ -1701,7 +1828,7 @@ mod tests {
             .expect("honest proving must not exhaust rejection sampling");
 
         // Tamper with the first coefficient of the response vector
-        proof.response_z.coeffs[0] = proof.response_z.coeffs[0].wrapping_add(1);
+        proof.response_z[0].coeffs[0] = proof.response_z[0].coeffs[0].wrapping_add(1);
 
         let valid = Verifier::verify(&proj, &proof);
         assert!(!valid, "Tampered proof should be rejected by the verifier");
@@ -1739,14 +1866,14 @@ mod tests {
         let seed = [0x77u8; 32];
         let mut identity = MasterIdentity::from_seed(&seed);
         assert!(
-            identity.secret_key.coeffs.iter().any(|&c| c != 0),
+            identity.secret_key.iter().any(|p| p.coeffs.iter().any(|&c| c != 0)),
             "sanity check: this seed should produce a non-zero secret key"
         );
 
         identity.zeroize();
 
         assert!(
-            identity.secret_key.coeffs.iter().all(|&c| c == 0),
+            identity.secret_key.iter().all(|p| p.coeffs.iter().all(|&c| c == 0)),
             "zeroize() must clear every coefficient of the secret key"
         );
     }

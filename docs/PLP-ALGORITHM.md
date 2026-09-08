@@ -131,7 +131,7 @@ Algorithm Project(s, τ, rng):
   Output: Ephemeral projection (A_τ, b_τ)
 
   1. Context Expansion:
-     A_τ ← SHAKE-256("AETHEL_PLP_CTX_V1" ∥ τ)
+     A_τ ← SHAKE-256("AETHEL_PLP_CTX_V3" ∥ τ ∥ salt)
      (Expand to k×k matrix of uniform R_q elements)
 
   2. Noise Sampling:
@@ -232,7 +232,7 @@ Since **∥e_τ∥_∞ ≤ β** and **∥c∥_∞ ≤ 1** (sparse ternary), we h
 1. **Setup**: Challenger C samples master secret vector **s ← χ_η^k ⊂ R_q^k** with parameter set **λ = (N, q, k, η)**.
 
 2. **Phase 1 (Adaptive Context Queries)**: Adversary A adaptively chooses m distinct contexts **{τ_1, τ_2, ..., τ_m}**. For each context τ_i, C generates:
-   - **A_{τ_i} ← SHAKE-256("AETHEL_PLP_CTX_V1" ∥ τ_i)**
+   - **A_{τ_i} ← SHAKE-256("AETHEL_PLP_CTX_V3" ∥ τ_i ∥ salt_i)**
    - **e_{τ_i} ← χ_η^k**
    - **b_{τ_i} = A_{τ_i} · s + e_{τ_i} (mod q)**
    - C returns **(A_{τ_i}, b_{τ_i})** to A.

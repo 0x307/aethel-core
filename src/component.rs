@@ -133,7 +133,7 @@ impl IdentityGuest for Component {
         Ok(WitProjection {
             tau: proj.tau.to_vec(),
             salt: proj.salt.to_vec(),
-            public_b: proj.public_b.coeffs().to_vec(),
+            public_b: vec_to_coeffs(&proj.public_b),
         })
     }
 
@@ -159,9 +159,9 @@ impl IdentityGuest for Component {
         let proof = plp::Prover::prove_identity(&identity, &proj, &seed)?;
 
         Ok(WitZkProof {
-            commitment_w: proof.commitment_w.coeffs().to_vec(),
+            commitment_w: vec_to_coeffs(&proof.commitment_w),
             challenge_c: proof.challenge_c.coeffs().to_vec(),
-            response_z: proof.response_z.coeffs().to_vec(),
+            response_z: vec_to_coeffs(&proof.response_z),
         })
     }
 
@@ -215,8 +215,8 @@ impl IdentityGuest for Component {
             challenge: credential::unflatten::<1>(&presentation.challenge)?[0],
             z_r: credential::unflatten::<{ credential::CRED_L }>(&presentation.z_r)?,
             z_m: credential::unflatten::<{ credential::CRED_SLOTS }>(&presentation.z_m)?,
-            z_s: credential::unflatten::<1>(&presentation.z_s)?[0],
-            z_e: credential::unflatten::<1>(&presentation.z_e)?[0],
+            z_s: credential::unflatten::<{ plp::MODULE_K }>(&presentation.z_s)?,
+            z_e: credential::unflatten::<{ plp::MODULE_K }>(&presentation.z_e)?,
         };
 
         let params = &issuer.get::<OwnedIssuerParams>().0;
@@ -271,7 +271,7 @@ impl GuestMasterIdentity for OwnedIdentity {
         Ok(WitProjection {
             tau: proj.tau.to_vec(),
             salt: proj.salt.to_vec(),
-            public_b: proj.public_b.coeffs().to_vec(),
+            public_b: vec_to_coeffs(&proj.public_b),
         })
     }
 
@@ -295,11 +295,40 @@ impl GuestMasterIdentity for OwnedIdentity {
         let proof = plp::Prover::prove_identity(&identity, &proj, seed)?;
 
         Ok(WitZkProof {
-            commitment_w: proof.commitment_w.coeffs().to_vec(),
+            commitment_w: vec_to_coeffs(&proof.commitment_w),
             challenge_c: proof.challenge_c.coeffs().to_vec(),
-            response_z: proof.response_z.coeffs().to_vec(),
+            response_z: vec_to_coeffs(&proof.response_z),
         })
     }
+}
+
+/// Flatten a rank-`k` vector into the `list<u32>` the WIT records carry.
+///
+/// Component order, low index first. The WIT type is unchanged by the module
+/// rank: only the list length moves, from `RING_N` to `MODULE_K * RING_N`.
+fn vec_to_coeffs(v: &plp::PolyVec) -> alloc::vec::Vec<u32> {
+    let mut out = alloc::vec::Vec::with_capacity(plp::MODULE_K * crate::RING_N);
+    for poly in v.iter() {
+        out.extend_from_slice(poly.coeffs());
+    }
+    out
+}
+
+/// Parse a `list<u32>` back into a rank-`k` vector.
+///
+/// The length check is exact. A caller handing over a rank-1 list, which is what
+/// every projection published before the rank change looks like, is rejected
+/// rather than zero-extended into a projection that would then fail to verify
+/// for an unexplained reason.
+fn vec_from_coeffs(coeffs: &[u32]) -> Result<plp::PolyVec, WitError> {
+    if coeffs.len() != plp::MODULE_K * crate::RING_N {
+        return Err(WitError::SerializationError);
+    }
+    let mut out = [plp::Poly::zero(); plp::MODULE_K];
+    for (i, chunk) in coeffs.chunks(crate::RING_N).enumerate() {
+        out[i].coeffs.copy_from_slice(chunk);
+    }
+    Ok(out)
 }
 
 fn poly_from_coeffs(coeffs: &[u32]) -> Result<plp::Poly, WitError> {
@@ -329,15 +358,15 @@ fn projection_from_wit(p: &WitProjection) -> Result<plp::EphemeralProjection, Wi
         // Derived, not decoded. The wire carries no matrix, so there is no
         // inconsistent A for a caller to supply. See the record's doc comment.
         matrix_a: plp::derive_context_matrix(&tau, &salt),
-        public_b: poly_from_coeffs(&p.public_b)?,
+        public_b: vec_from_coeffs(&p.public_b)?,
     })
 }
 
 fn zk_proof_from_wit(p: &WitZkProof) -> Result<plp::ZkIdentityProof, WitError> {
     Ok(plp::ZkIdentityProof {
-        commitment_w: poly_from_coeffs(&p.commitment_w)?,
+        commitment_w: vec_from_coeffs(&p.commitment_w)?,
         challenge_c: poly_from_coeffs(&p.challenge_c)?,
-        response_z: poly_from_coeffs(&p.response_z)?,
+        response_z: vec_from_coeffs(&p.response_z)?,
     })
 }
 
@@ -498,8 +527,8 @@ impl GuestCredential for OwnedCredential {
             challenge: presentation.challenge.coeffs.to_vec(),
             z_r: credential::flatten(&presentation.z_r),
             z_m: credential::flatten(&presentation.z_m),
-            z_s: presentation.z_s.coeffs.to_vec(),
-            z_e: presentation.z_e.coeffs.to_vec(),
+            z_s: credential::flatten(&presentation.z_s),
+            z_e: credential::flatten(&presentation.z_e),
         })
     }
 }

@@ -30,18 +30,22 @@ because the affected code is published.
 None of these are reports from a third party, and none are being withheld pending a
 fix. The work to strengthen each is scoped and in progress.
 
-### The projection runs below the module rank its specification requires
+### The projection ran below the module rank its specification requires
+
+**Fixed in the next release, not in 0.4.0.**
 
 `AETHEL-SPEC-001` §3.2 sets a module rank of `k = 4` for the parameter profile this
 crate targets, and §9.2 states that implementations must not reduce it below that.
-`plp` currently operates at rank 1: the master secret, the context matrix and the
-projection are each a single ring element rather than a rank-4 module.
+In `0.4.0` `plp` operated at rank 1: the master secret, the context matrix and the
+projection were each a single ring element rather than a rank-4 module. The
+lattice-hardness argument written for rank 4 therefore did not apply to the shipped
+code, and the margin protecting a master secret from the projections derived from it
+was smaller than the specification's analysis assumes.
 
-The consequence is that the lattice-hardness argument written for rank 4 does not
-apply to the shipped code, and the margin protecting a master secret from the
-projections derived from it is smaller than the specification's analysis assumes.
-Raising the rank to the specified minimum is the primary fix and it changes the wire
-format.
+The identity path now runs at `k = 4` throughout, sourced from `plp::MODULE_K`. This
+changes the wire encoding of every projection and proof, so anything produced by
+`0.4.0` will not verify against the fix and cannot be migrated. Regenerate
+identities rather than attempting to carry them forward.
 
 ### The credential commitment does not provide the hiding property claimed for it
 
@@ -70,7 +74,9 @@ extraction bounds stated for every other relation depend on the true value.
 ### What to do with this today
 
 `aethel-core` is `0.x` and the README already says not to use it in production
-without a formal audit. That guidance stands and these findings sharpen it. If you
-are evaluating the crate, the `plp` identity path is the part being brought to its
-specified parameters first; the credential path should be treated as
-pre-release until the commitment shape is corrected.
+without a formal audit. That guidance stands and these findings sharpen it.
+
+The `plp` identity path now runs at its specified module rank. The credential path
+should still be treated as pre-release: the commitment shape above is a defect in
+the specification, and correcting the specification comes before changing the
+implementation to follow it.
