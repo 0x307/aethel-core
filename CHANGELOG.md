@@ -7,6 +7,33 @@ adheres to the breaking-change and deprecation rules in
 [`STABILITY.md`](./STABILITY.md) rather than strict SemVer prior to `1.0.0` — see that
 document for what counts as breaking inside `0.x`.
 
+## [Unreleased]
+
+### Security
+
+- **Recorded three limitations in the shipped identity and credential paths.**
+  A cryptographic review of the `plp` and `credential` modules completed on
+  2026-09-08. The projection operates at module rank 1 where the specification
+  requires 4, so the lattice-hardness argument written for the specified profile
+  does not apply to the shipped code. The credential commitment is specified with
+  a randomness dimension below its commitment dimension and therefore does not
+  provide the hiding property claimed for it, which means undisclosed attribute
+  values are not protected by the commitment and two presentations of one
+  credential are not unlinkable. The rejection-sampling bound `beta` corresponds
+  to a challenge of weight 39 while the implemented challenge has weight 60, so
+  the rejection-sampling argument does not carry as written, though measured
+  behaviour stays far from the bound. Full detail in
+  [`SECURITY.md`](./SECURITY.md#known-limitations-in-040).
+
+### Changed
+
+- **Corrected published claims to match the implementation.** The README's
+  parameter table stated a module rank of 4, and two domain separators that the
+  code had already moved past. `docs/SAAP-SPEC.md` asserted context-isolated
+  unlinkability, presentation unlinkability and zero-knowledge disclosure without
+  qualification. Each now records whether it is achieved at the shipped
+  parameters or remains a requirement the implementation does not yet meet.
+
 ## [0.4.0] - 2026-09-06
 
 ### Changed

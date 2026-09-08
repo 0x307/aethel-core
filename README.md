@@ -12,7 +12,10 @@ implementing three post-quantum identity primitives, compiled natively or to
 - **Polymorphic Lattice Projection (PLP)** — context-bound ephemeral identity projection and
   ZK ownership proof over Module-LWE (M-LWE).
 - **Selective Attribute Attestation Protocol (SAAP)** — BDLOP vector commitment with
-  zero-knowledge selective disclosure and norm-bound verification.
+  selective disclosure and norm-bound verification. The commitment does not currently
+  provide the hiding property the design calls for; see
+  [`SECURITY.md`](./SECURITY.md#known-limitations-in-040) before relying on undisclosed
+  attributes staying undisclosed.
 - **5D Hypercube Threshold Secret Sharing (HTSS)** — Shamir 3-of-5 secret sharing routed over
   a Q_5 hypercube graph (32 nodes, 80 edges).
 
@@ -56,13 +59,15 @@ integration tests + 1 doctest, all passing on default features):
 |-----------|-------|
 | Ring | `R_q = Z_q[X]/(X^256 + 1)` |
 | Modulus `q` | `8,380,417` |
-| Module rank `k` | 4 |
+| Module rank `k` | 1 as implemented; the specification requires 4 (see [`SECURITY.md`](./SECURITY.md#known-limitations-in-040)) |
 | Noise `η` | 2 (Centered Binomial Distribution) |
 | Masking bound `γ₁` | 131,072 (2^17) |
-| Rejection bound `β` | 78 |
-| Fixed iteration ceiling | 16 |
-| PLP domain separator | `"AETHEL_PLP_CTX_V1"` |
-| SAAP domain separator | `"AETHEL_SAAP_CHALLENGE_V1"` |
+| Challenge weight | 60 non-zero coefficients in `{±1}` |
+| Rejection bound `β` | 78, which corresponds to a challenge of weight 39 rather than 60 (see [`SECURITY.md`](./SECURITY.md#known-limitations-in-040)) |
+| Fixed iteration ceiling | 16 in `sampling`; the credential rejection loop allows 32 |
+| PLP matrix domain separator | `"AETHEL_PLP_CTX_V2"` |
+| PLP challenge domain separator | `"AETHEL_PLP_CHALLENGE_V3"` |
+| SAAP challenge domain separator | `"AETHEL_SAAP_CHALLENGE_V2"` |
 
 ## Modules
 

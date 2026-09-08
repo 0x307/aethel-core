@@ -53,7 +53,7 @@ PROVING PHASE (Selective Disclosure):                     Holder Local Runtime
 ### 1.3 Security Goals
 
 1. **Zero Identifier Disclosure**: Neither the holder's master secret **s**, nor any persistent public key, nor the Issuer's raw signature object is transmitted or exposed by this crate's API.
-2. **Context-Isolated Unlinkability**: Because **r_blind** is freshly sampled for every verification session, two separate verifications of the exact same credential produce statistically independent commitments **t_blind^(1)** and **t_blind^(2)**, preventing cross-verifier collusive tracking.
+2. **Context-Isolated Unlinkability**: Because **r_blind** is freshly sampled for every verification session, two separate verifications of the exact same credential produce statistically independent commitments **t_blind^(1)** and **t_blind^(2)**, preventing cross-verifier collusive tracking. *Not achieved at the shipped parameters; see §11.2.*
 3. **Post-Quantum Soundness**: The extraction hardness of hidden attributes **m_hidden** from **t_blind** reduces directly to the hardness of the Module Short Integer Solution (M-SIS_{k,l,q}) and M-LWE_{k,l,q} problems over **R_q**.
 
 ---
@@ -465,6 +465,13 @@ Neither the holder's master secret **s**, nor any persistent public key, nor the
 
 Because **r_blind** is freshly sampled for every verification session, two separate verifications of the exact same credential produce statistically independent commitments **t_blind^(1)** and **t_blind^(2)**, preventing cross-verifier collusive tracking.
 
+**Status.** Not achieved at the shipped parameters. `B_1` is specified in §7 with a
+randomness dimension smaller than its commitment dimension, and the crate implements
+that shape. A BDLOP commitment hides only when the relationship runs the other way, so
+`t_blind` is not a hiding commitment and re-randomising it per session does not make
+two presentations unlinkable. Correcting the specified shape is tracked; until it
+lands, treat this as a design goal rather than a property.
+
 ### 11.3 Post-Quantum Soundness
 
 The extraction hardness of hidden attributes **m_hidden** from **t_blind** reduces directly to the hardness of the Module Short Integer Solution (M-SIS_{k,l,q}) and M-LWE_{k,l,q} problems over **R_q**.
@@ -483,9 +490,19 @@ qualifications remain, and neither is covered by the theorem:
 
 Two distinct SAAP proof transcripts generated from the same underlying attribute commitment **t_attr** using different session nonces **τ_1** and **τ_2** MUST be computationally indistinguishable from random elements in **R_q**.
 
+**Status.** Required, not achieved. This rests on §11.2, which does not hold at the
+shipped commitment shape.
+
 ### 11.5 Zero-Knowledge Disclosure
 
 The SAAP proof protocol leaks strictly zero information regarding undisclosed attributes.
+
+**Status.** Required, not achieved. The masking of undisclosed attributes inside the
+proof is sound: §6.2 explains why attribute masks are uniform over `R_q` rather than
+short, and that reasoning holds. What does not hold is the surrounding claim, because
+`t_blind` itself travels with the presentation and is not a hiding commitment at the
+specified dimensions. Undisclosed attribute values are therefore not protected by the
+commitment, independently of how well the proof masks them.
 
 ---
 
@@ -546,6 +563,9 @@ The SAAP proof protocol leaks strictly zero information regarding undisclosed at
 
 1. **Presentation Unlinkability**: Two distinct SAAP proof transcripts generated from the same underlying attribute commitment **t_attr** using different session nonces **τ_1** and **τ_2** MUST be computationally indistinguishable from random elements in **R_q**.
 2. **Zero-Knowledge Disclosure**: The SAAP proof protocol leaks strictly zero information regarding undisclosed attributes.
+
+**Status.** Both are requirements this document sets, and neither is met at the shipped
+commitment shape. See §11.4 and §11.5.
 
 ### 14.2 Graph-Topological Privacy and Trajectory Protection
 
