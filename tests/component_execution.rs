@@ -100,9 +100,21 @@ fn projection_through_the_component_matches_the_native_api() {
         native.salt.to_vec(),
         "salt differs between the component and the native API"
     );
+    // `public_b` is a rank-`MODULE_K` vector, flattened component-order on the
+    // wire. Comparing the whole thing matters: a boundary that dropped or
+    // reordered components would still agree on the first `RING_N` coefficients.
+    let native_public_b: Vec<u32> = native
+        .public_b
+        .iter()
+        .flat_map(|p| p.coeffs().to_vec())
+        .collect();
     assert_eq!(
-        via_component.public_b,
-        native.public_b.coeffs().to_vec(),
+        via_component.public_b.len(),
+        aethel_core::plp::MODULE_K * aethel_core::plp::N,
+        "the component returned a public_b of the wrong rank"
+    );
+    assert_eq!(
+        via_component.public_b, native_public_b,
         "public_b differs between the component and the native API"
     );
 }
