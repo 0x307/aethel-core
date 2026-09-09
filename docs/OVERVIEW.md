@@ -79,7 +79,7 @@ In this system:
 ### Projection Generation
 
 ```
-Context Expansion:  A_τ ← SHAKE-256("AETHEL_PLP_CTX_V1" ∥ τ)
+Context Expansion:  A_τ ← SHAKE-256("AETHEL_PLP_CTX_V3" ∥ τ ∥ salt)
 Noise Sampling:     e_τ ← χ_η^k over R_q
 Projection:         b_τ = A_τ · s + e_τ (mod q)
 ```

@@ -22,7 +22,7 @@ project: "aethel-core"
 
 Classical identity credentials (e.g., W3C Verifiable Credentials) rely on digital signatures over structured JSON-LD or JWT payloads. Verifying an attribute traditionally requires revealing the holder's public key or identifier alongside the signature, enabling verifiers to correlate identity state across multiple contexts.
 
-This section specifies the **Selective Attribute Attestation Protocol (SAAP)** for Aethel-ID. SAAP allows a Holder to prove arbitrary statements (e.g., membership, range bounds, predicate matching) about credential attributes without disclosing non-requested attributes, without exposing static identity identifiers, and without revealing the Issuer's signature object directly.
+This section specifies the **Selective Attribute Attestation Protocol (SAAP)** for Aethel-ID. SAAP allows a Holder to disclose a chosen subset of credential attributes without disclosing the rest, without exposing static identity identifiers, and without revealing the Issuer's signature object directly.
 
 ---
 
@@ -53,7 +53,7 @@ PROVING PHASE (Selective Disclosure):                     Holder Local Runtime
 ### 1.3 Security Goals
 
 1. **Zero Identifier Disclosure**: Neither the holder's master secret **s**, nor any persistent public key, nor the Issuer's raw signature object is transmitted or exposed by this crate's API.
-2. **Context-Isolated Unlinkability**: Because **r_blind** is freshly sampled for every verification session, two separate verifications of the exact same credential produce statistically independent commitments **t_blind^(1)** and **t_blind^(2)**, preventing cross-verifier collusive tracking.
+2. **Context-Isolated Unlinkability**: Because **r_blind** is freshly sampled for every verification session, two separate verifications of the exact same credential produce statistically independent commitments **t_blind^(1)** and **t_blind^(2)**, preventing cross-verifier collusive tracking. *Not achieved at the shipped parameters; see §11.2.*
 3. **Post-Quantum Soundness**: The extraction hardness of hidden attributes **m_hidden** from **t_blind** reduces directly to the hardness of the Module Short Integer Solution (M-SIS_{k,l,q}) and M-LWE_{k,l,q} problems over **R_q**.
 
 ---
@@ -368,7 +368,16 @@ t_blind - (0 ∥ m_pub) = B_1 · r* + (0 ∥ m_hidden)  (mod q)
 > stubbed, so that no caller can mistake an unevaluated predicate for a satisfied
 > one. **A verifier cannot currently learn "age >= 21" from a SAAP presentation.**
 > Selective disclosure of whole attributes works; predicates over hidden
-> attributes do not. Tracked as follow-on work to 0X3-79.
+> attributes do not.
+
+> **This relation cannot be built inside this protocol.** The design below is
+> retained because it is what the relation would have to look like, not because
+> it is buildable here. Bit-ness is a quadratic constraint and this is a linear
+> sigma protocol; the verification relation holds only modulo `q` and is
+> therefore vacuous about 64-bit values; and shortness of a masked response
+> bounds `c * w` rather than `w`. See
+> [`PREDICATE-PROOFS.md`](./PREDICATE-PROOFS.md) for the full argument, what a
+> passing proof does establish, and the two options that remain.
 
 The design, for when it is built. For hidden numerical attributes (e.g., Age >= 21),
 the prover proves in ZK that:
@@ -465,6 +474,13 @@ Neither the holder's master secret **s**, nor any persistent public key, nor the
 
 Because **r_blind** is freshly sampled for every verification session, two separate verifications of the exact same credential produce statistically independent commitments **t_blind^(1)** and **t_blind^(2)**, preventing cross-verifier collusive tracking.
 
+**Status.** Not achieved at the shipped parameters. `B_1` is specified in §7 with a
+randomness dimension smaller than its commitment dimension, and the crate implements
+that shape. A BDLOP commitment hides only when the relationship runs the other way, so
+`t_blind` is not a hiding commitment and re-randomising it per session does not make
+two presentations unlinkable. Correcting the specified shape is tracked; until it
+lands, treat this as a design goal rather than a property.
+
 ### 11.3 Post-Quantum Soundness
 
 The extraction hardness of hidden attributes **m_hidden** from **t_blind** reduces directly to the hardness of the Module Short Integer Solution (M-SIS_{k,l,q}) and M-LWE_{k,l,q} problems over **R_q**.
@@ -483,9 +499,19 @@ qualifications remain, and neither is covered by the theorem:
 
 Two distinct SAAP proof transcripts generated from the same underlying attribute commitment **t_attr** using different session nonces **τ_1** and **τ_2** MUST be computationally indistinguishable from random elements in **R_q**.
 
+**Status.** Required, not achieved. This rests on §11.2, which does not hold at the
+shipped commitment shape.
+
 ### 11.5 Zero-Knowledge Disclosure
 
 The SAAP proof protocol leaks strictly zero information regarding undisclosed attributes.
+
+**Status.** Required, not achieved. The masking of undisclosed attributes inside the
+proof is sound: §6.2 explains why attribute masks are uniform over `R_q` rather than
+short, and that reasoning holds. What does not hold is the surrounding claim, because
+`t_blind` itself travels with the presentation and is not a hiding commitment at the
+specified dimensions. Undisclosed attribute values are therefore not protected by the
+commitment, independently of how well the proof masks them.
 
 ---
 
@@ -546,6 +572,9 @@ The SAAP proof protocol leaks strictly zero information regarding undisclosed at
 
 1. **Presentation Unlinkability**: Two distinct SAAP proof transcripts generated from the same underlying attribute commitment **t_attr** using different session nonces **τ_1** and **τ_2** MUST be computationally indistinguishable from random elements in **R_q**.
 2. **Zero-Knowledge Disclosure**: The SAAP proof protocol leaks strictly zero information regarding undisclosed attributes.
+
+**Status.** Both are requirements this document sets, and neither is met at the shipped
+commitment shape. See §11.4 and §11.5.
 
 ### 14.2 Graph-Topological Privacy and Trajectory Protection
 

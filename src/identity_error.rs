@@ -178,8 +178,19 @@ mod tests {
         let decoded =
             EphemeralProjection::from_bytes(&bytes).expect("well-formed bytes must decode");
         assert_eq!(decoded.tau, projection.tau);
-        assert_eq!(decoded.matrix_a.coeffs, projection.matrix_a.coeffs);
-        assert_eq!(decoded.public_b.coeffs, projection.public_b.coeffs);
+        // Compare the whole rank-k matrix and vector. Checking one cell would
+        // let a codec that dropped the other components round-trip cleanly.
+        let flat_a = |p: &EphemeralProjection| {
+            p.matrix_a
+                .iter()
+                .flat_map(|row| row.iter().flat_map(|q| q.coeffs().to_vec()))
+                .collect::<alloc::vec::Vec<u32>>()
+        };
+        let flat_b = |p: &EphemeralProjection| {
+            p.public_b.iter().flat_map(|q| q.coeffs().to_vec()).collect::<alloc::vec::Vec<u32>>()
+        };
+        assert_eq!(flat_a(&decoded), flat_a(&projection));
+        assert_eq!(flat_b(&decoded), flat_b(&projection));
     }
 
     // ── ThresholdNotMet: driven through SecretSharer::reconstruct_secret_checked ─

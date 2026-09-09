@@ -7,6 +7,104 @@ adheres to the breaking-change and deprecation rules in
 [`STABILITY.md`](./STABILITY.md) rather than strict SemVer prior to `1.0.0` — see that
 document for what counts as breaking inside `0.x`.
 
+## [0.5.0] - 2026-09-08
+
+### Security
+
+- **Recorded three limitations in the shipped identity and credential paths.**
+  A cryptographic review of the `plp` and `credential` modules completed on
+  2026-09-08. The projection operates at module rank 1 where the specification
+  requires 4, so the lattice-hardness argument written for the specified profile
+  does not apply to the shipped code. The credential commitment is specified with
+  a randomness dimension below its commitment dimension and therefore does not
+  provide the hiding property claimed for it, which means undisclosed attribute
+  values are not protected by the commitment and two presentations of one
+  credential are not unlinkable. The rejection-sampling bound `beta` corresponds
+  to a challenge of weight 39 while the implemented challenge has weight 60, so
+  the rejection-sampling argument does not carry as written, though measured
+  behaviour stays far from the bound. Full detail in
+  [`SECURITY.md`](./SECURITY.md#known-limitations).
+
+### Changed
+
+- **The PLP identity path now runs at module rank 4 (BREAKING).**
+  `AETHEL-SPEC-001` §3.2 sets `k = 4` for the profile this crate targets and §9.2
+  forbids going below it. The implementation ran at rank 1, so the hardness
+  argument in `SECURITY-PROOFS.md`, written for a secret dimension of 1024 and a
+  BKZ block size of 400, did not describe the shipped code. The master secret,
+  context matrix, projection, error term, commitment and response are now
+  rank-4 module elements, sourced from `plp::MODULE_K`.
+
+  The rank is a single constant and every operation is generic in it, so moving
+  to LEVEL3 or LEVEL5 is a parameter change rather than a rewrite.
+
+  Three domain separators move, because the objects they derive are no longer the
+  same shape: `AETHEL_PLP_CTX_V2` to `V3`, `AETHEL_PLP_CHALLENGE_V3` to `V4`, and
+  `AETHEL_ERROR_V2` to `V3`. The WIT record types are unchanged, since
+  `public-b`, `commitment-w` and `response-z` were already `list<u32>` and only
+  their length moves. A projection or proof produced by `0.4.0` is rejected on
+  length rather than silently zero-extended. There is no migration path:
+  regenerate identities.
+
+  Measured over 500 identity proofs and 200 credential presentations, no honest
+  prover exhausted its rejection-sampling budget, so the existing iteration
+  ceilings absorb the lower per-iteration acceptance rate that four times as many
+  coefficients implies.
+
+- **The Fiat-Shamir challenge weight is now derived, not asserted (BREAKING).**
+  The challenge carried 60 non-zero coefficients while `β = 78` is the value for a
+  weight-39 challenge against a CBD(η=2) witness. The rejection-sampling argument
+  needs `β` to bound the infinity norm of the challenge times the witness, and at
+  weight 60 the worst case is 120, so `SECURITY-PROOFS.md` §7.4 did not carry.
+  Measured behaviour stayed far from the bound, so the practical leakage was
+  negligible, but every extraction bound stated elsewhere depends on the true
+  value.
+
+  The weight is now 39 (`plp::CHALLENGE_WEIGHT`), shared between `plp` and `saap`
+  so one bound cannot serve two challenge spaces. That makes the parameter set
+  exactly the profile the specification defines rather than a mixture of two
+  ML-DSA profiles, at no cost in proof size. The relationship
+  `BETA >= CHALLENGE_WEIGHT * ETA` is asserted at compile time, so the drift
+  cannot recur silently.
+
+- **Rejection-sampling ceilings raised to match the module rank.**
+  Rank 4 doubled the short responses in a credential presentation, from 6
+  polynomials to 12, so 3072 coefficients must now clear `γ₁ - β`. That accepts
+  about 16% of the time, and the previous 32 attempts left roughly 1 honest
+  presentation in 270 failing outright. The credential ceiling is now 192,
+  putting exhaustion at about 2e-15; the identity ceiling moves from 16 to 48,
+  from about 1 in 280,000 to about 5e-17. Expected attempts are 6 and 2
+  respectively, so typical latency is unchanged and only the tail moves. Both
+  scale with the rank and are documented as needing revisiting if it changes.
+
+  `γ₁` deliberately stays at 2^17. Moving it to 2^19 would have restored the rate
+  with the old ceilings, but it would take the parameter set off the specified
+  profile and widen every extracted bound by four times against `q/2 ≈ 2^22`.
+
+- **The credential challenge and masks now bind the whole statement (BREAKING).**
+  `derive_challenge` absorbed neither the per-projection salt that determines
+  `A_τ` nor the issuer public seed that determines `B_1`, so both matrices were
+  bound to the transcript only through the verification equations. That is the
+  weak Fiat-Shamir pattern `plp` corrected earlier and the correction had not
+  reached `credential`. Both are now absorbed, and `AETHEL_SAAP_CHALLENGE_V2`
+  becomes `V3`.
+
+  Presentation masks derived from `presentation_randomness`, a tag, the iteration
+  nonce and the slot index only. Two presentations that reused the randomness
+  therefore shared `y_s`, and subtracting the responses gave `(c₁ − c₂)·s`, which
+  recovers the master secret. Masks now absorb the context, the blinded
+  commitment, the projection, the disclosure set and the disclosed values, so
+  reuse is harmless rather than catastrophic. `AETHEL_SAAP_PROOF_MASK_V1` becomes
+  `V2`. This changes what a prover produces and not what a verifier checks, so it
+  is not itself a wire change.
+
+- **Corrected published claims to match the implementation.** The README's
+  parameter table stated a module rank of 4, and two domain separators that the
+  code had already moved past. `docs/SAAP-SPEC.md` asserted context-isolated
+  unlinkability, presentation unlinkability and zero-knowledge disclosure without
+  qualification. Each now records whether it is achieved at the shipped
+  parameters or remains a requirement the implementation does not yet meet.
+
 ## [0.4.0] - 2026-09-06
 
 ### Changed

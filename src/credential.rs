@@ -78,6 +78,14 @@
 //! or set-membership predicate, and no function claims to. It is scoped out
 //! explicitly rather than stubbed, so that no caller can mistake an unevaluated
 //! predicate for a satisfied one.
+//!
+//! It is also not implementable here. A range claim needs a quadratic constraint
+//! that a linear sigma protocol cannot express, the verification relation holds
+//! only modulo `q` and so says nothing about a 64-bit value, and shortness of a
+//! masked response bounds `c * w` rather than `w`. What two accepting transcripts
+//! establish is a relaxed opening, which is what BDLOP binding is proved under and
+//! is adequate for the two relations that are built. It expresses no range. See
+//! `docs/PREDICATE-PROOFS.md`.
 
 use alloc::vec::Vec;
 
@@ -113,14 +121,28 @@ pub const IDENTITY_SLOT: usize = 0;
 /// returning the last candidate: a response that failed the norm check is
 /// exactly the value rejection sampling exists to withhold, and emitting one
 /// leaks the secret it was protecting.
-const MAX_REJECTION_ITERATIONS: usize = 32;
+/// Rejection-sampling attempts before `prove` refuses.
+///
+/// Sized from the acceptance rate, not picked round. A presentation carries 12
+/// short responses at module rank 4 (`z_r` is `CRED_L`, `z_s` and `z_e` are
+/// `MODULE_K` each), so 3072 coefficients must all fall inside `γ₁ - β`. That
+/// accepts about 16% of the time, and 32 attempts would leave roughly 1 honest
+/// presentation in 270 failing outright.
+///
+/// At 192 the chance of exhausting the budget is about 2e-15. The cost is
+/// worst-case latency only: the expected number of attempts is about 6, and
+/// 99.9% of presentations finish within 40.
+///
+/// This scales with `MODULE_K`. Raising the rank again without revisiting this
+/// number reintroduces the same availability problem.
+const MAX_REJECTION_ITERATIONS: usize = 192;
 
 const DOMAIN_B1: &[u8] = b"AETHEL_SAAP_B1_V2";
 const DOMAIN_ISSUER_PUBLIC: &[u8] = b"AETHEL_SAAP_ISSUER_PUBLIC_V1";
-const DOMAIN_CHALLENGE: &[u8] = b"AETHEL_SAAP_CHALLENGE_V2";
+const DOMAIN_CHALLENGE: &[u8] = b"AETHEL_SAAP_CHALLENGE_V3";
 const DOMAIN_ISSUE_RANDOMNESS: &[u8] = b"AETHEL_SAAP_ISSUE_R_V1";
 const DOMAIN_BLIND: &[u8] = b"AETHEL_SAAP_BLIND_V1";
-const DOMAIN_MASK: &[u8] = b"AETHEL_SAAP_PROOF_MASK_V1";
+const DOMAIN_MASK: &[u8] = b"AETHEL_SAAP_PROOF_MASK_V2";
 
 // ── Conversion between the PLP and SAAP polynomial representations ───────────
 
@@ -128,6 +150,42 @@ const DOMAIN_MASK: &[u8] = b"AETHEL_SAAP_PROOF_MASK_V1";
 /// stores them centred as `i32`. Both are `R_q = Z_q[X]/(X^256+1)` with the
 /// same `q` and `N`, so this is a representation change, not a conversion
 /// between different objects.
+/// Convert a rank-`k` plp vector into this module's polynomial type.
+fn from_plp_vec(v: &plp::PolyVec) -> [Polynomial; plp::MODULE_K] {
+    let mut out = [Polynomial::zero(); plp::MODULE_K];
+    for (slot, vi) in out.iter_mut().zip(v.iter()) {
+        *slot = from_plp(vi);
+    }
+    out
+}
+
+/// Convert a `k × k` plp matrix into this module's polynomial type.
+fn from_plp_mat(m: &plp::PolyMat) -> [[Polynomial; plp::MODULE_K]; plp::MODULE_K] {
+    let mut out = [[Polynomial::zero(); plp::MODULE_K]; plp::MODULE_K];
+    for (orow, mrow) in out.iter_mut().zip(m.iter()) {
+        for (cell, src) in orow.iter_mut().zip(mrow.iter()) {
+            *cell = from_plp(src);
+        }
+    }
+    out
+}
+
+/// `A · v` over this module's polynomial type.
+fn mat_vec(
+    a: &[[Polynomial; plp::MODULE_K]; plp::MODULE_K],
+    v: &[Polynomial; plp::MODULE_K],
+) -> [Polynomial; plp::MODULE_K] {
+    let mut out = [Polynomial::zero(); plp::MODULE_K];
+    for (slot, row) in out.iter_mut().zip(a.iter()) {
+        let mut acc = Polynomial::zero();
+        for (cell, vj) in row.iter().zip(v.iter()) {
+            acc = poly_add(&acc, &poly_mul_negacyclic(cell, vj));
+        }
+        *slot = acc;
+    }
+    out
+}
+
 fn from_plp(p: &plp::Poly) -> Polynomial {
     let mut out = Polynomial::zero();
     for i in 0..RING_N {
@@ -376,7 +434,15 @@ impl Credential {
         }
 
         let mut m = [Polynomial::zero(); CRED_SLOTS];
-        m[IDENTITY_SLOT] = from_plp(identity.secret());
+        // Slot 0 binds the credential to the holder's identity. The secret is a
+        // rank-`k` vector and a slot holds one ring element, so slot 0 carries
+        // `s[0]`. That is sufficient: the identity relation separately proves
+        // knowledge of the whole `s` satisfying `b_τ = A_τ·s + e_τ`, and this
+        // slot ties the credential to the `s[0]` of that same `s`. Presenting
+        // another holder's credential would require a valid secret for one's
+        // own projection whose first component equals theirs, which is exactly
+        // as hard as knowing their secret.
+        m[IDENTITY_SLOT] = from_plp(&identity.secret()[0]);
         for (i, value) in attributes.iter().enumerate() {
             m[i + 1] = encode_attribute(*value)?;
         }
@@ -478,10 +544,10 @@ pub struct SaapPresentation {
     pub z_r: [Polynomial; CRED_L],
     /// Response for the message slots.
     pub z_m: [Polynomial; CRED_SLOTS],
-    /// Response for the identity secret.
-    pub z_s: Polynomial,
-    /// Response for the projection error term.
-    pub z_e: Polynomial,
+    /// Response for the identity secret, one entry per module component.
+    pub z_s: [Polynomial; plp::MODULE_K],
+    /// Response for the projection error term, one entry per module component.
+    pub z_e: [Polynomial; plp::MODULE_K],
 }
 
 fn absorb_poly(h: &mut Shake256, p: &Polynomial) {
@@ -493,20 +559,26 @@ fn absorb_poly(h: &mut Shake256, p: &Polynomial) {
 #[allow(clippy::too_many_arguments)]
 fn derive_challenge(
     w1: &[Polynomial; CRED_T],
-    w2: &Polynomial,
-    b_tau: &Polynomial,
+    w2: &[Polynomial; plp::MODULE_K],
+    b_tau: &[Polynomial; plp::MODULE_K],
     t_blind: &[Polynomial; CRED_T],
     disclosed: u8,
     disclosed_values: &[u64; CRED_ATTRIBUTES],
     tau: &[u8],
+    salt: &[u8; 32],
+    public_seed: &[u8; PUBLIC_SEED_BYTES],
 ) -> Polynomial {
     let mut h = Shake256::default();
     h.update(DOMAIN_CHALLENGE);
     for p in w1.iter() {
         absorb_poly(&mut h, p);
     }
-    absorb_poly(&mut h, w2);
-    absorb_poly(&mut h, b_tau);
+    for p in w2.iter() {
+        absorb_poly(&mut h, p);
+    }
+    for p in b_tau.iter() {
+        absorb_poly(&mut h, p);
+    }
     for p in t_blind.iter() {
         absorb_poly(&mut h, p);
     }
@@ -516,6 +588,13 @@ fn derive_challenge(
     }
     h.update(&(tau.len() as u32).to_le_bytes());
     h.update(tau);
+    // The two seeds that determine the matrices this transcript is checked
+    // against. Without them `A_tau` and `B_1` are bound only through the
+    // verification equations, which is the weak Fiat-Shamir pattern `plp`
+    // already corrected. Neither is prover-chosen today, since both are hash
+    // images, so this closes the pattern rather than a live attack.
+    h.update(salt);
+    h.update(public_seed);
     let mut xof = h.finalize_xof();
     hash_to_challenge_from_xof(&mut xof)
 }
@@ -565,9 +644,9 @@ pub fn prove(
         return Err(IdentityError::InvalidInputLength);
     }
 
-    let a_tau = from_plp(&projection.matrix_a);
-    let b_tau = from_plp(&projection.public_b);
-    let s = from_plp(identity.secret());
+    let a_tau = from_plp_mat(&projection.matrix_a);
+    let b_tau = from_plp_vec(&projection.public_b);
+    let s = from_plp_vec(identity.secret());
 
     // `tau` is the caller's original context bytes, not `projection.tau`, which
     // is a zero-padded 32-byte copy. `project_at_context` derives e_tau from the
@@ -575,8 +654,8 @@ pub fn prove(
     // term and the identity relation silently proves nothing. The arithmetic
     // agreement test caught exactly this.
     let mut e_tau_plp = plp::derive_error_tau(projection_randomness, tau);
-    let e_tau = from_plp(&e_tau_plp);
-    e_tau_plp.zeroize();
+    let e_tau = from_plp_vec(&e_tau_plp);
+    e_tau_plp.iter_mut().for_each(|p| p.zeroize());
 
     let (m_pub, m_hidden) = split_messages(&blinded.m, disclosed);
 
@@ -587,6 +666,33 @@ pub fn prove(
         }
     }
 
+    // Everything about the statement, absorbed into every mask below. Deriving
+    // masks from `presentation_randomness` alone meant two presentations that
+    // reused it shared `y_s`, and subtracting their responses gave
+    // `(c1 - c2) * s`, recovering the master secret. That is the class P3-15
+    // fixed in `plp` by absorbing `tau`; the fix had not reached here. Binding
+    // the full statement makes reuse harmless rather than catastrophic.
+    let statement = {
+        let mut h = Shake256::default();
+        h.update(&(tau.len() as u32).to_le_bytes());
+        h.update(tau);
+        h.update(&projection.salt);
+        h.update(params.public_seed());
+        for p in blinded.t_blind.iter() {
+            absorb_poly(&mut h, p);
+        }
+        for p in b_tau.iter() {
+            absorb_poly(&mut h, p);
+        }
+        h.update(&[disclosed]);
+        for v in disclosed_values.iter() {
+            h.update(&v.to_le_bytes());
+        }
+        let mut out = [0u8; 32];
+        h.finalize_xof().read(&mut out);
+        out
+    };
+
     for iteration in 0..MAX_REJECTION_ITERATIONS {
         let nonce = [iteration as u8];
 
@@ -594,26 +700,32 @@ pub fn prove(
         let mut y_r = [Polynomial::zero(); CRED_L];
         for (i, slot) in y_r.iter_mut().enumerate() {
             let mut xof =
-                xof_for(DOMAIN_MASK, &[presentation_randomness, b"r", &nonce, &[i as u8]]);
+                xof_for(DOMAIN_MASK, &[presentation_randomness, &statement, b"r", &nonce, &[i as u8]]);
             *slot = sample_short_mask(&mut xof);
         }
-        let mut y_s = {
-            let mut xof = xof_for(DOMAIN_MASK, &[presentation_randomness, b"s", &nonce]);
-            sample_short_mask(&mut xof)
-        };
-        let mut y_e = {
-            let mut xof = xof_for(DOMAIN_MASK, &[presentation_randomness, b"e", &nonce]);
-            sample_short_mask(&mut xof)
-        };
+        let mut y_s = [Polynomial::zero(); plp::MODULE_K];
+        for (i, slot) in y_s.iter_mut().enumerate() {
+            let mut xof =
+                xof_for(DOMAIN_MASK, &[presentation_randomness, &statement, b"s", &nonce, &[i as u8]]);
+            *slot = sample_short_mask(&mut xof);
+        }
+        let mut y_e = [Polynomial::zero(); plp::MODULE_K];
+        for (i, slot) in y_e.iter_mut().enumerate() {
+            let mut xof =
+                xof_for(DOMAIN_MASK, &[presentation_randomness, &statement, b"e", &nonce, &[i as u8]]);
+            *slot = sample_short_mask(&mut xof);
+        }
 
         // Message masks are uniform over R_q: attribute values are not short,
         // so a short mask would not hide them. Slot 0 is the exception and
         // reuses y_s, which is what makes z_m[0] == z_s hold.
         let mut y_m = [Polynomial::zero(); CRED_SLOTS];
-        y_m[IDENTITY_SLOT] = y_s;
+        // Slot 0 shares the identity mask's first component, which is what
+        // makes z_m[0] == z_s[0] hold and links the two relations.
+        y_m[IDENTITY_SLOT] = y_s[0];
         for slot in 1..CRED_SLOTS {
             let mut xof =
-                xof_for(DOMAIN_MASK, &[presentation_randomness, b"m", &nonce, &[slot as u8]]);
+                xof_for(DOMAIN_MASK, &[presentation_randomness, &statement, b"m", &nonce, &[slot as u8]]);
             y_m[slot] = sample_uniform(&mut xof);
         }
 
@@ -623,8 +735,11 @@ pub fn prove(
             w1[CRED_L + slot] = poly_add(&w1[CRED_L + slot], &y_m[slot]);
         }
 
-        // W_2 = A_τ·y_s + y_e
-        let w2 = poly_add(&poly_mul_negacyclic(&a_tau, &y_s), &y_e);
+        // W_2 = A_τ·y_s + y_e, a rank-k vector.
+        let mut w2 = mat_vec(&a_tau, &y_s);
+        for i in 0..plp::MODULE_K {
+            w2[i] = poly_add(&w2[i], &y_e[i]);
+        }
 
         let c = derive_challenge(
             &w1,
@@ -634,6 +749,8 @@ pub fn prove(
             disclosed,
             &disclosed_values,
             tau,
+            &projection.salt,
+            params.public_seed(),
         );
 
         let mut z_r = [Polynomial::zero(); CRED_L];
@@ -644,21 +761,25 @@ pub fn prove(
         for slot in 0..CRED_SLOTS {
             z_m[slot] = poly_add(&y_m[slot], &poly_mul_negacyclic(&c, &m_hidden[slot]));
         }
-        let z_s = poly_add(&y_s, &poly_mul_negacyclic(&c, &s));
-        let z_e = poly_add(&y_e, &poly_mul_negacyclic(&c, &e_tau));
+        let mut z_s = [Polynomial::zero(); plp::MODULE_K];
+        let mut z_e = [Polynomial::zero(); plp::MODULE_K];
+        for i in 0..plp::MODULE_K {
+            z_s[i] = poly_add(&y_s[i], &poly_mul_negacyclic(&c, &s[i]));
+            z_e[i] = poly_add(&y_e[i], &poly_mul_negacyclic(&c, &e_tau[i]));
+        }
 
         // Rejection sampling applies only to the short witnesses. z_m for the
         // attribute slots is uniform by construction and has no bound to check.
-        let mut reject = infinity_norm(&z_s) >= REJECTION_BOUND
-            || infinity_norm(&z_e) >= REJECTION_BOUND;
+        let mut reject = z_s.iter().any(|z| infinity_norm(z) >= REJECTION_BOUND)
+            || z_e.iter().any(|z| infinity_norm(z) >= REJECTION_BOUND);
         for z in z_r.iter() {
             reject |= infinity_norm(z) >= REJECTION_BOUND;
         }
 
         if !reject {
             y_r.iter_mut().for_each(|p| p.zeroize());
-            y_s.zeroize();
-            y_e.zeroize();
+            y_s.iter_mut().for_each(|p| p.zeroize());
+            y_e.iter_mut().for_each(|p| p.zeroize());
             return Ok(SaapPresentation {
                 tau: projection.tau,
                 disclosed,
@@ -674,8 +795,8 @@ pub fn prove(
         // A rejected response is precisely the value rejection sampling exists
         // to withhold. Wipe it rather than let it fall out of scope.
         y_r.iter_mut().for_each(|p| p.zeroize());
-        y_s.zeroize();
-        y_e.zeroize();
+        y_s.iter_mut().for_each(|p| p.zeroize());
+        y_e.iter_mut().for_each(|p| p.zeroize());
         z_r.iter_mut().for_each(|p| p.zeroize());
         z_m.iter_mut().for_each(|p| p.zeroize());
     }
@@ -696,13 +817,13 @@ pub fn verify(
     projection: &plp::EphemeralProjection,
     tau: &[u8],
 ) -> Result<bool, IdentityError> {
-    let a_tau = from_plp(&projection.matrix_a);
-    let b_tau = from_plp(&projection.public_b);
+    let a_tau = from_plp_mat(&projection.matrix_a);
+    let b_tau = from_plp_vec(&projection.public_b);
     let c = &presentation.challenge;
 
     // 1. Norm checks on the short responses.
-    if infinity_norm(&presentation.z_s) >= REJECTION_BOUND
-        || infinity_norm(&presentation.z_e) >= REJECTION_BOUND
+    if presentation.z_s.iter().any(|z| infinity_norm(z) >= REJECTION_BOUND)
+        || presentation.z_e.iter().any(|z| infinity_norm(z) >= REJECTION_BOUND)
     {
         return Ok(false);
     }
@@ -718,7 +839,8 @@ pub fn verify(
     //    identity proof.
     let mut linkage_mismatch = 0i32;
     for i in 0..RING_N {
-        linkage_mismatch |= presentation.z_m[IDENTITY_SLOT].coeffs[i] ^ presentation.z_s.coeffs[i];
+        linkage_mismatch |=
+            presentation.z_m[IDENTITY_SLOT].coeffs[i] ^ presentation.z_s[0].coeffs[i];
     }
     if linkage_mismatch != 0 {
         return Ok(false);
@@ -745,14 +867,16 @@ pub fn verify(
         w1[row] = poly_sub(&w1[row], &poly_mul_negacyclic(c, &target));
     }
 
-    // 5. W_2' = A_τ·z_s + z_e − c·b_τ. Exact, because e_τ is in the witness.
-    let w2 = poly_sub(
-        &poly_add(
-            &poly_mul_negacyclic(&a_tau, &presentation.z_s),
-            &presentation.z_e,
-        ),
-        &poly_mul_negacyclic(c, &b_tau),
-    );
+    // 5. W_2' = A_τ·z_s + z_e − c·b_τ, componentwise over the rank-k module.
+    //    Exact, because e_τ is in the witness.
+    let az = mat_vec(&a_tau, &presentation.z_s);
+    let mut w2 = [Polynomial::zero(); plp::MODULE_K];
+    for i in 0..plp::MODULE_K {
+        w2[i] = poly_sub(
+            &poly_add(&az[i], &presentation.z_e[i]),
+            &poly_mul_negacyclic(c, &b_tau[i]),
+        );
+    }
 
     // 6. Challenge consistency.
     let c_prime = derive_challenge(
@@ -763,6 +887,8 @@ pub fn verify(
         presentation.disclosed,
         &presentation.disclosed_values,
         tau,
+        &projection.salt,
+        params.public_seed(),
     );
 
     let mut mismatch = 0i32;
@@ -826,8 +952,12 @@ pub fn presentation_bytes(p: &SaapPresentation) -> Vec<u8> {
     for z in p.z_m.iter() {
         push(z);
     }
-    push(&p.z_s);
-    push(&p.z_e);
+    for z in p.z_s.iter() {
+        push(z);
+    }
+    for z in p.z_e.iter() {
+        push(z);
+    }
     out
 }
 
@@ -861,17 +991,22 @@ mod tests {
         let id = identity(0x42);
         let proj = id.project_at_context(b"arithmetic-check", RHO);
 
-        let a_tau = from_plp(&proj.matrix_a);
-        let s = from_plp(id.secret());
-        let e_tau = from_plp(&plp::derive_error_tau(RHO, b"arithmetic-check"));
+        let a_tau = from_plp_mat(&proj.matrix_a);
+        let s = from_plp_vec(id.secret());
+        let e_tau = from_plp_vec(&plp::derive_error_tau(RHO, b"arithmetic-check"));
 
-        let recomputed = poly_add(&poly_mul_negacyclic(&a_tau, &s), &e_tau);
-        let expected = from_plp(&proj.public_b);
+        let az = mat_vec(&a_tau, &s);
+        let expected = from_plp_vec(&proj.public_b);
 
-        assert_eq!(
-            recomputed.coeffs, expected.coeffs,
-            "SAAP arithmetic over the converted PLP values does not reproduce b_tau"
-        );
+        // Every component must agree. A check on component 0 alone would pass
+        // for a matrix-vector product that was wrong in the other rows.
+        for i in 0..plp::MODULE_K {
+            let recomputed = poly_add(&az[i], &e_tau[i]);
+            assert_eq!(
+                recomputed.coeffs, expected[i].coeffs,
+                "SAAP arithmetic over the converted PLP values does not reproduce                  b_tau in component {i}"
+            );
+        }
     }
 
     /// Positive control for the test above: a wrong secret must not reproduce
@@ -883,14 +1018,16 @@ mod tests {
         let other = identity(0x99);
         let proj = id.project_at_context(b"arithmetic-check", RHO);
 
-        let a_tau = from_plp(&proj.matrix_a);
-        let wrong_s = from_plp(other.secret());
-        let e_tau = from_plp(&plp::derive_error_tau(RHO, b"arithmetic-check"));
+        let a_tau = from_plp_mat(&proj.matrix_a);
+        let wrong_s = from_plp_vec(other.secret());
+        let e_tau = from_plp_vec(&plp::derive_error_tau(RHO, b"arithmetic-check"));
 
-        let recomputed = poly_add(&poly_mul_negacyclic(&a_tau, &wrong_s), &e_tau);
-        assert_ne!(
-            recomputed.coeffs,
-            from_plp(&proj.public_b).coeffs,
+        let az = mat_vec(&a_tau, &wrong_s);
+        let expected = from_plp_vec(&proj.public_b);
+        let agrees = (0..plp::MODULE_K)
+            .all(|i| poly_add(&az[i], &e_tau[i]).coeffs == expected[i].coeffs);
+        assert!(
+            !agrees,
             "a different secret reproduced b_tau, so the check proves nothing"
         );
     }
@@ -899,11 +1036,14 @@ mod tests {
     /// as a witness and `project_at_context` wipes its copy.
     #[test]
     fn the_error_term_is_reproducible_from_rho_and_tau() {
+        let flat = |v: &plp::PolyVec| {
+            v.iter().flat_map(|p| p.coeffs().to_vec()).collect::<Vec<u32>>()
+        };
         let a = plp::derive_error_tau(RHO, b"ctx");
         let b = plp::derive_error_tau(RHO, b"ctx");
-        assert_eq!(a.coeffs(), b.coeffs());
+        assert_eq!(flat(&a), flat(&b));
         let different = plp::derive_error_tau(RHO, b"other-ctx");
-        assert_ne!(a.coeffs(), different.coeffs(), "e_tau does not depend on tau");
+        assert_ne!(flat(&a), flat(&different), "e_tau does not depend on tau");
     }
 
     struct Fixture {
@@ -1080,7 +1220,7 @@ mod tests {
                 .expect("prove");
             match which {
                 0 => p.z_r[0].coeffs[5] = mod_q(p.z_r[0].coeffs[5] as i64 + 1),
-                1 => p.z_e.coeffs[5] = mod_q(p.z_e.coeffs[5] as i64 + 1),
+                1 => p.z_e[0].coeffs[5] = mod_q(p.z_e[0].coeffs[5] as i64 + 1),
                 _ => p.z_m[3].coeffs[5] = mod_q(p.z_m[3].coeffs[5] as i64 + 1),
             }
             assert!(
@@ -1121,11 +1261,77 @@ mod tests {
             "two presentations reused the same blinded commitment"
         );
 
-        assert_ne!(p1.z_s.coeffs, p2.z_s.coeffs, "z_s was reused across contexts");
+        assert_ne!(p1.z_s[0].coeffs, p2.z_s[0].coeffs, "z_s was reused across contexts");
         assert_ne!(p1.z_r[0].coeffs, p2.z_r[0].coeffs, "z_r was reused across contexts");
         assert_ne!(
             p1.challenge.coeffs, p2.challenge.coeffs,
             "the challenge was reused across contexts"
+        );
+    }
+
+    /// P9-06. The masks must be a function of the statement, not of
+    /// `presentation_randomness` alone.
+    ///
+    /// Two presentations of the *same* credential at the same context, with
+    /// identical `presentation_randomness`, differing only in which attributes
+    /// are disclosed. Before the masks absorbed the statement these shared
+    /// `y_s`, so `z1 - z2 = (c1 - c2) * s` recovered the master secret. The
+    /// point is not that the values differ by luck: they differ because the
+    /// derivation depends on `disclosed`.
+    #[test]
+    fn masks_differ_when_only_the_disclosure_set_differs() {
+        let params = IssuerParams::from_seed(ISSUER_SEED).unwrap();
+        let id = identity(0x31);
+        let cred = Credential::issue(&params, &id, &[11, 22, 33, 0, 0, 0, 0, 0], ISSUE_R)
+            .expect("issue");
+        let blinded = BlindedCredential::new(&params, &cred, BLIND_R).expect("blind");
+        let proj = id.project_at_context(b"one-context", RHO);
+
+        // Same everything, including presentation_randomness. Only `disclosed`
+        // moves, so only the statement moves.
+        let a = prove(&params, &blinded, &id, &proj, b"one-context", RHO, 0b0000_0001, PRES_R)
+            .expect("prove");
+        let b = prove(&params, &blinded, &id, &proj, b"one-context", RHO, 0b0000_0010, PRES_R)
+            .expect("prove");
+
+        assert_ne!(
+            a.z_s[0].coeffs, b.z_s[0].coeffs,
+            "two presentations differing only in the disclosure set produced the              same identity response, so the mask is not bound to the statement and              the difference of the two responses leaks the master secret"
+        );
+
+        // Both must still verify: binding the masks must not break soundness.
+        assert!(verify(&params, &a, blinded.commitment(), &proj, b"one-context").expect("v"));
+        assert!(verify(&params, &b, blinded.commitment(), &proj, b"one-context").expect("v"));
+    }
+
+    /// P9-05. The challenge must depend on the issuer public seed and on the
+    /// projection salt, since those fix `B_1` and `A_tau` respectively.
+    #[test]
+    fn the_challenge_binds_the_issuer_seed_and_the_projection_salt() {
+        let params = IssuerParams::from_seed(ISSUER_SEED).unwrap();
+        let w1 = [Polynomial::zero(); CRED_T];
+        let w2 = [Polynomial::zero(); plp::MODULE_K];
+        let b_tau = [Polynomial::zero(); plp::MODULE_K];
+        let t_blind = [Polynomial::zero(); CRED_T];
+        let values = [0u64; CRED_ATTRIBUTES];
+
+        let base = derive_challenge(
+            &w1, &w2, &b_tau, &t_blind, 0, &values, b"ctx", &[0x11u8; 32], params.public_seed(),
+        );
+        let other_salt = derive_challenge(
+            &w1, &w2, &b_tau, &t_blind, 0, &values, b"ctx", &[0x22u8; 32], params.public_seed(),
+        );
+        let other_seed = derive_challenge(
+            &w1, &w2, &b_tau, &t_blind, 0, &values, b"ctx", &[0x11u8; 32], &[0x99u8; 32],
+        );
+
+        assert_ne!(
+            base.coeffs, other_salt.coeffs,
+            "the challenge does not depend on the projection salt, so A_tau is bound              only through the verification equation"
+        );
+        assert_ne!(
+            base.coeffs, other_seed.coeffs,
+            "the challenge does not depend on the issuer public seed, so B_1 is bound              only through the verification equation"
         );
     }
 
@@ -1192,8 +1398,8 @@ mod tests {
         )
         .expect("prove");
 
-        assert_eq!(a.z_s.coeffs, b.z_s.coeffs);
-        assert_ne!(a.z_s.coeffs, c.z_s.coeffs, "the presentation ignores its randomness");
+        assert_eq!(a.z_s[0].coeffs, b.z_s[0].coeffs);
+        assert_ne!(a.z_s[0].coeffs, c.z_s[0].coeffs, "the presentation ignores its randomness");
     }
 
     #[test]
