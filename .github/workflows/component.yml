@@ -15,7 +15,12 @@ name: component
 # documented in the README rather than papered over.
 
 on:
+  # Scoped to main deliberately. A bare `push:` fires on every branch, so a push
+  # to a PR branch ran this job twice, once per trigger, for identical output.
+  # At roughly six minutes it is the slowest job in the matrix, so that was half
+  # its runner cost wasted on every push. `pull_request` already covers branches.
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -23,7 +28,7 @@ jobs:
     name: build, validate and reproduce the component
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@1.97.0
         with:
