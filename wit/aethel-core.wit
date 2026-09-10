@@ -320,6 +320,37 @@ interface identity {
   /// Returns `ok(false)` for a well-formed signature that does not verify, and
   /// `err` only for input that cannot be parsed.
   verify-signature: func(public-key: list<u8>, message: list<u8>, signature: list<u8>) -> result<bool, identity-error>;
+
+  /// Verify from `aethel-plp-1` wire bytes, binding the verifier's own
+  /// context (A-4).
+  ///
+  /// Decodes both the `projection` and `proof` `aethel-plp-1` envelopes
+  /// (native side: `aethel_core::wire::verify_projection`), then checks that
+  /// the decoded projection's `tau` matches the padded form of `context`
+  /// before running the same verification `plp-verify` does. This is the
+  /// entry point a host can call knowing only bytes — no `plp-project-at-context`
+  /// round trip, no hand-copied struct layout.
+  ///
+  /// Returns `ok(false)` for a well-formed but non-verifying pair, or one
+  /// made for a different context, and `err` only for undecodable input.
+  /// Additive: does not change `identity-error`'s variant ordinals.
+  plp-verify-bytes: func(projection: list<u8>, proof: list<u8>, context: list<u8>) -> result<bool, identity-error>;
+
+  /// Encode a typed `ephemeral-projection` as `aethel-plp-1` wire bytes, for
+  /// callers that relay bytes rather than the typed record (A-4).
+  ///
+  /// No `result` in this signature: encoding a well-formed record cannot
+  /// itself fail. A record whose `tau`/`salt` are not exactly 32 bytes, or
+  /// whose `public-b` is not exactly `MODULE_K * RING_N` coefficients — which
+  /// cannot happen to a record this world itself produced, only to one a
+  /// caller hand-built with the wrong shape — encodes to an empty byte
+  /// string, which is guaranteed to fail `plp-verify-bytes`/decode rather
+  /// than silently succeeding on truncated or padded data.
+  encode-projection: func(projection: ephemeral-projection) -> list<u8>;
+
+  /// Encode a typed `zk-identity-proof` as `aethel-plp-1` wire bytes. See
+  /// `encode-projection` for why this has no `result`.
+  encode-proof: func(proof: zk-identity-proof) -> list<u8>;
 }
 
 interface secret-sharing {

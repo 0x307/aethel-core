@@ -54,6 +54,7 @@ wit_bindgen::generate!({
     world: "aethel-core",
 });
 
+use aethel::core::types::IdentityError as WitError;
 use exports::aethel::core::identity::{
     Credential as WitCredential, DisclosureAttributes, EphemeralProjection as WitProjection,
     Guest as IdentityGuest, GuestCredential, GuestIssuerPublicParameters, GuestMasterIdentity,
@@ -62,7 +63,6 @@ use exports::aethel::core::identity::{
     SaapPresentation as WitSaapPresentation, ZkIdentityProof as WitZkProof,
 };
 use exports::aethel::core::secret_sharing::{Guest as SecretSharingGuest, HtssShare as WitShare};
-use aethel::core::types::IdentityError as WitError;
 
 use crate::identity_error::IdentityError;
 use crate::{credential, htss, plp, signing};
@@ -97,6 +97,15 @@ impl From<IdentityError> for WitError {
             IdentityError::InvalidAttributeCommitment => WitError::InvalidAttributeCommitment,
             IdentityError::ThresholdNotMet => WitError::ThresholdNotMet,
             IdentityError::InvalidShareSet => WitError::InvalidShareSet,
+            // A-4: the `aethel-plp-1` wire codec's four native-only variants
+            // have no WIT producer and collapse to `serialization-error`
+            // here — see their doc comments in `identity_error.rs` for why
+            // `identity-error`'s variant ordinals stay unchanged rather than
+            // growing a matching case.
+            IdentityError::WireBadMagic => WitError::SerializationError,
+            IdentityError::WireBadVersion => WitError::SerializationError,
+            IdentityError::WireLengthMismatch => WitError::SerializationError,
+            IdentityError::CoefficientOutOfRange => WitError::SerializationError,
         }
     }
 }
@@ -165,10 +174,7 @@ impl IdentityGuest for Component {
         })
     }
 
-    fn plp_verify(
-        projection: WitProjection,
-        proof: WitZkProof,
-    ) -> Result<bool, WitError> {
+    fn plp_verify(projection: WitProjection, proof: WitZkProof) -> Result<bool, WitError> {
         let proj = projection_from_wit(&projection)?;
         let zk = zk_proof_from_wit(&proof)?;
 
@@ -230,6 +236,41 @@ impl IdentityGuest for Component {
     ) -> Result<bool, WitError> {
         signing::verify(&public_key, &message, &signature).map_err(Into::into)
     }
+
+    /// A-4: verify from `aethel-plp-1` wire bytes, binding the verifier's
+    /// own context. Delegates entirely to `crate::wire::verify_projection`
+    /// so the component and native paths share one implementation.
+    fn plp_verify_bytes(
+        projection: Vec<u8>,
+        proof: Vec<u8>,
+        context: Vec<u8>,
+    ) -> Result<bool, WitError> {
+        crate::wire::verify_projection(&projection, &proof, &context).map_err(Into::into)
+    }
+
+    /// A-4: encode a typed projection as `aethel-plp-1` wire bytes.
+    ///
+    /// No `WitError` in this signature (see the WIT doc comment for why):
+    /// a malformed record — `tau`/`salt` not exactly 32 bytes, or `public-b`
+    /// not exactly `MODULE_K * RING_N` coefficients or carrying an
+    /// out-of-range coefficient — encodes to an empty `Vec`, which
+    /// `plp-verify-bytes`/`wire::decode_projection` is guaranteed to reject
+    /// on length rather than silently accepting truncated data.
+    fn encode_projection(projection: WitProjection) -> Vec<u8> {
+        match projection_from_wit(&projection) {
+            Ok(proj) => crate::wire::encode_projection(&proj),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// A-4: encode a typed proof as `aethel-plp-1` wire bytes. See
+    /// [`Self::encode_projection`] for why this has no `WitError`.
+    fn encode_proof(proof: WitZkProof) -> Vec<u8> {
+        match zk_proof_from_wit(&proof) {
+            Ok(zk) => crate::wire::encode_proof(&zk),
+            Err(_) => Vec::new(),
+        }
+    }
 }
 
 /// The component-side owner of a [`signing::Identity`].
@@ -260,13 +301,11 @@ impl GuestMasterIdentity for OwnedIdentity {
         tau: Vec<u8>,
         randomness: Vec<u8>,
     ) -> Result<WitProjection, WitError> {
-        // Same bound as the free function: short randomness collapses the
-        // projection to an exact linear image of the secret.
-        if randomness.len() < 32 {
-            return Err(WitError::InvalidInputLength);
-        }
-        let identity = plp::MasterIdentity::from_seed(self.0.plp_seed());
-        let proj = identity.project_at_context(&tau, &randomness);
+        // Delegates to `signing::Identity::project_at_context` (A-1) so the
+        // component and native paths share one derivation instead of two
+        // that happen to agree. The length bound on `randomness` is enforced
+        // there.
+        let proj = self.0.project_at_context(&tau, &randomness)?;
 
         Ok(WitProjection {
             tau: proj.tau.to_vec(),
@@ -285,14 +324,10 @@ impl GuestMasterIdentity for OwnedIdentity {
     }
 
     fn prove(&self, tau: Vec<u8>, randomness: Vec<u8>) -> Result<WitZkProof, WitError> {
-        if randomness.len() < 32 {
-            return Err(WitError::InvalidInputLength);
-        }
-        let seed = self.0.plp_seed();
-        let identity = plp::MasterIdentity::from_seed(seed);
-        // Same randomness as the projection at this tau. See `plp_prove_identity`.
-        let proj = identity.project_at_context(&tau, &randomness);
-        let proof = plp::Prover::prove_identity(&identity, &proj, seed)?;
+        // Delegates to `signing::Identity::prove` (A-1) — same randomness as
+        // the projection at this tau, enforced there. See `plp_prove_identity`
+        // for why the randomness must match.
+        let proof = self.0.prove(&tau, &randomness)?;
 
         Ok(WitZkProof {
             commitment_w: vec_to_coeffs(&proof.commitment_w),
@@ -320,9 +355,23 @@ fn vec_to_coeffs(v: &plp::PolyVec) -> alloc::vec::Vec<u32> {
 /// every projection published before the rank change looks like, is rejected
 /// rather than zero-extended into a projection that would then fail to verify
 /// for an unexplained reason.
+///
+/// **Range-checked (A-4).** Every coefficient must be `< Q`. This used to
+/// copy `u32`s straight into a `Poly` with no such check; `add_mod`/`sub_mod`
+/// (`plp.rs`) assume reduced inputs, so an out-of-range coefficient from an
+/// untrusted WIT caller produced undefined arithmetic — not a soundness
+/// break by itself, since the Fiat-Shamir challenge recomputation would
+/// still reject a forged transcript, but a robustness defect the new codec
+/// (`plp::EphemeralProjection::from_bytes` / `ZkIdentityProof::from_bytes`)
+/// must not inherit. This function now shares that same check.
 fn vec_from_coeffs(coeffs: &[u32]) -> Result<plp::PolyVec, WitError> {
     if coeffs.len() != plp::MODULE_K * crate::RING_N {
         return Err(WitError::SerializationError);
+    }
+    for &c in coeffs {
+        if c >= plp::Q {
+            return Err(WitError::SerializationError);
+        }
     }
     let mut out = [plp::Poly::zero(); plp::MODULE_K];
     for (i, chunk) in coeffs.chunks(crate::RING_N).enumerate() {
@@ -331,9 +380,16 @@ fn vec_from_coeffs(coeffs: &[u32]) -> Result<plp::PolyVec, WitError> {
     Ok(out)
 }
 
+/// See [`vec_from_coeffs`]: same exact-length and `< Q` range checks, for a
+/// single ring element (the proof's `challenge-c`).
 fn poly_from_coeffs(coeffs: &[u32]) -> Result<plp::Poly, WitError> {
     if coeffs.len() != crate::RING_N {
         return Err(WitError::SerializationError);
+    }
+    for &c in coeffs {
+        if c >= plp::Q {
+            return Err(WitError::SerializationError);
+        }
     }
     let mut poly = plp::Poly::zero();
     poly.coeffs.copy_from_slice(coeffs);
@@ -414,7 +470,8 @@ impl SecretSharingGuest for Component {
     /// `SecretSharer::reconstruct_key_material`'s doc comment for the exact
     /// trust boundary.
     fn htss_split(secret: Vec<u8>) -> Result<(Vec<WitShare>, Vec<u8>), WitError> {
-        let (shares, root) = htss::SecretSharer::split_key_material(&secret, COMPONENT_SPLIT_NONCE)?;
+        let (shares, root) =
+            htss::SecretSharer::split_key_material(&secret, COMPONENT_SPLIT_NONCE)?;
         let wit_shares = shares
             .into_iter()
             .map(|s| WitShare {
@@ -441,7 +498,9 @@ impl SecretSharingGuest for Component {
                 path: s.path,
             })
             .collect();
-        Ok(htss::SecretSharer::reconstruct_key_material(&native, &root_arr)?)
+        Ok(htss::SecretSharer::reconstruct_key_material(
+            &native, &root_arr,
+        )?)
     }
 }
 
@@ -483,7 +542,10 @@ impl GuestCredential for OwnedCredential {
         let cred =
             credential::Credential::issue(&params, &identity, &values, &issuance_randomness)?;
 
-        Ok(WitCredential::new(OwnedCredential { credential: cred, params }))
+        Ok(WitCredential::new(OwnedCredential {
+            credential: cred,
+            params,
+        }))
     }
 
     fn present(
@@ -552,8 +614,10 @@ impl GuestIssuerPublicParameters for OwnedIssuerParams {
     }
 
     fn deserialize(bytes: Vec<u8>) -> Result<WitIssuerPublicParameters, WitError> {
-        let seed: [u8; credential::PUBLIC_SEED_BYTES] =
-            bytes.as_slice().try_into().map_err(|_| WitError::InvalidInputLength)?;
+        let seed: [u8; credential::PUBLIC_SEED_BYTES] = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| WitError::InvalidInputLength)?;
         let params = credential::IssuerParams::from_public_seed(&seed);
         Ok(WitIssuerPublicParameters::new(OwnedIssuerParams(params)))
     }
