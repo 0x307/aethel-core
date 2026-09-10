@@ -7,6 +7,93 @@ adheres to the breaking-change and deprecation rules in
 [`STABILITY.md`](./STABILITY.md) rather than strict SemVer prior to `1.0.0` — see that
 document for what counts as breaking inside `0.x`.
 
+## [0.6.0] - 2026-09-10
+
+Closes the aethel-core portion of the SAGP-PG-001 primitive-gap-remediation plan (A-1
+through A-5, X-2, X-3). See `aethel-docs/plan/PRIMITIVE-GAP-REMEDIATION.md` §2 for the
+full gap-by-gap rationale; this entry lists the resulting public-API surface.
+
+### Added
+
+- **`signing::Identity::project_at_context`/`prove` (A-1).** The native bridge from a
+  `signing::Identity` to a PLP projection/proof, mirroring the WIT `master-identity`
+  resource's `project-at-context`/`prove` methods. Previously the only route from an
+  `Identity` to `plp` was the crate-private `plp_seed()`, reachable only from
+  `component.rs`; a native "load identity, present to a verifier" flow could not be
+  written without holding two unrelated secrets. `component.rs`'s `OwnedIdentity` now
+  delegates to these methods instead of duplicating the derivation.
+- **`signing::Identity::sign_with_purpose` / `signing::verify_with_purpose` (A-1 / X-2).**
+  Purpose-separated (domain-separated) signing via FIPS 204's native `ctx` mechanism
+  (`pqc_sig::MlDsa65Keypair::sign_ctx_deterministic`/`verify_ctx`). A signature made under
+  one purpose does not verify under another, nor under plain `sign`/`verify` for a
+  non-empty purpose; an empty purpose is byte-identical to plain `sign`/`verify`.
+- **`signing::purpose` registry (A-1 / X-2).** Pinned context-string constants:
+  `PLP_PRESENT_V1`, `CREDENTIAL_V1`, `SAAP_V1` for this crate's own operations, and
+  `VAULT_SPEND_INTENT_V1`, `VAULT_SETTLEMENT_RECEIPT_V1`, `VAULT_WALLET_BIND_V1`,
+  `VAULT_HITL_APPROVAL_V1` reserved on aethel-vault's behalf. See `docs/PURPOSES.md`.
+- **`examples/present_to_verifier.rs` (A-1).** A ~40-line, network-free, end-to-end demo:
+  generate an identity, derive a projection + proof, sign an attach challenge under a
+  purpose, and verify everything from bytes only. Run with
+  `cargo run --example present_to_verifier`.
+- **`wire` module — the `aethel-plp-1` versioned wire envelope (A-4).**
+  `wire::{encode_projection, decode_projection, encode_proof, decode_proof}` and the public
+  entry point the gap analysis names:
+  `wire::verify_projection(projection: &[u8], proof: &[u8], context: &[u8]) -> Result<bool, IdentityError>`.
+  Envelope: `magic(4, = EIAB_MAGIC) ‖ version(1) ‖ kind(1) ‖ body_len(4, LE) ‖ body`. See
+  `docs/WIRE-FORMAT.md` for the normative spec.
+- **`plp::ZkIdentityProof::{to_bytes, from_bytes}` (A-4).** A proof previously had no byte
+  codec at all (`ZK_IDENTITY_PROOF_BYTE_LEN` new). Decode-then-validate: exact length,
+  every coefficient `< Q`, and `challenge_c` must be ternary with exactly
+  `CHALLENGE_WEIGHT` non-zero coefficients.
+- **WIT (additive): `plp-verify-bytes`, `encode-projection`, `encode-proof`.** Appended to
+  `interface identity` in `wit/aethel-core.wit`; does not change `identity-error`'s variant
+  ordinals. Implemented in `component.rs` by delegating to `wire::verify_projection`/
+  `wire::{encode_projection,encode_proof}`.
+- **`IdentityError` gained four native-only variants (A-4):** `WireBadMagic`,
+  `WireBadVersion`, `WireLengthMismatch`, `CoefficientOutOfRange`. None has a WIT producer
+  — `component.rs`'s `From<IdentityError> for WitError` collapses all four to
+  `WitError::SerializationError`, so the WIT `identity-error` variant is unchanged.
+- **`tests/vectors/aethel-plp-1/` (A-5 / X-4).** Checked-in, deterministically-generated
+  hex test vectors (`valid-1`, `valid-2`, `tampered-projection`, `tampered-proof`,
+  `wrong-context`) plus `tests/plp_vectors.rs` (native loader/verifier, and the
+  `#[ignore]`d `regenerate_vectors`) and two new tests in `tests/component_execution.rs`
+  that drive the identical files through the component's `plp-verify-bytes`. This is the
+  "sagp-host (native) and agent SDKs (wasm) agree" proof: one set of files, two runtimes.
+- **`docs/PURPOSES.md` (X-2)** and **`docs/WIRE-FORMAT.md` (A-4)** — new normative/reference
+  docs; see their contents for detail. `docs/PLP-ALGORITHM.md` gained §9 (PLP vs
+  `did:pkh:eip155`, A-2) and `docs/HTSS-TOPOLOGY.md` / `src/htss.rs` gained a "Who runs
+  HTSS" section (A-3): HTSS is a principal/operator backup ritual, not a hosted service.
+
+### Changed (BREAKING)
+
+- **`sampling::{PlpProof, RejectionError, VectorK}` no longer re-exported at the crate
+  root.** These are the enclave sampler's internal types; re-exporting them mixed sampler
+  internals into the public verify surface, which A-4 closes. Still reachable at
+  `aethel_core::sampling::*`.
+- **`EphemeralProjection::from_bytes` is stricter.** Length check changed from `>=` to
+  exact equality, and every `public_b` coefficient is now checked `< Q`
+  (`IdentityError::CoefficientOutOfRange` on violation) before any arithmetic touches it.
+  Previously accepted over-long buffers and unranged coefficients.
+- **`plp::pad_tau` is now `pub`** (was `pub(crate)`) — needed so `wire::verify_projection`
+  can compute the padded context form outside the `plp` module boundary.
+- **`component.rs`'s `vec_from_coeffs`/`poly_from_coeffs` now range-check `< Q`.**
+  Previously copied `u32` coefficients from an untrusted WIT caller straight into a `Poly`
+  with no check; `add_mod`/`sub_mod` assume reduced inputs. Not a soundness break by
+  itself (the Fiat-Shamir challenge recomputation still rejects a forged transcript), but
+  a robustness defect the new byte codecs must not inherit.
+- **`lib.rs`'s stale feature-flag doc corrected.** The `wasm` feature and `puf_enroll`/
+  `puf_reconstruct` WASM exports described there no longer exist (retired in 0.1.5 / P3-13);
+  the doc now describes `component` and the current `puf` feature accurately.
+- **`signing::Identity` and `signing::verify` now re-exported at the crate root**
+  (`pub use signing::{Identity, verify, verify_with_purpose};`), alongside
+  `pub use wire::verify_projection;`.
+
+### Security
+
+- No change to the cryptographic construction itself in this release; A-4's range checks
+  and exact-length decoding harden the *codec* boundary against malformed/adversarial
+  input without altering `Prover`/`Verifier`'s math.
+
 ## [0.5.0] - 2026-09-08
 
 ### Security

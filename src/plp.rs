@@ -31,7 +31,10 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use sha3::{Shake256, digest::{Update, ExtendableOutput, XofReader}};
+use sha3::{
+    digest::{ExtendableOutput, Update, XofReader},
+    Shake256,
+};
 
 use crate::identity_error::IdentityError;
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -181,8 +184,6 @@ fn vec_zeroize(v: &mut PolyVec) {
 // Precomputed zeta table: ZETA[i] = ζ^(bitrev(i)) mod q for i in 0..128
 // This is the standard Dilithium/Kyber NTT twiddle factor layout.
 
-
-
 // ── Polynomial type ───────────────────────────────────────────────────────────
 
 /// Polynomial in R_q = Z_q[X]/(X^N + 1).
@@ -260,7 +261,11 @@ impl Poly {
     pub fn infinity_norm(&self) -> i64 {
         let mut max_val = 0i64;
         for &c in self.coeffs.iter() {
-            let centered = if c > Q / 2 { Q as i64 - c as i64 } else { c as i64 };
+            let centered = if c > Q / 2 {
+                Q as i64 - c as i64
+            } else {
+                c as i64
+            };
             if centered > max_val {
                 max_val = centered;
             }
@@ -273,7 +278,11 @@ impl Poly {
         let mut out = [0i32; N];
         for i in 0..N {
             let c = self.coeffs[i];
-            out[i] = if c > Q / 2 { c as i32 - Q as i32 } else { c as i32 };
+            out[i] = if c > Q / 2 {
+                c as i32 - Q as i32
+            } else {
+                c as i32
+            };
         }
         out
     }
@@ -284,12 +293,20 @@ impl Poly {
 #[inline(always)]
 fn add_mod(a: u32, b: u32) -> u32 {
     let s = a + b;
-    if s >= Q { s - Q } else { s }
+    if s >= Q {
+        s - Q
+    } else {
+        s
+    }
 }
 
 #[inline(always)]
 fn sub_mod(a: u32, b: u32) -> u32 {
-    if a >= b { a - b } else { a + Q - b }
+    if a >= b {
+        a - b
+    } else {
+        a + Q - b
+    }
 }
 
 #[inline(always)]
@@ -447,7 +464,6 @@ pub fn poly_mul_ntt(a: &Poly, b: &Poly) -> Poly {
     fc
 }
 
-
 // ── SHAKE-256 matrix generation ───────────────────────────────────────────────
 
 /// Derive the context matrix A_τ from a context tag τ using SHAKE-256.
@@ -496,11 +512,7 @@ pub(crate) fn derive_error_tau(rho: &[u8], tau: &[u8]) -> PolyVec {
 /// fresh salt for free and cannot supply one without the other. It is bound to
 /// `tau` as well so that an accidentally reused `rho` still yields a distinct
 /// salt per context, matching [`derive_error_tau`].
-///
-/// Uses a domain separator distinct from [`derive_error_tau`], so the salt and
-/// the error term are independent outputs rather than correlated views of one
-/// stream.
-pub(crate) fn pad_tau(tau: &[u8]) -> [u8; 32] {
+pub fn pad_tau(tau: &[u8]) -> [u8; 32] {
     let mut t = [0u8; 32];
     let len = tau.len().min(32);
     t[..len].copy_from_slice(&tau[..len]);
@@ -558,9 +570,7 @@ pub fn derive_context_matrix(tau: &[u8; 32], salt: &[u8; 32]) -> PolyMat {
             while coeff_idx < N {
                 let mut buf = [0u8; 3];
                 xof.read(&mut buf);
-                let val = (buf[0] as u32)
-                    | ((buf[1] as u32) << 8)
-                    | ((buf[2] as u32 & 0x7F) << 16);
+                let val = (buf[0] as u32) | ((buf[1] as u32) << 8) | ((buf[2] as u32 & 0x7F) << 16);
                 if val < Q {
                     cell.coeffs[coeff_idx] = val;
                     coeff_idx += 1;
@@ -598,9 +608,7 @@ fn sample_mask_from_xof(xof: &mut impl XofReader) -> Poly {
     while coeff_idx < N {
         let mut buf = [0u8; 3];
         xof.read(&mut buf);
-        let val = (buf[0] as u32)
-            | ((buf[1] as u32) << 8)
-            | ((buf[2] as u32 & 0x7F) << 16);
+        let val = (buf[0] as u32) | ((buf[1] as u32) << 8) | ((buf[2] as u32 & 0x7F) << 16);
         if val < range {
             // Center: val in [0, 2*γ₁] → coeff in [-γ₁, γ₁]
             let centered = val as i32 - GAMMA1;
@@ -688,7 +696,11 @@ pub fn hash_to_challenge(w: &PolyVec, public_b: &PolyVec, tau: &[u8; 32], salt: 
         used[pos] = true;
         // Get sign bit
         let sign_byte = signs[sign_bit / 8];
-        let sign: i32 = if (sign_byte >> (sign_bit % 8)) & 1 == 0 { 1 } else { -1 };
+        let sign: i32 = if (sign_byte >> (sign_bit % 8)) & 1 == 0 {
+            1
+        } else {
+            -1
+        };
         sign_bit += 1;
         if sign_bit >= 64 {
             // Refresh sign bits
@@ -878,7 +890,12 @@ impl EphemeralProjection {
         let mut out = alloc::vec![0u8; EPHEMERAL_PROJECTION_BYTE_LEN];
         out[..32].copy_from_slice(&self.tau);
         out[32..64].copy_from_slice(&self.salt);
-        for (i, &c) in self.public_b.iter().flat_map(|p| p.coeffs.iter()).enumerate() {
+        for (i, &c) in self
+            .public_b
+            .iter()
+            .flat_map(|p| p.coeffs.iter())
+            .enumerate()
+        {
             let offset = 64 + i * 4;
             out[offset..offset + 4].copy_from_slice(&c.to_le_bytes());
         }
@@ -887,11 +904,19 @@ impl EphemeralProjection {
 
     /// Decode from the layout produced by [`Self::to_bytes`].
     ///
-    /// Returns `IdentityError::SerializationError` if `bytes` is shorter than
-    /// [`EPHEMERAL_PROJECTION_BYTE_LEN`] — this is the deserialization path
-    /// for the `ephemeral-projection` record in the `aethel:core` WIT world.
+    /// Decode-then-validate: `bytes` must be **exactly**
+    /// [`EPHEMERAL_PROJECTION_BYTE_LEN`] (a longer buffer is rejected rather
+    /// than silently truncated — a caller that concatenated two things by
+    /// accident deserves an error, not a projection built from the first half
+    /// of whatever it sent), and every `public_b` coefficient must be `< Q`
+    /// (checked here rather than left to `add_mod`/`sub_mod`, which assume
+    /// reduced inputs and would otherwise silently misbehave on an
+    /// out-of-range value from an untrusted source — see A-4 / component.rs's
+    /// historical `vec_from_coeffs`). This is the deserialization path for
+    /// the `ephemeral-projection` record in the `aethel:core` WIT world and
+    /// for the `aethel-plp-1` wire envelope (`crate::wire`).
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, IdentityError> {
-        if bytes.len() < EPHEMERAL_PROJECTION_BYTE_LEN {
+        if bytes.len() != EPHEMERAL_PROJECTION_BYTE_LEN {
             return Err(IdentityError::SerializationError);
         }
         let mut tau = [0u8; 32];
@@ -905,13 +930,24 @@ impl EphemeralProjection {
             let offset = 64 + i * 4;
             let mut b = [0u8; 4];
             b.copy_from_slice(&bytes[offset..offset + 4]);
-            public_b[i / N].coeffs[i % N] = u32::from_le_bytes(b);
+            let v = u32::from_le_bytes(b);
+            // Range check is on a public value (a projection coefficient),
+            // so running it in variable time leaks nothing secret-dependent.
+            if v >= Q {
+                return Err(IdentityError::CoefficientOutOfRange);
+            }
+            public_b[i / N].coeffs[i % N] = v;
         }
 
         // Derived, never read off the wire. See the field's doc comment.
         let matrix_a = derive_context_matrix(&tau, &salt);
 
-        Ok(Self { tau, salt, matrix_a, public_b })
+        Ok(Self {
+            tau,
+            salt,
+            matrix_a,
+            public_b,
+        })
     }
 }
 
@@ -926,6 +962,117 @@ pub struct ZkIdentityProof {
     pub challenge_c: Poly,
     /// Response z = y + c · s, a rank-`k` vector.
     pub response_z: PolyVec,
+}
+
+/// Byte length of a [`ZkIdentityProof`] as encoded by [`ZkIdentityProof::to_bytes`]:
+/// `commitment_w(k*N*4) + challenge_c(N*4) + response_z(k*N*4)`.
+///
+/// aethel-vault's `ROADMAP.md` §2 documents the absence of this codec as the
+/// reason a proof could not cross a network boundary (A-4). This is the fix:
+/// every field a verifier needs is now byte-addressable.
+pub const ZK_IDENTITY_PROOF_BYTE_LEN: usize = (MODULE_K * N + N + MODULE_K * N) * 4;
+
+impl ZkIdentityProof {
+    /// Encode as `commitment_w(k*N*4) ++ challenge_c(N*4) ++ response_z(k*N*4)`,
+    /// LE `u32` coefficients — the same field order and endianness
+    /// [`EphemeralProjection::to_bytes`] uses for `public_b`.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = alloc::vec![0u8; ZK_IDENTITY_PROOF_BYTE_LEN];
+        let mut offset = 0usize;
+        for &c in self.commitment_w.iter().flat_map(|p| p.coeffs.iter()) {
+            out[offset..offset + 4].copy_from_slice(&c.to_le_bytes());
+            offset += 4;
+        }
+        for &c in self.challenge_c.coeffs.iter() {
+            out[offset..offset + 4].copy_from_slice(&c.to_le_bytes());
+            offset += 4;
+        }
+        for &c in self.response_z.iter().flat_map(|p| p.coeffs.iter()) {
+            out[offset..offset + 4].copy_from_slice(&c.to_le_bytes());
+            offset += 4;
+        }
+        out
+    }
+
+    /// Decode from the layout produced by [`Self::to_bytes`].
+    ///
+    /// Decode-then-validate, and deliberately cheap to fail early on garbage:
+    ///
+    /// 1. `bytes.len()` must be **exactly** [`ZK_IDENTITY_PROOF_BYTE_LEN`].
+    /// 2. Every coefficient of `commitment_w`, `challenge_c` and `response_z`
+    ///    must be `< Q` — see [`EphemeralProjection::from_bytes`] for why this
+    ///    matters even though the challenge recomputation means an
+    ///    out-of-range value is a robustness defect rather than, by itself,
+    ///    a soundness break.
+    /// 3. `challenge_c` must be **ternary**: every non-zero coefficient must
+    ///    be `1` or `Q - 1` (i.e. `-1 mod Q`), and there must be **exactly**
+    ///    [`CHALLENGE_WEIGHT`] of them. [`hash_to_challenge`] never produces
+    ///    anything else, so a proof carrying a different shape did not come
+    ///    from an honest prover and is rejected before it ever reaches
+    ///    [`Verifier::verify`]'s arithmetic.
+    ///
+    /// All three checks are on public proof data, not secret material, so
+    /// running them in variable time leaks nothing.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, IdentityError> {
+        if bytes.len() != ZK_IDENTITY_PROOF_BYTE_LEN {
+            return Err(IdentityError::SerializationError);
+        }
+
+        let read_u32 = |off: usize| -> u32 {
+            u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
+        };
+
+        let mut offset = 0usize;
+        let mut commitment_w = [Poly::zero(); MODULE_K];
+        for poly in commitment_w.iter_mut() {
+            for c in poly.coeffs.iter_mut() {
+                let v = read_u32(offset);
+                if v >= Q {
+                    return Err(IdentityError::CoefficientOutOfRange);
+                }
+                *c = v;
+                offset += 4;
+            }
+        }
+
+        let mut challenge_c = Poly::zero();
+        let mut nonzero = 0usize;
+        for c in challenge_c.coeffs.iter_mut() {
+            let v = read_u32(offset);
+            if v >= Q {
+                return Err(IdentityError::CoefficientOutOfRange);
+            }
+            if v != 0 {
+                if v != 1 && v != Q - 1 {
+                    return Err(IdentityError::SerializationError);
+                }
+                nonzero += 1;
+            }
+            *c = v;
+            offset += 4;
+        }
+        if nonzero != CHALLENGE_WEIGHT {
+            return Err(IdentityError::SerializationError);
+        }
+
+        let mut response_z = [Poly::zero(); MODULE_K];
+        for poly in response_z.iter_mut() {
+            for c in poly.coeffs.iter_mut() {
+                let v = read_u32(offset);
+                if v >= Q {
+                    return Err(IdentityError::CoefficientOutOfRange);
+                }
+                *c = v;
+                offset += 4;
+            }
+        }
+
+        Ok(Self {
+            commitment_w,
+            challenge_c,
+            response_z,
+        })
+    }
 }
 
 // ── Prover ────────────────────────────────────────────────────────────────────
@@ -1142,7 +1289,9 @@ mod tests {
         let mut base = a.rem_euclid(ATTACK_Q);
         let mut exp = ATTACK_Q - 2;
         while exp > 0 {
-            if exp & 1 == 1 { result = (result * base) % ATTACK_Q; }
+            if exp & 1 == 1 {
+                result = (result * base) % ATTACK_Q;
+            }
             base = (base * base) % ATTACK_Q;
             exp >>= 1;
         }
@@ -1151,14 +1300,17 @@ mod tests {
 
     fn attack_centered(x: i64) -> i64 {
         let r = x.rem_euclid(ATTACK_Q);
-        if r > ATTACK_Q / 2 { r - ATTACK_Q } else { r }
+        if r > ATTACK_Q / 2 {
+            r - ATTACK_Q
+        } else {
+            r
+        }
     }
 
     fn attack_sub(a: &Poly, b: &Poly) -> Poly {
         let mut out = Poly::zero();
         for i in 0..N {
-            out.coeffs[i] = (a.coeffs[i] as i64 - b.coeffs[i] as i64)
-                .rem_euclid(ATTACK_Q) as u32;
+            out.coeffs[i] = (a.coeffs[i] as i64 - b.coeffs[i] as i64).rem_euclid(ATTACK_Q) as u32;
         }
         out
     }
@@ -1171,7 +1323,9 @@ mod tests {
         let mut q = Poly::zero();
         for i in 0..N {
             let di = d.coeffs[i] as i64 % ATTACK_Q;
-            if di == 0 { return None; }
+            if di == 0 {
+                return None;
+            }
             let ni = n.coeffs[i] as i64 % ATTACK_Q;
             q.coeffs[i] = ((ni * attack_mod_inv(di)) % ATTACK_Q) as u32;
         }
@@ -1282,7 +1436,8 @@ mod tests {
             assert_eq!(
                 attack_centered(recovered.coeffs[i] as i64),
                 attack_centered(identity.secret_key[0].coeffs[i] as i64),
-                "recovered coefficient {} does not match the real secret", i
+                "recovered coefficient {} does not match the real secret",
+                i
             );
         }
     }
@@ -1351,7 +1506,9 @@ mod tests {
         #[cfg(feature = "std")]
         std::eprintln!(
             "mask-reuse sweep: {}/{} pairs leaked a small-norm secret (first: {:?})",
-            recoveries, attempts, first_hit
+            recoveries,
+            attempts,
+            first_hit
         );
         let _ = &first_hit;
 
@@ -1504,12 +1661,17 @@ mod tests {
                 .flat_map(|row| row.iter().flat_map(|p| p.coeffs.iter().copied()))
                 .collect::<alloc::vec::Vec<u32>>()
         };
-        assert_eq!(flat(&a1), flat(&a2), "derivation must be deterministic in (tau, salt)");
+        assert_eq!(
+            flat(&a1),
+            flat(&a2),
+            "derivation must be deterministic in (tau, salt)"
+        );
 
         // And genuinely salt-dependent, which is the whole point of 0X3-95.
         let other = derive_context_matrix(tau, &[0xa5u8; 32]);
         assert_ne!(
-            flat(&a1), flat(&other),
+            flat(&a1),
+            flat(&other),
             "a different salt at the same tau produced the same matrix"
         );
         // Every cell of the matrix must be reduced, not just the first.
@@ -1822,7 +1984,10 @@ mod tests {
         // Proof for context 1 should not verify against context 2
         let proof1 = Prover::prove_identity(&identity, &proj1, &seed)
             .expect("honest proving must not exhaust rejection sampling");
-        assert!(!Verifier::verify(&proj2, &proof1), "cross-context replay should fail");
+        assert!(
+            !Verifier::verify(&proj2, &proof1),
+            "cross-context replay should fail"
+        );
     }
 
     // ── P3-03: moved from tests/plp_tests.rs ─────────────────────────────────
@@ -1843,13 +2008,20 @@ mod tests {
             .secret_key
             .iter()
             .all(|p| p.coeffs.iter().all(|&c| c == 0));
-        assert!(!all_zero, "Secret key should not be all-zero (negligible probability)");
+        assert!(
+            !all_zero,
+            "Secret key should not be all-zero (negligible probability)"
+        );
 
         // Every component, not just the first: a rank-k secret is only well
         // formed if all k polynomials are reduced.
         for poly in identity.secret_key.iter() {
             for &coeff in poly.coeffs.iter() {
-                assert!(coeff < Q, "Secret key coefficient {} out of range [0, Q-1]", coeff);
+                assert!(
+                    coeff < Q,
+                    "Secret key coefficient {} out of range [0, Q-1]",
+                    coeff
+                );
             }
         }
     }
@@ -1866,7 +2038,10 @@ mod tests {
             .zip(identity_b.secret_key.iter().flat_map(|p| p.coeffs.iter()))
             .all(|(a, b)| a == b);
 
-        assert!(!keys_equal, "Two independently generated secret keys should differ");
+        assert!(
+            !keys_equal,
+            "Two independently generated secret keys should differ"
+        );
     }
 
     #[test]
@@ -1918,14 +2093,20 @@ mod tests {
         let seed = [0x77u8; 32];
         let mut identity = MasterIdentity::from_seed(&seed);
         assert!(
-            identity.secret_key.iter().any(|p| p.coeffs.iter().any(|&c| c != 0)),
+            identity
+                .secret_key
+                .iter()
+                .any(|p| p.coeffs.iter().any(|&c| c != 0)),
             "sanity check: this seed should produce a non-zero secret key"
         );
 
         identity.zeroize();
 
         assert!(
-            identity.secret_key.iter().all(|p| p.coeffs.iter().all(|&c| c == 0)),
+            identity
+                .secret_key
+                .iter()
+                .all(|p| p.coeffs.iter().all(|&c| c == 0)),
             "zeroize() must clear every coefficient of the secret key"
         );
     }
