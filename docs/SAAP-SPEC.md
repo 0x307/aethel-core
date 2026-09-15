@@ -70,11 +70,9 @@ PROVING PHASE (Selective Disclosure):                     Holder Local Runtime
 
 **Implemented** in `src/credential.rs` (`IssuerParams`, `Credential::issue`), with `T = 13` rows and `L = 4` columns, exactly the shape §2.2 specifies.
 
-> **The specified shape does not hide.** `B_1 ∈ R_q^{(l+n)×l}` gives the randomness fewer
-> dimensions than the commitment, so the top `l` rows, which carry no message, form a square
-> system. Anyone holding `t_cred` or a presentation's `t_blind` can solve it for the
-> randomness and then read `m` directly. A BDLOP commitment hides only when the randomness
-> dimension exceeds the commitment rows. This is recorded in `SECURITY.md`, and correcting the
+> **The specified shape does not hide.** A BDLOP commitment hides only when its randomness
+> dimension exceeds its commitment dimension, and §2.2 specifies the reverse. This is recorded
+> in `SECURITY.md` and registered as D-01 in [`DEVIATIONS.md`](./DEVIATIONS.md). Correcting the
 > shape is tracked as separate credential work. Until it lands, treat a presentation as
 > revealing every attribute it commits to, disclosed or not.
 
