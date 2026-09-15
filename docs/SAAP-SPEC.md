@@ -22,6 +22,9 @@ project: "aethel-core"
 > specified, and the specified shape does not hide: see `SECURITY.md` and §11.2. Where §7, §8
 > or §10 disagree with §6, §6 is what the crate runs. "On-chain" phrasing (§1.3, §11.1) was
 > removed in P3-05; this crate has no blockchain component.
+>
+> Every disagreement between this document, the RFC and the crate, with its ruling and owner,
+> is in [`DEVIATIONS.md`](./DEVIATIONS.md). That includes the ones closed on purpose.
 
 ## RFC Draft: Aethel-ID (AETHEL-SPEC-001) — Section 6
 

@@ -41,8 +41,12 @@ integration tests + 1 doctest, all passing on default features):
 
 - `plp` — key derivation (`MasterIdentity::from_seed`), context projection
   (`project_at_context`), ZK proof generation and verification (`Prover`, `Verifier`)
-- `saap` — selective-disclosure proof generation and verification (`saap_prove`,
-  `verify_saap_proof`)
+- `credential` — BDLOP credential issuance and blinding (`Credential::issue`,
+  `BlindedCredential::new`) and the linked selective-disclosure proof (`credential::prove`,
+  exported as `saap-verify-presentation`). **The commitment does not hide**: see `SECURITY.md`
+  and `docs/DEVIATIONS.md` D-01
+- `saap` — crate-internal primitives the credential module builds on. The single-response
+  `saap_prove`/`verify_saap_proof` pathway was retired from the WIT world in 0.1.5 (D-13)
 - `htss` — 3-of-5 threshold secret splitting and reconstruction, hypercube routing
 - `sampling` — constant-time rejection sampling, CBD η=2 sampler, norm checking
 - `ct_verify` — a Valgrind/ctgrind constant-time verification harness (doctest-covered)

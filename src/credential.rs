@@ -35,6 +35,9 @@
 //!
 //! # Deviation from RFC §5.7, and why
 //!
+//! Registered as D-08 in `docs/DEVIATIONS.md`, with every other place this
+//! crate and its specifications disagree.
+//!
 //! The RFC's verifier computes `W_2' = A_τ·z_s − c·b_τ` and expects it to equal
 //! the prover's `W_2`. It does not. Expanding with `b_τ = A_τ·s + e_τ`:
 //!
