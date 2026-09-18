@@ -14,6 +14,9 @@ name: component
 # job's first run - the checked-in hash had come from a Windows build - and is
 # documented in the README rather than papered over.
 
+permissions:
+  contents: read
+
 on:
   # Scoped to main deliberately. A bare `push:` fires on every branch, so a push
   # to a PR branch ran this job twice, once per trigger, for identical output.
@@ -24,6 +27,54 @@ on:
   pull_request:
 
 jobs:
+  # The export check is only worth its name if it can be seen failing. This job
+  # builds a component that lacks exactly one export the WIT declares and
+  # requires the checker to reject it for that reason alone (see
+  # scripts/component-negative-control.py). It runs beside the main job rather
+  # than inside it, so its cold build does not lengthen the critical path.
+  negative-control:
+    name: the export check must reject a component missing an export
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-tools
+        run: cargo install wasm-tools --version 1.258.0 --locked
+
+      - name: The checker must test itself
+        run: python3 scripts/test_check_component_exports.py
+
+      - name: Build a component with credential.present removed
+        run: |
+          scratch=$(mktemp -d)
+          rmdir "$scratch"
+          git worktree add --detach "$scratch" HEAD
+          trap 'git worktree remove --force "$scratch" || rm -rf "$scratch"' EXIT
+          python3 scripts/component-negative-control.py mutate "$scratch" identity.credential.present
+          # A failure here is the scratch build breaking, not the checker
+          # rejecting anything, and is reported as such.
+          if ! (
+            cd "$scratch"
+            cargo build --release --target wasm32-unknown-unknown \
+              --no-default-features --features component --locked
+            wasm-tools component new \
+              target/wasm32-unknown-unknown/release/aethel_core.wasm \
+              -o "$GITHUB_WORKSPACE/broken.component.wasm"
+          ); then
+            echo "CONTROL BUILD FAILED: the scratch component did not build."
+            echo "This says nothing about the export check; fix the build first."
+            exit 1
+          fi
+
+      - name: The checker must reject it, because that export is missing
+        run: |
+          python3 scripts/component-negative-control.py verify \
+            wit/aethel-core.wit broken.component.wasm identity.credential.present
+
   component:
     name: build, validate and reproduce the component
     runs-on: ubuntu-latest
@@ -45,20 +96,11 @@ jobs:
             target/wasm32-unknown-unknown/release/aethel_core.wasm \
             -o build1.component.wasm
 
-      - name: The component must validate and expose the declared world
+      - name: The component must validate and match the declared world exactly
         run: |
           wasm-tools validate build1.component.wasm
-          wasm-tools component wit build1.component.wasm > embedded.wit
-          # Every operation the world declares must appear in the artifact.
-          # (saap-prove / saap-verify on the old `attestation` interface were
-          # removed: superseded by saap-verify-presentation, see
-          # src/component.rs's module doc.)
-          for op in plp-project-at-context plp-prove-identity plp-verify \
-                    saap-verify-presentation verify-signature \
-                    htss-split htss-reconstruct; do
-            grep -q "$op" embedded.wit || { echo "MISSING from component: $op"; exit 1; }
-          done
-          grep -q "identity-error" embedded.wit || { echo "identity-error absent"; exit 1; }
+          python3 scripts/check-component-exports.py \
+            wit/aethel-core.wit build1.component.wasm
 
       # Everything above this point is structural: it builds, it validates, it
       # exposes the declared world. None of that is "you can instantiate it and

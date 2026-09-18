@@ -155,8 +155,13 @@ Verify what you built exposes the declared world:
 
 ```bash
 wasm-tools validate aethel_core.component.wasm
-wasm-tools component wit aethel_core.component.wasm
+python3 scripts/check-component-exports.py wit/aethel-core.wit aethel_core.component.wasm
 ```
+
+The checker derives the expected surface from `wit/aethel-core.wit` and compares it with what
+the component actually declares: the export set for equality, and every interface's types and
+signatures. `scripts/component-negative-control.py` builds a component with one export removed
+and requires the checker to reject it, which CI runs as its own job.
 
 And that it actually runs — loading it in `wasmtime` and checking every operation
 against the native implementation:
