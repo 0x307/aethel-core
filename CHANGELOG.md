@@ -7,6 +7,28 @@ adheres to the breaking-change and deprecation rules in
 [`STABILITY.md`](./STABILITY.md) rather than strict SemVer prior to `1.0.0` — see that
 document for what counts as breaking inside `0.x`.
 
+## [0.6.1] - 2026-09-18
+
+No change to the public API, the WIT world, or behaviour. This release makes the checks around the
+component stronger and the documentation more complete.
+
+### Added
+
+- **A WIT-derived component check.** `scripts/check-component-exports.py` computes the expected
+  surface from `wit/aethel-core.wit` and compares it with what the built component declares: the
+  export set for exact equality (free functions, resource methods, constructors), and every
+  interface's types and signatures. It replaces a hardcoded list of names. The design and first
+  implementation are by Lucas Pierzina.
+- **A negative control for that check.** CI builds a component with one export removed and requires
+  the checker to reject it for exactly that reason, so the check is seen failing as well as passing.
+- **A deviation register** (`docs/DEVIATIONS.md`) listing every place this crate and its
+  specifications differ, with a test that keeps the register and the code in step.
+
+### Changed
+
+- `docs/SAAP-SPEC.md` now agrees with the implementation it describes, and a test pins the
+  status claims it makes.
+
 ## [0.6.0] - 2026-09-10
 
 Closes the aethel-core portion of the SAGP-PG-001 primitive-gap-remediation plan (A-1
