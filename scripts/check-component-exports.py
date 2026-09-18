@@ -1,141 +1,297 @@
 #!/usr/bin/env python3
 """Check that a WebAssembly component exposes exactly its declared WIT surface.
 
-The expected surface comes from WIT declaration syntax, while the actual surface
-comes from `wasm-tools component wit`, which decodes the component structurally.
-Doc comments are deliberately ignored. The theory that comments could cause a
-false pass was tested and disproved: doc comments are not embedded in compiled
-components. Declaration parsing is defense in depth, not a fix for that theory.
+Both sides are read through `wasm-tools component wit`: the canonical WIT file
+on one side, the compiled component on the other. The printed text is then
+matched on declaration syntax (statements and their braces), never on bare
+substrings, and two things are compared:
+
+* the export set: every free function, resource method and constructor of each
+  exported interface, named `interface.function` or `interface.resource.method`,
+  compared as a set for exact equality;
+* the declaration text of every interface the component carries: record and
+  variant bodies, flags, and function signatures, so a changed parameter list or
+  a dropped variant case is a mismatch even when every name is still present.
+
+Doc comments are ignored. The theory that comments could cause a false pass was
+tested and disproved: doc comments are not embedded in compiled components, so
+the decoded side never contains any. Ignoring them is defence in depth.
+
+Exit status: 0 the surfaces match, 1 they differ, 2 the check itself could not
+run (missing wasm-tools, unreadable input, unsupported WIT). A caller that must
+distinguish a rejection from a failure to check should look at that difference.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
-IDENT = r"[A-Za-z][A-Za-z0-9-]*"
-INTERFACE_RE = re.compile(rf"\binterface\s+({IDENT})\s*\{{")
-WORLD_RE = re.compile(r"\bworld\s+[A-Za-z][A-Za-z0-9-]*\s*\{")
-RESOURCE_RE = re.compile(rf"\bresource\s+({IDENT})\s*\{{")
-FUNCTION_RE = re.compile(rf"\b({IDENT})\s*:\s*(?:static\s+)?func\s*\(")
-EXPORT_RE = re.compile(r"\bexport\s+([^;{]+);")
+IDENT = r"%?[A-Za-z][A-Za-z0-9-]*"
+FUNCTION_RE = re.compile(rf"^({IDENT})\s*:\s*(?:static\s+)?(?:async\s+)?func\s*\(")
+CONSTRUCTOR_RE = re.compile(r"^constructor\s*\(")
+RESOURCE_RE = re.compile(rf"^resource\s+({IDENT})$")
+INTERFACE_RE = re.compile(rf"^interface\s+({IDENT})$")
+WORLD_RE = re.compile(rf"^world\s+({IDENT})$")
 
 
 class WitSyntaxError(ValueError):
     """Raised when this deliberately small declaration parser cannot proceed."""
 
 
-def strip_comments(source: str) -> str:
-    """Remove WIT line and block comments without treating their text as syntax."""
-    source = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
-    return re.sub(r"//[^\n]*", "", source)
+@dataclass(frozen=True)
+class Statement:
+    """One top-level statement: its header text, optional brace body, and span."""
+
+    header: str
+    body: str | None
+    start: int
+    end: int
+    body_span: tuple[int, int] | None
 
 
-def block_after_open_brace(source: str, open_brace: int) -> tuple[str, int]:
-    """Return a balanced brace body's text and the index after its closing brace."""
+def blank_comments(source: str) -> str:
+    """Replace WIT comments with spaces, keeping every offset and newline.
+
+    Handles `//` and `///` line comments and nested `/* */` block comments, and
+    scans left to right so a `/*` inside a line comment is not a block start.
+    """
+    out = list(source)
+    index = 0
+    while index < len(source):
+        if source.startswith("//", index):
+            end = source.find("\n", index)
+            end = len(source) if end == -1 else end
+            for i in range(index, end):
+                out[i] = " "
+            index = end
+        elif source.startswith("/*", index):
+            depth = 0
+            end = index
+            while end < len(source):
+                if source.startswith("/*", end):
+                    depth += 1
+                    end += 2
+                elif source.startswith("*/", end):
+                    depth -= 1
+                    end += 2
+                    if depth == 0:
+                        break
+                else:
+                    end += 1
+            else:
+                raise WitSyntaxError("unterminated block comment")
+            for i in range(index, end):
+                if out[i] != "\n":
+                    out[i] = " "
+            index = end
+        else:
+            index += 1
+    return "".join(out)
+
+
+def matching_brace(text: str, open_brace: int) -> int:
+    """Return the index of the `}` that closes the `{` at `open_brace`."""
     depth = 0
-    for index in range(open_brace, len(source)):
-        char = source[index]
-        if char == "{":
+    for index in range(open_brace, len(text)):
+        if text[index] == "{":
             depth += 1
-        elif char == "}":
+        elif text[index] == "}":
             depth -= 1
             if depth == 0:
-                return source[open_brace + 1 : index], index + 1
+                return index
     raise WitSyntaxError("unterminated WIT declaration block")
 
 
-def declarations(source: str, pattern: re.Pattern[str]) -> list[tuple[str, str]]:
-    """Return named balanced declaration bodies for `interface` or `world`."""
-    result: list[tuple[str, str]] = []
-    for match in pattern.finditer(source):
-        body, _ = block_after_open_brace(source, source.index("{", match.start(), match.end()))
-        result.append((match.group(1) if match.lastindex else "", body))
+def statements(text: str, lo: int = 0, hi: int | None = None) -> list[Statement]:
+    """Split text[lo:hi] into top-level statements, respecting balanced braces.
+
+    A statement ends at a `;`, or at the `}` closing its body when no `;`
+    follows it. `use a.{b, c};` therefore stays one statement with no body, and
+    a trailing run with no terminator (a comma list) is one final statement.
+    """
+    hi = len(text) if hi is None else hi
+    result: list[Statement] = []
+    index = lo
+    start = lo
+    while index < hi:
+        char = text[index]
+        if char == "{":
+            close = matching_brace(text, index)
+            if close >= hi:
+                raise WitSyntaxError("declaration block crosses its parent")
+            after = close + 1
+            while after < hi and text[after].isspace():
+                after += 1
+            if after < hi and text[after] == ";":
+                index = after
+                continue
+            result.append(
+                Statement(
+                    header=" ".join(text[start:index].split()),
+                    body=text[index + 1 : close],
+                    start=start + (len(text[start:index]) - len(text[start:index].lstrip())),
+                    end=close + 1,
+                    body_span=(index + 1, close),
+                )
+            )
+            start = index = close + 1
+        elif char == ";":
+            header = " ".join(text[start:index].split())
+            if header:
+                result.append(
+                    Statement(
+                        header=header,
+                        body=None,
+                        start=start + (len(text[start:index]) - len(text[start:index].lstrip())),
+                        end=index + 1,
+                        body_span=None,
+                    )
+                )
+            start = index = index + 1
+        else:
+            index += 1
+    tail = " ".join(text[start:hi].split())
+    if tail:
+        result.append(Statement(tail, None, start, hi, None))
     return result
 
 
-def top_level_functions(body: str) -> set[str]:
-    """Find WIT `name: func` declarations only at this declaration's top level."""
-    functions: set[str] = set()
-    statement_start = 0
-    index = 0
-    while index < len(body):
-        char = body[index]
-        if char == "{":
-            _, end = block_after_open_brace(body, index)
-            statement_start = end
-            index = end
-        elif char == ";":
-            statement = body[statement_start : index + 1]
-            match = FUNCTION_RE.search(statement)
-            if match:
-                functions.add(match.group(1))
-            statement_start = index + 1
-            index += 1
-        else:
-            index += 1
-    return functions
+def collect(text: str, parsed: list[Statement], interfaces, worlds) -> None:
+    """Gather interface and world statements, descending into `package x { }`."""
+    for statement in parsed:
+        if statement.body_span is None:
+            continue
+        lo, hi = statement.body_span
+        if statement.header.startswith("package "):
+            collect(text, statements(text, lo, hi), interfaces, worlds)
+            continue
+        interface = INTERFACE_RE.match(statement.header)
+        world = WORLD_RE.match(statement.header)
+        if interface:
+            name = interface.group(1)
+            if name in interfaces:
+                raise WitSyntaxError(f"interface {name!r} is declared more than once")
+            interfaces[name] = statement
+        elif world:
+            name = world.group(1)
+            if name in worlds:
+                raise WitSyntaxError(f"world {name!r} is declared more than once")
+            worlds[name] = statement
 
 
-def resource_methods(interface_body: str) -> set[str]:
-    """Find `resource method: [static] func` declarations as resource.method."""
-    methods: set[str] = set()
-    for resource in RESOURCE_RE.finditer(interface_body):
-        body, _ = block_after_open_brace(
-            interface_body,
-            interface_body.index("{", resource.start(), resource.end()),
-        )
-        methods.update(f"{resource.group(1)}.{method}" for method in top_level_functions(body))
-    return methods
+def parse_document(source: str):
+    """Return (blanked text, {interface: Statement}, {world: Statement})."""
+    text = blank_comments(source)
+    interfaces: dict[str, Statement] = {}
+    worlds: dict[str, Statement] = {}
+    collect(text, statements(text), interfaces, worlds)
+    return text, interfaces, worlds
 
 
-def exported_interface_names(source: str) -> set[str]:
-    """Resolve named interface exports from all WIT worlds in this document."""
-    names: set[str] = set()
-    for _, world_body in declarations(source, WORLD_RE):
-        for match in EXPORT_RE.finditer(world_body):
-            reference = match.group(1).strip()
-            if re.match(rf"^{IDENT}\s*:\s", reference) or "=" in reference:
-                raise WitSyntaxError(
-                    f"unsupported inline or aliased world export: {reference!r}"
-                )
-            name = reference.rsplit("/", 1)[-1].split("@", 1)[0].strip()
-            if not re.fullmatch(IDENT, name):
-                raise WitSyntaxError(f"unsupported world export: {reference!r}")
-            names.add(name)
+def exported_interface_names(text: str, worlds, world: str | None) -> list[str]:
+    """Names of the interfaces the chosen world exports, in declaration order."""
+    if world is None:
+        if len(worlds) != 1:
+            raise WitSyntaxError(
+                f"{len(worlds)} worlds found; pass --world to say which one is checked"
+            )
+        world = next(iter(worlds))
+    if world not in worlds:
+        raise WitSyntaxError(f"world {world!r} not found")
+    lo, hi = worlds[world].body_span
+    names: list[str] = []
+    for statement in statements(text, lo, hi):
+        header = statement.header
+        if header.startswith("include "):
+            raise WitSyntaxError(f"unsupported world include: {header!r}")
+        if not header.startswith("export "):
+            continue
+        reference = header[len("export ") :].strip()
+        if (
+            statement.body is not None
+            or re.match(rf"^{IDENT}\s*:\s", reference)
+            or "=" in reference
+        ):
+            raise WitSyntaxError(f"unsupported inline or aliased world export: {reference!r}")
+        name = reference.rsplit("/", 1)[-1].split("@", 1)[0].strip()
+        if not re.fullmatch(IDENT, name):
+            raise WitSyntaxError(f"unsupported world export: {reference!r}")
+        names.append(name.lstrip("%"))
     if not names:
         raise WitSyntaxError("no named interface exports found in a WIT world")
     return names
 
 
-def extract_exports(wit_source: str) -> set[str]:
-    """Extract canonical free-function and resource-method names from WIT."""
-    source = strip_comments(wit_source)
-    wanted_interfaces = exported_interface_names(source)
-    found_interfaces: set[str] = set()
+def interface_exports(text: str, name: str, interface: Statement) -> set[str]:
+    """Free functions, resource methods and constructors of one interface."""
     exports: set[str] = set()
-    for interface_name, interface_body in declarations(source, INTERFACE_RE):
-        if interface_name in wanted_interfaces:
-            found_interfaces.add(interface_name)
-            exports.update(top_level_functions(interface_body))
-            exports.update(resource_methods(interface_body))
-    missing_interfaces = wanted_interfaces - found_interfaces
-    if missing_interfaces:
-        raise WitSyntaxError(
-            "exported interface declarations not found: "
-            + ", ".join(sorted(missing_interfaces))
-        )
+    lo, hi = interface.body_span
+    for statement in statements(text, lo, hi):
+        function = FUNCTION_RE.match(statement.header)
+        resource = RESOURCE_RE.match(statement.header)
+        if function and statement.body is None:
+            exports.add(f"{name}.{function.group(1).lstrip('%')}")
+        elif resource and statement.body_span:
+            resource_name = resource.group(1).lstrip("%")
+            for member in statements(text, *statement.body_span):
+                method = FUNCTION_RE.match(member.header)
+                if method:
+                    exports.add(f"{name}.{resource_name}.{method.group(1).lstrip('%')}")
+                elif CONSTRUCTOR_RE.match(member.header):
+                    exports.add(f"{name}.{resource_name}.constructor")
     return exports
 
 
-def component_wit(component: Path) -> str:
-    """Ask component-aware wasm-tools to decode the artifact's WIT declaration."""
+def extract_exports(wit_source: str, world: str | None = None) -> set[str]:
+    """Extract canonical export names from WIT text (a file or wasm-tools output)."""
+    text, interfaces, worlds = parse_document(wit_source)
+    exports: set[str] = set()
+    for name in exported_interface_names(text, worlds, world):
+        if name not in interfaces:
+            raise WitSyntaxError(f"exported interface declaration not found: {name}")
+        exports |= interface_exports(text, name, interfaces[name])
+    return exports
+
+
+def declaration_lines(text: str, body_span: tuple[int, int], prefix: str = "") -> list[str]:
+    """Normalised declaration text of a body, resources expanded member by member.
+
+    Record, variant and flags bodies are kept whole and in order, because case
+    and field order is part of the wire shape.
+    """
+    lines: list[str] = []
+    for statement in statements(text, *body_span):
+        if statement.body_span is None:
+            lines.append(prefix + statement.header)
+        elif RESOURCE_RE.match(statement.header):
+            lines.append(f"{prefix}{statement.header} {{}}")
+            lines += declaration_lines(text, statement.body_span, f"{prefix}{statement.header} :: ")
+        else:
+            body = " ".join(statement.body.split())
+            lines.append(f"{prefix}{statement.header} {{ {body} }}")
+    return lines
+
+
+def describe_interfaces(wit_source: str) -> dict[str, list[str]]:
+    """Map interface name to its sorted, normalised declaration lines."""
+    text, interfaces, _ = parse_document(wit_source)
+    return {
+        name: sorted(declaration_lines(text, statement.body_span))
+        for name, statement in interfaces.items()
+    }
+
+
+def wasm_tools_wit(path: Path) -> str:
+    """Print a WIT file or component through component-aware wasm-tools."""
     try:
         return subprocess.run(
-            ["wasm-tools", "component", "wit", str(component)],
+            ["wasm-tools", "component", "wit", str(path)],
             check=True,
             capture_output=True,
             text=True,
@@ -155,35 +311,80 @@ def check_exports(expected: set[str], actual: set[str]) -> tuple[set[str], set[s
     return expected - actual, actual - expected
 
 
+def check_declarations(
+    expected: dict[str, list[str]], actual: dict[str, list[str]]
+) -> dict[str, dict[str, list[str]]]:
+    """Interfaces the component carries whose declarations differ from the WIT's."""
+    changed: dict[str, dict[str, list[str]]] = {}
+    for name, lines in actual.items():
+        want = expected.get(name)
+        if want is None:
+            changed[name] = {"expected": [], "actual": lines}
+        elif want != lines:
+            changed[name] = {
+                "expected": [line for line in want if line not in lines],
+                "actual": [line for line in lines if line not in want],
+            }
+    return changed
+
+
+def compare(wit_text: str, component_text: str, world: str | None = None) -> dict:
+    """Compare the WIT's surface with the component's; the result is JSON-ready."""
+    expected = extract_exports(wit_text, world)
+    actual = extract_exports(component_text)
+    missing, unexpected = check_exports(expected, actual)
+    changed = check_declarations(
+        describe_interfaces(wit_text), describe_interfaces(component_text)
+    )
+    return {
+        "ok": not (missing or unexpected or changed),
+        "exports": len(expected),
+        "missing": sorted(missing),
+        "unexpected": sorted(unexpected),
+        "changed": changed,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Compare WIT-derived exports with a component's decoded WIT."
     )
     parser.add_argument("wit_file", type=Path, help="canonical expected WIT file")
     parser.add_argument("component_file", type=Path, help="compiled component file")
+    parser.add_argument("--world", help="world to check, required if the WIT has several")
+    parser.add_argument("--json", action="store_true", help="print the result as JSON")
     args = parser.parse_args(argv)
 
     try:
-        expected = extract_exports(args.wit_file.read_text(encoding="utf-8"))
-        actual = extract_exports(component_wit(args.component_file))
+        result = compare(
+            wasm_tools_wit(args.wit_file), wasm_tools_wit(args.component_file), args.world
+        )
     except (OSError, RuntimeError, WitSyntaxError) as error:
         print(f"component export check error: {error}", file=sys.stderr)
         return 2
 
-    missing, unexpected = check_exports(expected, actual)
-    if missing or unexpected:
-        print("Component export set does not match the WIT-derived export set.")
-        if missing:
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result["ok"] else 1
+
+    if not result["ok"]:
+        print("Component surface does not match the WIT.")
+        if result["missing"]:
             print("\nMissing exports:")
-            print(format_exports(missing))
-        if unexpected:
+            print("\n".join(result["missing"]))
+        if result["unexpected"]:
             print("\nUnexpected exports:")
-            print(format_exports(unexpected))
+            print("\n".join(result["unexpected"]))
+        for name, difference in sorted(result["changed"].items()):
+            print(f"\nDeclarations differ in interface {name}:")
+            for line in difference["expected"]:
+                print(f"  WIT only:       {line}")
+            for line in difference["actual"]:
+                print(f"  component only: {line}")
         return 1
 
-    print(f"WIT-derived export set ({len(expected)} exports):")
-    print(format_exports(expected))
-    print(f"\nComponent export set matches exactly ({len(actual)} exports).")
+    print(f"WIT-derived export set ({result['exports']} exports) matches the component exactly.")
+    print("Interface declarations match.")
     return 0
 
 

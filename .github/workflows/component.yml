@@ -14,6 +14,9 @@ name: component
 # job's first run - the checked-in hash had come from a Windows build - and is
 # documented in the README rather than papered over.
 
+permissions:
+  contents: read
+
 on:
   # Scoped to main deliberately. A bare `push:` fires on every branch, so a push
   # to a PR branch ran this job twice, once per trigger, for identical output.
@@ -24,6 +27,54 @@ on:
   pull_request:
 
 jobs:
+  # The export check is only worth its name if it can be seen failing. This job
+  # builds a component that lacks exactly one export the WIT declares and
+  # requires the checker to reject it for that reason alone (see
+  # scripts/component-negative-control.py). It runs beside the main job rather
+  # than inside it, so its cold build does not lengthen the critical path.
+  negative-control:
+    name: the export check must reject a component missing an export
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-tools
+        run: cargo install wasm-tools --version 1.258.0 --locked
+
+      - name: The checker must test itself
+        run: python3 scripts/test_check_component_exports.py
+
+      - name: Build a component with credential.present removed
+        run: |
+          scratch=$(mktemp -d)
+          rmdir "$scratch"
+          git worktree add --detach "$scratch" HEAD
+          trap 'git worktree remove --force "$scratch" || rm -rf "$scratch"' EXIT
+          python3 scripts/component-negative-control.py mutate "$scratch" identity.credential.present
+          # A failure here is the scratch build breaking, not the checker
+          # rejecting anything, and is reported as such.
+          if ! (
+            cd "$scratch"
+            cargo build --release --target wasm32-unknown-unknown \
+              --no-default-features --features component --locked
+            wasm-tools component new \
+              target/wasm32-unknown-unknown/release/aethel_core.wasm \
+              -o "$GITHUB_WORKSPACE/broken.component.wasm"
+          ); then
+            echo "CONTROL BUILD FAILED: the scratch component did not build."
+            echo "This says nothing about the export check; fix the build first."
+            exit 1
+          fi
+
+      - name: The checker must reject it, because that export is missing
+        run: |
+          python3 scripts/component-negative-control.py verify \
+            wit/aethel-core.wit broken.component.wasm identity.credential.present
+
   component:
     name: build, validate and reproduce the component
     runs-on: ubuntu-latest
@@ -45,64 +96,11 @@ jobs:
             target/wasm32-unknown-unknown/release/aethel_core.wasm \
             -o build1.component.wasm
 
-      - name: The component must validate and expose the declared world
+      - name: The component must validate and match the declared world exactly
         run: |
           wasm-tools validate build1.component.wasm
           python3 scripts/check-component-exports.py \
             wit/aethel-core.wit build1.component.wasm
-
-      - name: The component export checker must test itself
-        run: python3 scripts/test_check_component_exports.py
-
-      - name: Negative control: credential.present must be rejected when missing
-        run: |
-          echo "Negative control: credential.present is intentionally missing."
-          echo "This guards resource-method coverage in the canonical export checker."
-          echo "Expected exports remain derived from the unchanged canonical WIT."
-          scratch=$(mktemp -d)
-          rmdir "$scratch"
-          git worktree add --detach "$scratch" HEAD
-          trap 'git worktree remove --force "$scratch" || rm -rf "$scratch"' EXIT
-          SCRATCH="$scratch" python3 - <<'PY'
-          import os
-          from pathlib import Path
-
-          wit = Path(os.environ["SCRATCH"]) / "wit/aethel-core.wit"
-          source = wit.read_text(encoding="utf-8")
-          declaration = "    present: func(holder: borrow<master-identity>, tau: list<u8>, projection-randomness: list<u8>, disclosed: disclosure-attributes, blinding-randomness: list<u8>, presentation-randomness: list<u8>) -> result<saap-presentation, identity-error>;\n"
-          assert declaration in source, "negative-control declaration changed; update this control"
-          wit.write_text(source.replace(declaration, "", 1), encoding="utf-8")
-
-          component = Path(os.environ["SCRATCH"]) / "src/component.rs"
-          source = component.read_text(encoding="utf-8")
-          start = source.index("    fn present(\n")
-          open_brace = source.index("{", start)
-          depth = 0
-          for end in range(open_brace, len(source)):
-              if source[end] == "{":
-                  depth += 1
-              elif source[end] == "}":
-                  depth -= 1
-                  if depth == 0:
-                      component.write_text(source[:start] + source[end + 1 :], encoding="utf-8")
-                      break
-          else:
-              raise AssertionError("negative-control implementation method is unterminated")
-          PY
-          (
-            cd "$scratch"
-            cargo build --release --target wasm32-unknown-unknown \
-              --no-default-features --features component --locked
-            wasm-tools component new \
-              target/wasm32-unknown-unknown/release/aethel_core.wasm \
-              -o broken.component.wasm
-          )
-          if python3 scripts/check-component-exports.py \
-            wit/aethel-core.wit "$scratch/broken.component.wasm"; then
-            echo "ERROR: negative control passed despite credential.present being absent"
-            exit 1
-          fi
-          echo "Negative control correctly rejected the broken component."
 
       # Everything above this point is structural: it builds, it validates, it
       # exposes the declared world. None of that is "you can instantiate it and
