@@ -8,3 +8,7 @@
 # the published crate: an untracked directory is swept into `cargo package`, so
 # without this a stale local wasm binary ships inside a source package.
 /dist/
+
+# Python bytecode from running the scripts in scripts/
+__pycache__/
+*.pyc
