@@ -75,6 +75,46 @@ jobs:
           python3 scripts/component-negative-control.py verify \
             wit/aethel-core.wit broken.component.wasm identity.credential.present
 
+  # component.rev is what aethel_core::GIT_REVISION reports. Nothing else checks
+  # it: build.rs passes the file through, and the unit tests compare the constant
+  # to the file, so a file containing a plausible-looking but wrong sha would
+  # satisfy all of them. This job is the one place the value is checked against
+  # the repository it claims to describe.
+  provenance:
+    name: the recorded revision must be a real ancestor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Ancestry is unanswerable on the default shallow clone.
+          fetch-depth: 0
+
+      - name: component.rev must name an ancestor of this commit
+        run: |
+          rev=$(tr -d '[:space:]' < component.rev)
+
+          if ! printf '%s' "$rev" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "component.rev is not a full lowercase commit sha: '$rev'"
+            exit 1
+          fi
+
+          if ! git cat-file -e "${rev}^{commit}" 2>/dev/null; then
+            echo "component.rev names $rev, which is not a commit in this repository."
+            exit 1
+          fi
+
+          # Ancestry, not mere existence: a sha copied from an unrelated branch
+          # would pass `cat-file`. It is an ancestor rather than HEAD itself
+          # because a file cannot contain the hash of the commit containing it,
+          # which is why GIT_REVISION documents itself as one commit behind.
+          if ! git merge-base --is-ancestor "$rev" HEAD; then
+            echo "component.rev names $rev, which is not an ancestor of HEAD."
+            echo "It must be the commit the recorded component was built from."
+            exit 1
+          fi
+
+          echo "component.rev names $rev, an ancestor of $(git rev-parse HEAD)"
+
   component:
     name: build, validate and reproduce the component
     runs-on: ubuntu-latest

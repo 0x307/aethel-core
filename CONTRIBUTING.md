@@ -45,3 +45,24 @@ only in the code.
 - Deviations that are resolved with no action stay in the register, under **Closed**, with the
   reason. A register that only lists open problems teaches the next reader to reopen the
   closed ones.
+
+## Recording the component's provenance at release
+
+Two files at the repository root describe the canonical component, and both are read by
+`build.rs` and exposed as `aethel_core::COMPONENT_SHA256` and `aethel_core::GIT_REVISION`:
+
+- `component.sha256` — the SHA-256 of the canonical build, in `sha256sum` format.
+- `component.rev` — the commit that build was made from, as a full lowercase sha.
+
+**Both are updated in the release pull request, before it merges, whenever the component's bytes
+change.** The hash comes from CI's `reproducible:` line, which is the canonical platform; do not
+take it from a local build, because the hash is platform-specific.
+
+`component.rev` names the commit whose tree was built, so it is an **ancestor** of the commit
+that records it — a file cannot contain the hash of the commit containing it. Record the tip the
+release branch started from. CI's `provenance` job requires the value to be a real commit and an
+ancestor of `HEAD`, so a stale or invented sha fails the build rather than shipping.
+
+If the component's bytes have not changed, neither file changes, and `GIT_REVISION` keeps
+pointing at the commit the bytes really came from. That is the intended behaviour: these
+constants describe the artifact, not the release.
