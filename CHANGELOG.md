@@ -7,6 +7,46 @@ adheres to the breaking-change and deprecation rules in
 [`STABILITY.md`](./STABILITY.md) rather than strict SemVer prior to `1.0.0` — see that
 document for what counts as breaking inside `0.x`.
 
+## [0.7.0] - 2026-09-20
+
+No change to the WIT world, the component's behaviour, or any existing API. Minor rather than
+patch because it adds to the public surface.
+
+### Added
+
+- **`aethel_core::COMPONENT_SHA256`** — the SHA-256 of the canonical
+  `aethel_core.component.wasm` this crate builds. A consumer that vendors the component can now
+  compare its own recorded hash against the crate it links and fail when they disagree, which
+  catches a dependency and an embedded artifact that have drifted apart while both still claim
+  the same version. This is the value to assert on: it describes the bytes rather than a label.
+- **`aethel_core::GIT_REVISION`** — the commit the recorded component was built from, recorded
+  in `component.rev` beside `component.sha256`.
+
+  It names an **ancestor** of the commit that records it, and says so in its own documentation.
+  A file cannot contain the hash of the commit containing it, so the release step writes the
+  revision the hash was measured from, one commit behind itself. It is provenance for a reader,
+  not an equality check — comparing it against a revision pinned downstream does not work,
+  because a consumer that pins merge commits is pinning commits that did not exist when the
+  value was written.
+- **A CI job that checks `component.rev` against the repository it describes.** `build.rs`
+  passes the file through and the unit tests compare the constant to the file, so a plausible
+  but wrong sha would satisfy all of them. The job requires the recorded revision to be a real
+  commit and an ancestor of `HEAD`.
+
+### Changed
+
+- **`build.rs` reads both provenance files and passes them through `rustc-env`.** It does not
+  shell out to `git`. This crate's central claim is that the component rebuilds to identical
+  bytes from a pinned revision, and reading git at build time makes the output depend on the
+  checkout rather than the source: the same revision built from a tarball, a shallow clone and
+  a full clone would disagree, and `cargo publish` verifies from an extracted `.crate` with no
+  `.git` at all.
+
+  Both constants are compiled out of the component build (`--features component`). Compiling
+  `COMPONENT_SHA256` into the component would make the artifact contain its own digest — a
+  fixed point that does not exist, because recording a new hash changes the bytes, which
+  changes the hash.
+
 ## [0.6.1] - 2026-09-18
 
 No change to the public API, the WIT world, or behaviour. This release makes the checks around the
