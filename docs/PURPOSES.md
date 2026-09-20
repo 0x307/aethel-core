@@ -73,10 +73,35 @@ use aethel_core::signing::purpose::{
 };
 ```
 
+### The naming convention
+
+Purpose bytes are **`<crate>/<thing>/v<n>`**: the crate that owns the operation, the
+operation, and a version. `aethel-core/plp-present/v1`, `aethel-vault/spend-intent/v1`.
+
+The first segment names the *crate* whose code signs or verifies under it, not the product
+the crate is deployed in. A crate is a stable thing with one registry entry; a product name
+is a decision that can change without any code changing. Scoping by crate means a rename at
+the product level never invalidates a signature, and it keeps the first segment matching the
+`use` path a reader is already looking at.
+
+A consumer crate outside this repository follows the same rule and registers here, the way
+`aethel-vault` does. See the section above for why the registry is central.
+
+> **Superseded alternative.** An earlier convention proposed product-scoped strings
+> (`8gentz-agent-v1`, `8gentz-fabric-v1`) applied by prefixing the message before signing,
+> rather than as FIPS 204 context bytes. It was written when `pqc-sig` 0.3.0 had no
+> context-taking API and manual prefixing was the only thing available. `pqc-sig` 0.4
+> exposes `sign_ctx_deterministic`/`verify_ctx`, which is what `sign_with_purpose` is built
+> on, so the workaround is no longer necessary and the prefix form should not be used in new
+> code. Prefixing is also the weaker construction: a prefix is part of the message, so a
+> caller can omit it or get the delimiter wrong and the signature still verifies, whereas a
+> context is a separate argument the signature scheme itself binds, and a signature made
+> under one context provably does not verify under another.
+
 ### Adding a new purpose
 
-1. Add the constant to [`signing::purpose`](../src/signing.rs) — `aethel-core/<thing>/v1`
-   for this crate's own operations, `aethel-vault/<thing>/v1` for aethel-vault's.
+1. Add the constant to [`signing::purpose`](../src/signing.rs), named
+   `<crate>/<thing>/v<n>` per the convention above.
 2. Add a row to the table above.
 3. The pinning test (`the_registry_is_pinned`) will fail until the new constant is added
    to its list — that is deliberate, so a new purpose is always a reviewed, visible change.
