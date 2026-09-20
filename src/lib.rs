@@ -174,6 +174,47 @@ pub const FIXED_ITERATION_CEILING: usize = 16;
 /// Magic header bytes for the Ephemeral Identity Attestation Bundle (EIAB).
 pub const EIAB_MAGIC: &[u8; 4] = b"ATH1";
 
+// ── Build provenance ──────────────────────────────────────────────────────────
+//
+// Excluded from the component build, and deliberately.
+//
+// `COMPONENT_SHA256` is the digest of the component this source builds.
+// Compiling it into that same component would make the artifact contain its own
+// digest: a fixed point that does not exist, because recording a new hash
+// changes the bytes, which changes the hash. These constants exist for native
+// consumers — an SDK that embeds the component and wants to check that the
+// crate it links and the artifact it vendors describe one build — so gating
+// them out costs nothing and keeps the component reproducible.
+
+/// The commit this build's component was produced from.
+///
+/// **This names the commit whose tree was built, which is an ancestor of the
+/// commit that records it.** A file cannot contain the hash of the commit
+/// containing it, so the release step writes the revision the recorded
+/// [`COMPONENT_SHA256`] was measured from, one commit behind itself.
+///
+/// It is provenance for a reader, not an equality check, and comparing it to a
+/// revision pinned downstream will not work: a consumer that pins merge commits
+/// is pinning commits that did not exist when this was written. To verify that a
+/// vendored artifact matches this crate, compare [`COMPONENT_SHA256`], which
+/// describes the bytes instead of a label.
+#[cfg(not(feature = "component"))]
+pub const GIT_REVISION: &str = env!("AETHEL_CORE_GIT_REVISION");
+
+/// SHA-256 of the canonical `aethel_core.component.wasm` this crate builds.
+///
+/// Canonical means the platform CI builds on. The hash is platform-specific:
+/// rustc embeds platform paths and links a different std, so the same source
+/// built on Windows or macOS produces different bytes, and a hash is only
+/// meaningful alongside the toolchain that produced it.
+///
+/// This is the value to assert on. An SDK that vendors the component can compare
+/// its own recorded hash against this one and fail when they disagree, which
+/// catches a linked dependency and an embedded artifact that have drifted apart
+/// while both still claim the same version.
+#[cfg(not(feature = "component"))]
+pub const COMPONENT_SHA256: &str = env!("AETHEL_CORE_COMPONENT_SHA256");
+
 // ── Error type ────────────────────────────────────────────────────────────────
 
 /// Top-level error type for aethel-core operations.
