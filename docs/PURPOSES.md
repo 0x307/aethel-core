@@ -57,6 +57,12 @@ from every other — a rename or a collision is a visible, reviewed diff, not a 
 | `VAULT_SETTLEMENT_RECEIPT_V1` | `aethel-vault/settlement-receipt/v1` | aethel-vault's identity signer | A signed settlement receipt (V-5). |
 | `VAULT_WALLET_BIND_V1` | `aethel-vault/wallet-bind/v1` | The agent's `Identity` | Binding a spend-rail (`did:pkh:eip155`) address to an aethel identity — see [`IDENTITY-AND-SPEND-BINDING.md`](./IDENTITY-AND-SPEND-BINDING.md) if present, or A-2 in the gap-remediation plan. |
 | `VAULT_HITL_APPROVAL_V1` | `aethel-vault/hitl-approval/v1` | The principal's `Identity` | A human-in-the-loop approval signature (V-4's `hitl_above` gate). |
+| `AUTH_LOGIN_V1` | `aethel-auth/login/v1` | The holder's `Identity` | A response to a login challenge. The signed message binds the challenge's audience, so a signature made for one relying party does not authenticate at another. |
+| `AUTH_STEP_UP_V1` | `aethel-auth/step-up/v1` | The holder's `Identity` | Re-proving control for a sensitive action. Covers a fresh challenge *and* an action digest, so a step-up for one action cannot be replayed for another. |
+| `AUTH_ENROL_V1` | `aethel-auth/enrol/v1` | The holder's `Identity` | Proof of possession at registration, bound to an invite. Separate from login because login proves control of a key the directory already knows, and enrolment is how it comes to know it. |
+| `AUTH_SUCCESSION_V1` | `aethel-auth/succession/v1` | The **old** `Identity` | Naming a successor key. **Service identities only**: the record is a permanent public link between two identities, so it forfeits unlinkability by design. Never for a person. |
+| `AUTH_REVOCATION_V1` | `aethel-auth/revocation/v1` | The `Identity`, or an authority | Self-revocation or authority revocation. The statement only; enforcement is the relying party's own directory. |
+| `AUTH_DELEGATION_V1` | `aethel-auth/delegation/v1` | The principal's `Identity` | Granting a delegate scoped, time-bounded authority to act. The generalisation of the vault's spend-policy gate beyond money. |
 
 ### Why these are defined in aethel-core, not aethel-vault
 
