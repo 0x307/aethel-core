@@ -12,6 +12,11 @@ document for what counts as breaking inside `0.x`.
 No change to the WIT world, the component's behaviour, or any existing API. Minor rather than
 patch because it adds to the public surface.
 
+**The component's bytes did change**, and `component.sha256` is now `6f87f48a…`. Nothing in the
+component's source moved: the crate version feeds rustc's symbol-mangling metadata, so a version
+bump alone produces a different artifact. Anyone vendoring the component re-vendors it for this
+release; anyone only linking the crate is unaffected.
+
 ### Added
 
 - **`aethel_core::COMPONENT_SHA256`** — the SHA-256 of the canonical
