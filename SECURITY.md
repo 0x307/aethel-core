@@ -50,7 +50,8 @@ identities rather than attempting to carry them forward.
 
 ### The credential commitment does not provide the hiding property claimed for it
 
-**Open. Affects 0.4.0 and 0.5.0.**
+**Open. Affects every release from 0.4.0 through 0.7.0.** Tracked as D-01 in
+[`docs/DEVIATIONS.md`](docs/DEVIATIONS.md).
 
 `AETHEL-SPEC-001` §7 specifies the credential commitment matrix with a randomness
 dimension smaller than its commitment dimension. A BDLOP commitment is hiding only
