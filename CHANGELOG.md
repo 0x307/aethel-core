@@ -7,6 +7,26 @@ adheres to the breaking-change and deprecation rules in
 [`STABILITY.md`](./STABILITY.md) rather than strict SemVer prior to `1.0.0` — see that
 document for what counts as breaking inside `0.x`.
 
+## [0.7.1] - 2026-09-23
+
+Documentation and metadata only. No change to the API, the wire formats or behaviour.
+
+- The README opens with the crate's tier, MSRV, license and audit status, and ends with the
+  0x307 crate family: the six crates with their tiers, the runnable examples in
+  [0x307/examples](https://github.com/0x307/examples), and one audit statement shared by all
+  of them. The same section is in the crate docs, so it renders on docs.rs.
+- `Cargo.toml` sets `documentation` (docs.rs) and `homepage` (0x307.com/crates).
+- `STABILITY.md` states when a version is yanked.
+- The crates.io description no longer lists "zero-knowledge selective disclosure" as a
+  finished property. It says selective disclosure ships and is being hardened, matching
+  `SECURITY.md` and `docs/DEVIATIONS.md` D-01.
+
+- `Cargo.lock` moves from pqc-sig 0.4.0, now yanked, to 0.4.1. This lockfile only governs this
+  repository's own builds; a crate that depends on this one resolves pqc-sig itself.
+
+**The component's bytes change**, from the version bump and the pqc-sig 0.4.1 it now
+builds with. `component.sha256` is now `b15cc330…`, re-recorded from CI's canonical build.
+
 ## [0.7.0] - 2026-09-20
 
 No change to the WIT world, the component's behaviour, or any existing API. Minor rather than

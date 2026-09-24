@@ -1,11 +1,13 @@
 [package]
 name = "aethel-core"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
-description = "Post-quantum anonymous identity for Rust and WASM. A no_std alternative to static W3C DIDs: per-context identifiers, no reusable public key, zero-knowledge selective disclosure."
+description = "Post-quantum anonymous identity for Rust and WASM. A no_std alternative to static W3C DIDs: per-context identifiers, no reusable public key, context-bound ML-DSA signing. Selective disclosure ships and is being hardened; see SECURITY.md."
 authors = ["Kenneth Harper"]
 license = "Apache-2.0"
 repository = "https://github.com/0x307/aethel-core"
+homepage = "https://0x307.com/crates"
+documentation = "https://docs.rs/aethel-core"
 keywords = ["post-quantum", "identity", "did", "wasm", "zero-knowledge"]
 categories = ["cryptography", "no-std", "wasm"]
 readme = "README.md"
