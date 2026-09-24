@@ -23,6 +23,8 @@ Documentation and metadata only. No change to the API, the wire formats or behav
 
 **The component's bytes change** with the version, as in 0.7.0. `component.sha256` and
 `component.rev` are re-recorded from CI's canonical build in this release.
+- `Cargo.lock` moves from pqc-sig 0.4.0, now yanked, to 0.4.1. This lockfile only governs this
+  repository's own builds; a crate that depends on this one resolves pqc-sig itself.
 
 ## [0.7.0] - 2026-09-20
 
