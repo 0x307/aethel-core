@@ -108,6 +108,36 @@ pub mod purpose {
     /// (V-4's `hitl_above` gate).
     pub const VAULT_HITL_APPROVAL_V1: &[u8] = b"aethel-vault/hitl-approval/v1";
 
+    /// Reserved for aethel-auth: a response to a login challenge. The signed
+    /// message binds the challenge's audience, so a signature produced for
+    /// one relying party does not authenticate at another.
+    pub const AUTH_LOGIN_V1: &[u8] = b"aethel-auth/login/v1";
+    /// Reserved for aethel-auth: re-proving control for a sensitive action.
+    /// The signed message covers a fresh challenge *and* a digest of the
+    /// action, so a step-up for one action cannot be replayed for another.
+    pub const AUTH_STEP_UP_V1: &[u8] = b"aethel-auth/step-up/v1";
+    /// Reserved for aethel-auth: proof of possession at registration, bound
+    /// to an invite. Distinct from [`AUTH_LOGIN_V1`] because login proves
+    /// control of a key the directory already knows, and enrolment is how it
+    /// comes to know it.
+    pub const AUTH_ENROL_V1: &[u8] = b"aethel-auth/enrol/v1";
+    /// Reserved for aethel-auth: the *old* identity naming its successor.
+    ///
+    /// A succession record is a permanent public link between two identities:
+    /// anyone holding it can correlate every past context of the old identity
+    /// with every future context of the new one. It is for *service*
+    /// identities, where continuity is the point and unlinkability is not. It
+    /// is not for a person.
+    pub const AUTH_SUCCESSION_V1: &[u8] = b"aethel-auth/succession/v1";
+    /// Reserved for aethel-auth: an identity revoking itself, or an authority
+    /// revoking it. The statement only; enforcement is the relying party's
+    /// own directory.
+    pub const AUTH_REVOCATION_V1: &[u8] = b"aethel-auth/revocation/v1";
+    /// Reserved for aethel-auth: a principal granting a delegate scoped,
+    /// time-bounded authority to act. The generalisation of aethel-vault's
+    /// `SpendPolicy` beyond money.
+    pub const AUTH_DELEGATION_V1: &[u8] = b"aethel-auth/delegation/v1";
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -125,6 +155,12 @@ pub mod purpose {
                 VAULT_SETTLEMENT_RECEIPT_V1,
                 VAULT_WALLET_BIND_V1,
                 VAULT_HITL_APPROVAL_V1,
+                AUTH_LOGIN_V1,
+                AUTH_STEP_UP_V1,
+                AUTH_ENROL_V1,
+                AUTH_SUCCESSION_V1,
+                AUTH_REVOCATION_V1,
+                AUTH_DELEGATION_V1,
             ];
             let mut hasher = Shake256::default();
             for purpose in all {
@@ -161,6 +197,12 @@ pub mod purpose {
                 ("VAULT_SETTLEMENT_RECEIPT_V1", VAULT_SETTLEMENT_RECEIPT_V1),
                 ("VAULT_WALLET_BIND_V1", VAULT_WALLET_BIND_V1),
                 ("VAULT_HITL_APPROVAL_V1", VAULT_HITL_APPROVAL_V1),
+                ("AUTH_LOGIN_V1", AUTH_LOGIN_V1),
+                ("AUTH_STEP_UP_V1", AUTH_STEP_UP_V1),
+                ("AUTH_ENROL_V1", AUTH_ENROL_V1),
+                ("AUTH_SUCCESSION_V1", AUTH_SUCCESSION_V1),
+                ("AUTH_REVOCATION_V1", AUTH_REVOCATION_V1),
+                ("AUTH_DELEGATION_V1", AUTH_DELEGATION_V1),
             ];
             for (name, purpose) in all {
                 assert!(!purpose.is_empty(), "{name} must not be empty");
@@ -189,6 +231,12 @@ pub mod purpose {
                 VAULT_SETTLEMENT_RECEIPT_V1,
                 VAULT_WALLET_BIND_V1,
                 VAULT_HITL_APPROVAL_V1,
+                AUTH_LOGIN_V1,
+                AUTH_STEP_UP_V1,
+                AUTH_ENROL_V1,
+                AUTH_SUCCESSION_V1,
+                AUTH_REVOCATION_V1,
+                AUTH_DELEGATION_V1,
             ];
             for purpose in all {
                 assert!(purpose.len() <= pqc_sig::MAX_CONTEXT_LEN);

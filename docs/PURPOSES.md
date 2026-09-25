@@ -57,6 +57,12 @@ from every other — a rename or a collision is a visible, reviewed diff, not a 
 | `VAULT_SETTLEMENT_RECEIPT_V1` | `aethel-vault/settlement-receipt/v1` | aethel-vault's identity signer | A signed settlement receipt (V-5). |
 | `VAULT_WALLET_BIND_V1` | `aethel-vault/wallet-bind/v1` | The agent's `Identity` | Binding a spend-rail (`did:pkh:eip155`) address to an aethel identity — see [`IDENTITY-AND-SPEND-BINDING.md`](./IDENTITY-AND-SPEND-BINDING.md) if present, or A-2 in the gap-remediation plan. |
 | `VAULT_HITL_APPROVAL_V1` | `aethel-vault/hitl-approval/v1` | The principal's `Identity` | A human-in-the-loop approval signature (V-4's `hitl_above` gate). |
+| `AUTH_LOGIN_V1` | `aethel-auth/login/v1` | The holder's `Identity` | A response to a login challenge. The signed message binds the challenge's audience, so a signature made for one relying party does not authenticate at another. |
+| `AUTH_STEP_UP_V1` | `aethel-auth/step-up/v1` | The holder's `Identity` | Re-proving control for a sensitive action. Covers a fresh challenge *and* an action digest, so a step-up for one action cannot be replayed for another. |
+| `AUTH_ENROL_V1` | `aethel-auth/enrol/v1` | The holder's `Identity` | Proof of possession at registration, bound to an invite. Separate from login because login proves control of a key the directory already knows, and enrolment is how it comes to know it. |
+| `AUTH_SUCCESSION_V1` | `aethel-auth/succession/v1` | The **old** `Identity` | Naming a successor key. **Service identities only**: the record is a permanent public link between two identities, so it forfeits unlinkability by design. Never for a person. |
+| `AUTH_REVOCATION_V1` | `aethel-auth/revocation/v1` | The `Identity`, or an authority | Self-revocation or authority revocation. The statement only; enforcement is the relying party's own directory. |
+| `AUTH_DELEGATION_V1` | `aethel-auth/delegation/v1` | The principal's `Identity` | Granting a delegate scoped, time-bounded authority to act. The generalisation of the vault's spend-policy gate beyond money. |
 
 ### Why these are defined in aethel-core, not aethel-vault
 
@@ -73,10 +79,35 @@ use aethel_core::signing::purpose::{
 };
 ```
 
+### The naming convention
+
+Purpose bytes are **`<crate>/<thing>/v<n>`**: the crate that owns the operation, the
+operation, and a version. `aethel-core/plp-present/v1`, `aethel-vault/spend-intent/v1`.
+
+The first segment names the *crate* whose code signs or verifies under it, not the product
+the crate is deployed in. A crate is a stable thing with one registry entry; a product name
+is a decision that can change without any code changing. Scoping by crate means a rename at
+the product level never invalidates a signature, and it keeps the first segment matching the
+`use` path a reader is already looking at.
+
+A consumer crate outside this repository follows the same rule and registers here, the way
+`aethel-vault` does. See the section above for why the registry is central.
+
+> **Superseded alternative.** An earlier convention proposed product-scoped strings
+> (`8gentz-agent-v1`, `8gentz-fabric-v1`) applied by prefixing the message before signing,
+> rather than as FIPS 204 context bytes. It was written when `pqc-sig` 0.3.0 had no
+> context-taking API and manual prefixing was the only thing available. `pqc-sig` 0.4
+> exposes `sign_ctx_deterministic`/`verify_ctx`, which is what `sign_with_purpose` is built
+> on, so the workaround is no longer necessary and the prefix form should not be used in new
+> code. Prefixing is also the weaker construction: a prefix is part of the message, so a
+> caller can omit it or get the delimiter wrong and the signature still verifies, whereas a
+> context is a separate argument the signature scheme itself binds, and a signature made
+> under one context provably does not verify under another.
+
 ### Adding a new purpose
 
-1. Add the constant to [`signing::purpose`](../src/signing.rs) — `aethel-core/<thing>/v1`
-   for this crate's own operations, `aethel-vault/<thing>/v1` for aethel-vault's.
+1. Add the constant to [`signing::purpose`](../src/signing.rs), named
+   `<crate>/<thing>/v<n>` per the convention above.
 2. Add a row to the table above.
 3. The pinning test (`the_registry_is_pinned`) will fail until the new constant is added
    to its list — that is deliberate, so a new purpose is always a reviewed, visible change.
