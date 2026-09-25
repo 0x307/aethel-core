@@ -1,6 +1,6 @@
 [package]
 name = "aethel-core"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2021"
 description = "Post-quantum anonymous identity for Rust and WASM. A no_std alternative to static W3C DIDs: per-context identifiers, no reusable public key, context-bound ML-DSA signing. Selective disclosure ships and is being hardened; see SECURITY.md."
 authors = ["Kenneth Harper"]

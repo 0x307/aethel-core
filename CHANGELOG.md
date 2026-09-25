@@ -7,6 +7,46 @@ adheres to the breaking-change and deprecation rules in
 [`STABILITY.md`](./STABILITY.md) rather than strict SemVer prior to `1.0.0` — see that
 document for what counts as breaking inside `0.x`.
 
+## [0.7.2] - 2026-09-25
+
+Additive. Nothing existing changes: no function, type, wire format or error variant.
+
+### Added
+
+- **WIT: purpose-separated signing, for component callers.** `sign-with-purpose` on the
+  `master-identity` resource, and a free `verify-signature-with-purpose` in `interface
+  identity`. Until now purpose separation was only in the Rust library
+  (`Identity::sign_with_purpose`, `signing::verify_with_purpose`, since 0.6.0). A verifier
+  that embeds the component, or isn't written in Rust, could only verify under the empty
+  context. Both delegate to the native functions, so the two paths share one implementation
+  and the same 255-byte purpose limit. `sign` and `verify-signature` are unchanged and remain
+  the empty context, and `identity-error`'s variant ordinals are unchanged.
+- **Six registered purposes for aethel-auth** in `signing::purpose`, one per statement type
+  the authority layer signs: login, step-up, enrol, succession, revocation and delegation.
+  Each is pinned and length-checked by the existing registry tests. The succession entry's
+  doc comment says it links two identities permanently, so it is for service identities,
+  never a person.
+- **`docs/PURPOSES.md` states the naming convention:** `<crate>/<thing>/v<n>`, registered
+  there and passed as a FIPS 204 context. Prefixing the message before signing is recorded as
+  superseded: a context is bound by the scheme and a signature under one provably does not
+  verify under another, where a prefix is only part of the message.
+- **Three component tests** in `tests/component_execution.rs`: the component's purpose
+  signature is byte-identical to the native one and the native verifier accepts it; a
+  signature under one purpose verifies under it and fails under another purpose, over a
+  changed message and under the empty context, and a plain signature fails under any purpose;
+  a 255-byte purpose is accepted and a 256-byte one is refused with `invalid-input-length` on
+  both sign and verify.
+
+### Changed
+
+- `Cargo.lock` moves from pqc-sig 0.4.1, now yanked, to 0.4.2, which is metadata-only. This
+  lockfile only governs this repository's own builds; a crate that depends on this one
+  resolves pqc-sig itself. It clears `cargo-deny (advisories)`, which had failed on `main`
+  since the yank.
+
+**The component's bytes change**, from the two new exports, the version bump and pqc-sig 0.4.2.
+`component.sha256` is re-recorded from CI's canonical build.
+
 ## [0.7.1] - 2026-09-23
 
 Documentation and metadata only. No change to the API, the wire formats or behaviour.

@@ -811,6 +811,144 @@ fn a_tampered_message_and_a_wrong_key_both_fail_verification() {
     );
 }
 
+/// `sign-with-purpose` through the component produces exactly the signature the
+/// native `Identity::sign_with_purpose` does for the same entropy, purpose and
+/// message. Signing is deterministic, so the bytes must match, not only verify.
+/// The native verifier accepts the component's signature too, so a Rust
+/// verifier and a component verifier agree on what a purpose signature is.
+#[test]
+fn purpose_signing_through_the_component_matches_the_native_api() {
+    let entropy = b"deterministic entropy for tests!";
+    let purpose = aethel_core::signing::purpose::VAULT_SPEND_INTENT_V1;
+    let message = b"spend 10 from the agent wallet";
+
+    let native = aethel_core::signing::Identity::generate(entropy).expect("native generate");
+    let native_sig = native
+        .sign_with_purpose(purpose, message)
+        .expect("native sign_with_purpose");
+
+    let (mut store, bindings) = instantiate();
+    let api = bindings.aethel_core_identity().master_identity();
+    let id = api
+        .call_generate(&mut store, entropy)
+        .expect("host call")
+        .expect("generate");
+    let component_sig = api
+        .call_sign_with_purpose(&mut store, id, purpose, message)
+        .expect("host call")
+        .expect("sign-with-purpose");
+
+    assert_eq!(
+        component_sig, native_sig,
+        "the component's purpose signature differs from the native one for the same inputs"
+    );
+    assert!(
+        aethel_core::signing::verify_with_purpose(&native.public_key(), purpose, message, &component_sig)
+            .expect("native verify_with_purpose"),
+        "the native verifier rejected the component's purpose signature"
+    );
+}
+
+/// Purpose separation holds through the component in every direction that
+/// matters: a signature made under purpose A verifies under A and nowhere else,
+/// and a plain `sign` signature verifies under no purpose. The accepting cases
+/// are in the same test, so a verifier that rejected everything fails here.
+#[test]
+fn purpose_separation_holds_through_the_component() {
+    let a = aethel_core::signing::purpose::VAULT_SPEND_INTENT_V1;
+    let b = aethel_core::signing::purpose::VAULT_SETTLEMENT_RECEIPT_V1;
+    let message = b"spend 10 from the agent wallet";
+
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+    let api = identity.master_identity();
+    let id = api
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+    let pk = api.call_public_key(&mut store, id).expect("host call");
+
+    let under_a = api
+        .call_sign_with_purpose(&mut store, id, a, message)
+        .expect("host call")
+        .expect("sign-with-purpose");
+    let plain = api
+        .call_sign(&mut store, id, message)
+        .expect("host call")
+        .expect("sign");
+
+    let mut verify_with = |purpose: &[u8], msg: &[u8], sig: &[u8]| {
+        identity
+            .call_verify_signature_with_purpose(&mut store, &pk, purpose, msg, sig)
+            .expect("host call")
+            .expect("verify-signature-with-purpose")
+    };
+    assert!(verify_with(a, message, &under_a), "a purpose-A signature failed to verify under A");
+    assert!(!verify_with(b, message, &under_a), "a purpose-A signature verified under purpose B");
+    assert!(
+        !verify_with(a, b"spend 99 from the agent wallet", &under_a),
+        "a purpose-A signature verified over a message it was not made over"
+    );
+    assert!(!verify_with(a, message, &plain), "a plain signature verified under purpose A");
+
+    let plain_verify = |store: &mut Store<()>, sig: &[u8]| {
+        identity
+            .call_verify_signature(store, &pk, message, sig)
+            .expect("host call")
+            .expect("verify-signature")
+    };
+    assert!(plain_verify(&mut store, &plain), "a plain signature failed plain verification");
+    assert!(
+        !plain_verify(&mut store, &under_a),
+        "a purpose-A signature verified under the empty context"
+    );
+}
+
+/// The 255-byte purpose limit is enforced at the component boundary as
+/// `invalid-input-length`, and a purpose of exactly 255 bytes is accepted and
+/// verifies, so the limit sits where the WIT documentation says it does.
+#[test]
+fn a_purpose_over_255_bytes_is_refused_by_the_component() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+    let api = identity.master_identity();
+    let id = api
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+    let pk = api.call_public_key(&mut store, id).expect("host call");
+    let message = b"a message";
+    let longest = vec![b'p'; 255];
+    let too_long = vec![b'p'; 256];
+
+    let sig = api
+        .call_sign_with_purpose(&mut store, id, &longest, message)
+        .expect("host call")
+        .expect("a 255-byte purpose must be accepted");
+    assert!(
+        identity
+            .call_verify_signature_with_purpose(&mut store, &pk, &longest, message, &sig)
+            .expect("host call")
+            .expect("verify"),
+        "a signature under a 255-byte purpose failed to verify"
+    );
+
+    match api
+        .call_sign_with_purpose(&mut store, id, &too_long, message)
+        .expect("host call")
+    {
+        Err(aethel::core::types::IdentityError::InvalidInputLength) => {}
+        other => panic!("sign-with-purpose with a 256-byte purpose returned {other:?}"),
+    }
+    match identity
+        .call_verify_signature_with_purpose(&mut store, &pk, &too_long, message, &sig)
+        .expect("host call")
+    {
+        Err(aethel::core::types::IdentityError::InvalidInputLength) => {}
+        other => panic!("verify-signature-with-purpose with a 256-byte purpose returned {other:?}"),
+    }
+}
+
 /// Generation is deterministic over its entropy, and distinct entropy gives a
 /// distinct identity. Both halves are needed: the first alone would pass for an
 /// implementation that ignored entropy entirely.

@@ -212,6 +212,8 @@ artifact was not built from this source.
 | `saap-verify-presentation` | Implemented |
 | `issuer-public-parameters` | Implemented |
 | `verify-signature` | Implemented |
+| `sign-with-purpose` (on `master-identity`) | Implemented (sign under a registered purpose, as `Identity::sign_with_purpose`) |
+| `verify-signature-with-purpose` | Implemented (as `signing::verify_with_purpose`) |
 | `htss-split` | Implemented (fixed internal nonce, see `src/component.rs`) |
 | `htss-reconstruct` | Implemented |
 

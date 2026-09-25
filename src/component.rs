@@ -237,6 +237,19 @@ impl IdentityGuest for Component {
         signing::verify(&public_key, &message, &signature).map_err(Into::into)
     }
 
+    /// Verify under a purpose. Delegates to `signing::verify_with_purpose` so
+    /// the component and native paths share one implementation, including the
+    /// 255-byte purpose limit.
+    fn verify_signature_with_purpose(
+        public_key: Vec<u8>,
+        purpose: Vec<u8>,
+        message: Vec<u8>,
+        signature: Vec<u8>,
+    ) -> Result<bool, WitError> {
+        signing::verify_with_purpose(&public_key, &purpose, &message, &signature)
+            .map_err(Into::into)
+    }
+
     /// A-4: verify from `aethel-plp-1` wire bytes, binding the verifier's
     /// own context. Delegates entirely to `crate::wire::verify_projection`
     /// so the component and native paths share one implementation.
@@ -276,8 +289,8 @@ impl IdentityGuest for Component {
 /// The component-side owner of a [`signing::Identity`].
 ///
 /// The secret key lives in here for the lifetime of the resource handle and has
-/// no route out: the WIT exposes `public-key`, `sign`, `project-at-context` and
-/// `prove`, and none of them returns key material. That is the charter's
+/// no route out: the WIT exposes `public-key`, `sign`, `sign-with-purpose`,
+/// `project-at-context` and `prove`, and none of them returns key material. That is the charter's
 /// "no private key material crosses out of L1" expressed as a type rather than
 /// as a convention.
 pub struct OwnedIdentity(signing::Identity);
@@ -294,6 +307,12 @@ impl GuestMasterIdentity for OwnedIdentity {
 
     fn sign(&self, message: Vec<u8>) -> Result<Vec<u8>, WitError> {
         self.0.sign(&message).map_err(Into::into)
+    }
+
+    /// Sign under a purpose. Delegates to `signing::Identity::sign_with_purpose`,
+    /// which enforces the 255-byte purpose limit.
+    fn sign_with_purpose(&self, purpose: Vec<u8>, message: Vec<u8>) -> Result<Vec<u8>, WitError> {
+        self.0.sign_with_purpose(&purpose, &message).map_err(Into::into)
     }
 
     fn project_at_context(
