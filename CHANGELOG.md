@@ -21,6 +21,15 @@ Additive. Nothing existing changes: no function, type, wire format or error vari
   context. Both delegate to the native functions, so the two paths share one implementation
   and the same 255-byte purpose limit. `sign` and `verify-signature` are unchanged and remain
   the empty context, and `identity-error`'s variant ordinals are unchanged.
+- **Six registered purposes for aethel-auth** in `signing::purpose`, one per statement type
+  the authority layer signs: login, step-up, enrol, succession, revocation and delegation.
+  Each is pinned and length-checked by the existing registry tests. The succession entry's
+  doc comment says it links two identities permanently, so it is for service identities,
+  never a person.
+- **`docs/PURPOSES.md` states the naming convention:** `<crate>/<thing>/v<n>`, registered
+  there and passed as a FIPS 204 context. Prefixing the message before signing is recorded as
+  superseded: a context is bound by the scheme and a signature under one provably does not
+  verify under another, where a prefix is only part of the message.
 - **Three component tests** in `tests/component_execution.rs`: the component's purpose
   signature is byte-identical to the native one and the native verifier accepts it; a
   signature under one purpose verifies under it and fails under another purpose, over a
