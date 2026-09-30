@@ -13,7 +13,7 @@
 //!   protocol, and rejection sampling over Module-LWE (M-LWE).
 //! - **[`htss`]** — 5D Hypercube Threshold Secret Sharing: Shamir 3-of-5 over F_q,
 //!   dimension-disjoint routing across Q_5 (32 nodes, 80 edges).
-//! - **[`saap`]** — Selective Attribute Attestation Protocol: BDLOP vector commitment
+//! - **`saap`** (crate-private; its prove and verify pathway is retired, D-13) — Selective Attribute Attestation Protocol: BDLOP vector commitment
 //!   scheme with ZK selective disclosure and norm-bound verification.
 //! - **[`sampling`]** — Enclave constant-time rejection sampling: 16-iteration padded
 //!   loop, CMOV selection, volatile zeroization, and CBD η=2 sampler.
@@ -94,9 +94,6 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-// Import alloc types needed for WASM exports
-#[cfg(feature = "wasm")]
-use alloc::vec::Vec;
 
 // ── Module declarations ──────────────────────────────────────────────────────
 
@@ -133,8 +130,6 @@ pub mod puf;
 
 /// Valgrind/ctgrind constant-time verification harness.
 pub mod ct_verify;
-
-/// Client SDK module.
 
 /// Rust-side mirror of the `aethel:core` WIT world's `identity-error` variant.
 pub mod identity_error;

@@ -10,8 +10,8 @@
 //! `InvalidInputLength`, `SerializationError`, `ThresholdNotMet`,
 //! `RejectionSamplingFailed`, and `InvalidShareSet`.
 //!
-//! Three are **reserved and currently unreachable**: [`Self::NormBoundViolation`],
-//! [`Self::ChallengeMismatch`] and [`Self::InvalidAttributeCommitment`]. They
+//! Three are **reserved and currently unreachable**: [`IdentityError::NormBoundViolation`](crate::identity_error::IdentityError::NormBoundViolation),
+//! [`IdentityError::ChallengeMismatch`](crate::identity_error::IdentityError::ChallengeMismatch) and [`IdentityError::InvalidAttributeCommitment`](crate::identity_error::IdentityError::InvalidAttributeCommitment). They
 //! are named here deliberately rather than removed — see their individual doc
 //! comments and `component_error_variant_reachability` in
 //! `tests/component_execution.rs`, which pins the split so it cannot drift
@@ -236,6 +236,7 @@ mod tests {
     // ── ThresholdNotMet: driven through SecretSharer::reconstruct_secret_checked ─
 
     #[test]
+    #[allow(deprecated)] // shares from the deprecated split_secret, on purpose
     fn threshold_not_met_with_fewer_than_three_shares() {
         let shares = SecretSharer::split_secret(12_345u64, 3, 5, 0xdead_beef);
         let result = SecretSharer::reconstruct_secret_checked(&shares[0..2]);
@@ -243,6 +244,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // shares from the deprecated split_secret, on purpose
     fn reconstruct_secret_checked_succeeds_at_the_threshold() {
         let secret = 12_345u64;
         let shares = SecretSharer::split_secret(secret, 3, 5, 0xdead_beef);

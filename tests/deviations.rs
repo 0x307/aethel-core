@@ -70,7 +70,7 @@ fn every_deviation_explained_in_source_points_at_the_register() {
     let mut missing = Vec::new();
     for entry in fs::read_dir(&src).expect("read src/") {
         let path = entry.expect("dir entry").path();
-        if path.extension().map_or(true, |ext| ext != "rs") {
+        if path.extension().is_none_or(|ext| ext != "rs") {
             continue;
         }
         let text = fs::read_to_string(&path).expect("read source file");

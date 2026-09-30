@@ -12,12 +12,12 @@
 //!
 //! ## Key Structures
 //!
-//! - [`Poly`] — Polynomial in R_q = Z_q[X]/(X^N + 1)
-//! - [`MasterIdentity`] — Holds the permanent master secret polynomial s
-//! - [`EphemeralProjection`] — Single-use public projection for a given context τ
-//! - [`ZkIdentityProof`] — ZK sigma protocol proof (W, c, z)
-//! - [`Prover`] — Generates ZK identity proofs with rejection sampling
-//! - [`Verifier`] — Verifies ZK proofs against ephemeral projections
+//! - [`Poly`](crate::plp::Poly) — Polynomial in `R_q = Z_q[X]/(X^N + 1)`
+//! - [`MasterIdentity`](crate::plp::MasterIdentity) — Holds the permanent master secret polynomial s
+//! - [`EphemeralProjection`](crate::plp::EphemeralProjection) — Single-use public projection for a given context τ
+//! - [`ZkIdentityProof`](crate::plp::ZkIdentityProof) — ZK sigma protocol proof (W, c, z)
+//! - [`Prover`](crate::plp::Prover) — Generates ZK identity proofs with rejection sampling
+//! - [`Verifier`](crate::plp::Verifier) — Verifies ZK proofs against ephemeral projections
 //!
 //! ## Parameters
 //!
@@ -27,6 +27,10 @@
 //!
 //! - Matrix generation: `"AETHEL_PLP_CTX_V2"`
 //! - Challenge hash: `"AETHEL_PLP_CHALLENGE_V3"`
+
+// Ring arithmetic indexes several coefficient arrays in step, so an index
+// loop is the clear form here (as in `component.rs`).
+#![allow(clippy::needless_range_loop)]
 
 extern crate alloc;
 
@@ -186,7 +190,7 @@ fn vec_zeroize(v: &mut PolyVec) {
 
 // ── Polynomial type ───────────────────────────────────────────────────────────
 
-/// Polynomial in R_q = Z_q[X]/(X^N + 1).
+/// Polynomial in `R_q = Z_q[X]/(X^N + 1)`.
 /// Coefficients stored as u32 in [0, Q).
 ///
 /// This type doubles as both public data (context matrices, projections, proof
@@ -239,7 +243,7 @@ impl Poly {
         res
     }
 
-    /// Schoolbook polynomial multiplication in R_q = Z_q[X]/(X^N + 1).
+    /// Schoolbook polynomial multiplication in `R_q = Z_q[X]/(X^N + 1)`.
     /// O(N²) — used for challenge * secret (challenge is sparse).
     pub fn mul_schoolbook(&self, other: &Self) -> Self {
         let mut tmp = [0i64; 2 * N];
@@ -307,11 +311,6 @@ fn sub_mod(a: u32, b: u32) -> u32 {
     } else {
         a + Q - b
     }
-}
-
-#[inline(always)]
-fn mul_mod(a: u32, b: u32) -> u32 {
-    ((a as u64 * b as u64) % Q as u64) as u32
 }
 
 // ── NTT implementation ────────────────────────────────────────────────────────
@@ -391,7 +390,7 @@ fn cyclic_ntt(a: &mut [u64; N], root: u64, q: u64) {
     }
 }
 
-/// In-place forward negacyclic NTT over R_q = Z_q[X]/(X^256 + 1).
+/// In-place forward negacyclic NTT over `R_q = Z_q[X]/(X^256 + 1)`.
 ///
 /// Weights each coefficient by ψ^i, then runs a cyclic NTT with ω = ψ². The
 /// weighting is what turns the cyclic transform into a negacyclic one.
@@ -511,7 +510,7 @@ pub(crate) fn derive_error_tau(rho: &[u8], tau: &[u8]) -> PolyVec {
 /// who supplies fresh `rho`, which they already MUST do for `e_tau`, gets a
 /// fresh salt for free and cannot supply one without the other. It is bound to
 /// `tau` as well so that an accidentally reused `rho` still yields a distinct
-/// salt per context, matching [`derive_error_tau`].
+/// salt per context, matching `derive_error_tau`.
 pub fn pad_tau(tau: &[u8]) -> [u8; 32] {
     let mut t = [0u8; 32];
     let len = tau.len().min(32);

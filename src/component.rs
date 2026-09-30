@@ -44,6 +44,8 @@
 //! reachable through the WIT world any more.
 
 #![allow(clippy::needless_range_loop)]
+// `wit_bindgen::generate!` below emits public items with no doc comments.
+#![allow(missing_docs)]
 
 extern crate alloc;
 
