@@ -42,6 +42,15 @@ under the same purpose bytes, and a caller must not reuse one purpose's signatur
 though it were another's. This is what makes cross-purpose replay structurally impossible
 rather than a convention callers must remember.
 
+## Reading the registry from the component
+
+The registry below is also exported by the component, so a binding that is not written in
+Rust, or that must not link aethel-core, reads it instead of copying it. The WIT function
+`registered-purposes` returns each purpose's `name` and `bytes` in declaration order (native
+side: `signing::purpose::ALL`). The constants and that list come from one declaration, and a
+test in `tests/component_execution.rs` compares the component's list against the native one,
+so the function is the authoritative form of this table.
+
 ## The registry
 
 Defined as constants in [`signing::purpose`](../src/signing.rs), pinned by a unit test

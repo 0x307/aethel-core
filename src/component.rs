@@ -62,6 +62,7 @@ use exports::aethel::core::identity::{
     Guest as IdentityGuest, GuestCredential, GuestIssuerPublicParameters, GuestMasterIdentity,
     IssuerPublicParameters as WitIssuerPublicParameters, IssuerPublicParametersBorrow,
     MasterIdentity as WitMasterIdentity, MasterIdentityBorrow,
+    RegisteredPurpose as WitRegisteredPurpose,
     SaapPresentation as WitSaapPresentation, ZkIdentityProof as WitZkProof,
 };
 use exports::aethel::core::secret_sharing::{Guest as SecretSharingGuest, HtssShare as WitShare};
@@ -250,6 +251,18 @@ impl IdentityGuest for Component {
     ) -> Result<bool, WitError> {
         signing::verify_with_purpose(&public_key, &purpose, &message, &signature)
             .map_err(Into::into)
+    }
+
+    /// The registered purposes, read from `signing::purpose::ALL` so the
+    /// component exports the registry itself and not a copy of it.
+    fn registered_purposes() -> Vec<WitRegisteredPurpose> {
+        signing::purpose::ALL
+            .iter()
+            .map(|(name, bytes)| WitRegisteredPurpose {
+                name: (*name).into(),
+                bytes: bytes.to_vec(),
+            })
+            .collect()
     }
 
     /// A-4: verify from `aethel-plp-1` wire bytes, binding the verifier's

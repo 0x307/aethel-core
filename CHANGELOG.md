@@ -7,6 +7,30 @@ adheres to the breaking-change and deprecation rules in
 [`STABILITY.md`](./STABILITY.md) rather than strict SemVer prior to `1.0.0` — see that
 document for what counts as breaking inside `0.x`.
 
+## [0.7.4] - Unreleased
+
+Additive. Nothing existing changes: no function, type, wire format or error variant. 0.7.3
+stays published and is not yanked.
+
+### Added
+
+- **WIT: `registered-purposes`, the registry through the component.** A free function in
+  `interface identity` returns every registered purpose as a `registered-purpose` record
+  (`name` and `bytes`), in declaration order. A binding above L1 can now offer only registered
+  purposes by reading them from the artifact, instead of copying the constants and hoping the
+  copy stays current, and without linking any cryptography to do it.
+- **`signing::purpose::ALL`**, the same list natively. The constants and `ALL` are generated
+  from one declaration, so a constant cannot exist without being in the list the component
+  exports.
+- **Three component tests** in `tests/component_execution.rs`: the component's list equals
+  `ALL` exactly, and the same comparison is shown to reject a missing, extra, renamed and
+  altered entry; every listed purpose is non-empty, within 255 bytes, named and distinct; and a
+  signature under each listed purpose verifies under that purpose and under no other listed
+  purpose nor the empty context.
+
+**The component's bytes change**, from the new export and the version bump. `component.sha256`
+is re-recorded from CI's canonical build.
+
 ## [0.7.3] - 2026-09-30
 
 Documentation and hygiene only. No change to the API, the WIT world, the wire formats or

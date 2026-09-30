@@ -87,56 +87,73 @@ pub const MIN_ENTROPY_BYTES: usize = 32;
 /// [`Identity::sign_with_purpose`] enforces that bound for any caller-supplied
 /// purpose, not just these constants.
 pub mod purpose {
-    /// Presenting a PLP projection + proof + attach signature to a verifier
-    /// (the A-1 "present to a verifier" flow).
-    pub const PLP_PRESENT_V1: &[u8] = b"aethel-core/plp-present/v1";
-    /// Signing over an issued or presented credential (`credential` module).
-    pub const CREDENTIAL_V1: &[u8] = b"aethel-core/credential/v1";
-    /// Signing adjacent to a SAAP selective-disclosure presentation.
-    pub const SAAP_V1: &[u8] = b"aethel-core/saap/v1";
+    /// Define every purpose constant and the list of all of them from one
+    /// declaration, so a constant cannot exist without being in [`ALL`]. The
+    /// component exports that list (`registered-purposes`), which is how a
+    /// binding above L1 reads the registry instead of mirroring it.
+    macro_rules! registry {
+        ($( $(#[$meta:meta])* $name:ident = $bytes:literal; )+) => {
+            $( $(#[$meta])* pub const $name: &[u8] = $bytes; )+
 
-    /// Reserved for aethel-vault: a signed spend intent / pre-authorization.
-    /// A spend key must never sign under this purpose's ctx for anything
-    /// other than an actual spend intent — see this module's top-level doc.
-    pub const VAULT_SPEND_INTENT_V1: &[u8] = b"aethel-vault/spend-intent/v1";
-    /// Reserved for aethel-vault: a signed settlement receipt (V-5).
-    pub const VAULT_SETTLEMENT_RECEIPT_V1: &[u8] = b"aethel-vault/settlement-receipt/v1";
-    /// Reserved for aethel-vault: binding a spend-rail address to an
-    /// identity (A-2's `did:pkh:eip155` pairing).
-    pub const VAULT_WALLET_BIND_V1: &[u8] = b"aethel-vault/wallet-bind/v1";
-    /// Reserved for aethel-vault: a human-in-the-loop approval signature
-    /// (V-4's `hitl_above` gate).
-    pub const VAULT_HITL_APPROVAL_V1: &[u8] = b"aethel-vault/hitl-approval/v1";
+            /// Every registered purpose as `(constant name, bytes)`, in
+            /// declaration order. Generated from the same declaration as the
+            /// constants, so it cannot fall behind them.
+            pub const ALL: &[(&str, &[u8])] = &[ $( (stringify!($name), $name), )+ ];
+        };
+    }
 
-    /// Reserved for aethel-auth: a response to a login challenge. The signed
-    /// message binds the challenge's audience, so a signature produced for
-    /// one relying party does not authenticate at another.
-    pub const AUTH_LOGIN_V1: &[u8] = b"aethel-auth/login/v1";
-    /// Reserved for aethel-auth: re-proving control for a sensitive action.
-    /// The signed message covers a fresh challenge *and* a digest of the
-    /// action, so a step-up for one action cannot be replayed for another.
-    pub const AUTH_STEP_UP_V1: &[u8] = b"aethel-auth/step-up/v1";
-    /// Reserved for aethel-auth: proof of possession at registration, bound
-    /// to an invite. Distinct from [`AUTH_LOGIN_V1`] because login proves
-    /// control of a key the directory already knows, and enrolment is how it
-    /// comes to know it.
-    pub const AUTH_ENROL_V1: &[u8] = b"aethel-auth/enrol/v1";
-    /// Reserved for aethel-auth: the *old* identity naming its successor.
-    ///
-    /// A succession record is a permanent public link between two identities:
-    /// anyone holding it can correlate every past context of the old identity
-    /// with every future context of the new one. It is for *service*
-    /// identities, where continuity is the point and unlinkability is not. It
-    /// is not for a person.
-    pub const AUTH_SUCCESSION_V1: &[u8] = b"aethel-auth/succession/v1";
-    /// Reserved for aethel-auth: an identity revoking itself, or an authority
-    /// revoking it. The statement only; enforcement is the relying party's
-    /// own directory.
-    pub const AUTH_REVOCATION_V1: &[u8] = b"aethel-auth/revocation/v1";
-    /// Reserved for aethel-auth: a principal granting a delegate scoped,
-    /// time-bounded authority to act. The generalisation of aethel-vault's
-    /// `SpendPolicy` beyond money.
-    pub const AUTH_DELEGATION_V1: &[u8] = b"aethel-auth/delegation/v1";
+    registry! {
+        /// Presenting a PLP projection + proof + attach signature to a verifier
+        /// (the A-1 "present to a verifier" flow).
+        PLP_PRESENT_V1 = b"aethel-core/plp-present/v1";
+        /// Signing over an issued or presented credential (`credential` module).
+        CREDENTIAL_V1 = b"aethel-core/credential/v1";
+        /// Signing adjacent to a SAAP selective-disclosure presentation.
+        SAAP_V1 = b"aethel-core/saap/v1";
+
+        /// Reserved for aethel-vault: a signed spend intent / pre-authorization.
+        /// A spend key must never sign under this purpose's ctx for anything
+        /// other than an actual spend intent — see this module's top-level doc.
+        VAULT_SPEND_INTENT_V1 = b"aethel-vault/spend-intent/v1";
+        /// Reserved for aethel-vault: a signed settlement receipt (V-5).
+        VAULT_SETTLEMENT_RECEIPT_V1 = b"aethel-vault/settlement-receipt/v1";
+        /// Reserved for aethel-vault: binding a spend-rail address to an
+        /// identity (A-2's `did:pkh:eip155` pairing).
+        VAULT_WALLET_BIND_V1 = b"aethel-vault/wallet-bind/v1";
+        /// Reserved for aethel-vault: a human-in-the-loop approval signature
+        /// (V-4's `hitl_above` gate).
+        VAULT_HITL_APPROVAL_V1 = b"aethel-vault/hitl-approval/v1";
+
+        /// Reserved for aethel-auth: a response to a login challenge. The signed
+        /// message binds the challenge's audience, so a signature produced for
+        /// one relying party does not authenticate at another.
+        AUTH_LOGIN_V1 = b"aethel-auth/login/v1";
+        /// Reserved for aethel-auth: re-proving control for a sensitive action.
+        /// The signed message covers a fresh challenge *and* a digest of the
+        /// action, so a step-up for one action cannot be replayed for another.
+        AUTH_STEP_UP_V1 = b"aethel-auth/step-up/v1";
+        /// Reserved for aethel-auth: proof of possession at registration, bound
+        /// to an invite. Distinct from [`AUTH_LOGIN_V1`] because login proves
+        /// control of a key the directory already knows, and enrolment is how it
+        /// comes to know it.
+        AUTH_ENROL_V1 = b"aethel-auth/enrol/v1";
+        /// Reserved for aethel-auth: the *old* identity naming its successor.
+        ///
+        /// A succession record is a permanent public link between two identities:
+        /// anyone holding it can correlate every past context of the old identity
+        /// with every future context of the new one. It is for *service*
+        /// identities, where continuity is the point and unlinkability is not. It
+        /// is not for a person.
+        AUTH_SUCCESSION_V1 = b"aethel-auth/succession/v1";
+        /// Reserved for aethel-auth: an identity revoking itself, or an authority
+        /// revoking it. The statement only; enforcement is the relying party's
+        /// own directory.
+        AUTH_REVOCATION_V1 = b"aethel-auth/revocation/v1";
+        /// Reserved for aethel-auth: a principal granting a delegate scoped,
+        /// time-bounded authority to act. The generalisation of aethel-vault's
+        /// `SpendPolicy` beyond money.
+        AUTH_DELEGATION_V1 = b"aethel-auth/delegation/v1";
+    }
 
     #[cfg(test)]
     mod tests {
@@ -144,26 +161,31 @@ pub mod purpose {
         use sha3::digest::{ExtendableOutput, Update, XofReader};
         use sha3::Shake256;
 
+        /// The registered names, written out. The list is generated from the
+        /// declaration, so this is not the thing that keeps `ALL` complete; it
+        /// is what turns an added, renamed or removed purpose into a reviewed
+        /// diff here rather than a silent change to what the component exports.
+        const EXPECTED_NAMES: &[&str] = &[
+            "PLP_PRESENT_V1",
+            "CREDENTIAL_V1",
+            "SAAP_V1",
+            "VAULT_SPEND_INTENT_V1",
+            "VAULT_SETTLEMENT_RECEIPT_V1",
+            "VAULT_WALLET_BIND_V1",
+            "VAULT_HITL_APPROVAL_V1",
+            "AUTH_LOGIN_V1",
+            "AUTH_STEP_UP_V1",
+            "AUTH_ENROL_V1",
+            "AUTH_SUCCESSION_V1",
+            "AUTH_REVOCATION_V1",
+            "AUTH_DELEGATION_V1",
+        ];
+
         /// Hash the exact registry, byte-length-prefixed so no concatenation
         /// ambiguity is possible between neighbouring constants.
         fn registry_digest() -> [u8; 32] {
-            let all: &[&[u8]] = &[
-                PLP_PRESENT_V1,
-                CREDENTIAL_V1,
-                SAAP_V1,
-                VAULT_SPEND_INTENT_V1,
-                VAULT_SETTLEMENT_RECEIPT_V1,
-                VAULT_WALLET_BIND_V1,
-                VAULT_HITL_APPROVAL_V1,
-                AUTH_LOGIN_V1,
-                AUTH_STEP_UP_V1,
-                AUTH_ENROL_V1,
-                AUTH_SUCCESSION_V1,
-                AUTH_REVOCATION_V1,
-                AUTH_DELEGATION_V1,
-            ];
             let mut hasher = Shake256::default();
-            for purpose in all {
+            for (_, purpose) in ALL {
                 hasher.update(&(purpose.len() as u32).to_le_bytes());
                 hasher.update(purpose);
             }
@@ -171,6 +193,31 @@ pub mod purpose {
             let mut digest = [0u8; 32];
             xof.read(&mut digest);
             digest
+        }
+
+        /// `ALL` is the registry, and it names exactly the purposes expected:
+        /// a constant added to the declaration shows up here as a failure until
+        /// this list is updated in the same reviewed change.
+        #[test]
+        fn all_lists_exactly_the_expected_purposes() {
+            assert_eq!(ALL.len(), EXPECTED_NAMES.len(), "the registry changed size");
+            for ((name, _), expected) in ALL.iter().zip(EXPECTED_NAMES) {
+                assert_eq!(name, expected);
+            }
+        }
+
+        /// `ALL` carries each constant's own bytes, not a copy that could drift.
+        #[test]
+        fn all_carries_the_constants_bytes() {
+            let by_hand: &[(&str, &[u8])] = &[
+                ("PLP_PRESENT_V1", PLP_PRESENT_V1),
+                ("AUTH_LOGIN_V1", AUTH_LOGIN_V1),
+                ("AUTH_DELEGATION_V1", AUTH_DELEGATION_V1),
+            ];
+            for (name, bytes) in by_hand {
+                let found = ALL.iter().find(|(n, _)| n == name).expect("listed");
+                assert_eq!(found.1, *bytes, "{name}");
+            }
         }
 
         /// Pins the registry against itself deterministically (two
@@ -188,31 +235,14 @@ pub mod purpose {
                 registry_digest(),
                 "the registry hash must be deterministic across calls"
             );
-
-            let all: &[(&str, &[u8])] = &[
-                ("PLP_PRESENT_V1", PLP_PRESENT_V1),
-                ("CREDENTIAL_V1", CREDENTIAL_V1),
-                ("SAAP_V1", SAAP_V1),
-                ("VAULT_SPEND_INTENT_V1", VAULT_SPEND_INTENT_V1),
-                ("VAULT_SETTLEMENT_RECEIPT_V1", VAULT_SETTLEMENT_RECEIPT_V1),
-                ("VAULT_WALLET_BIND_V1", VAULT_WALLET_BIND_V1),
-                ("VAULT_HITL_APPROVAL_V1", VAULT_HITL_APPROVAL_V1),
-                ("AUTH_LOGIN_V1", AUTH_LOGIN_V1),
-                ("AUTH_STEP_UP_V1", AUTH_STEP_UP_V1),
-                ("AUTH_ENROL_V1", AUTH_ENROL_V1),
-                ("AUTH_SUCCESSION_V1", AUTH_SUCCESSION_V1),
-                ("AUTH_REVOCATION_V1", AUTH_REVOCATION_V1),
-                ("AUTH_DELEGATION_V1", AUTH_DELEGATION_V1),
-            ];
-            for (name, purpose) in all {
+            for (name, purpose) in ALL {
                 assert!(!purpose.is_empty(), "{name} must not be empty");
             }
-            for i in 0..all.len() {
-                for j in (i + 1)..all.len() {
+            for (i, (name_a, bytes_a)) in ALL.iter().enumerate() {
+                for (name_b, bytes_b) in &ALL[i + 1..] {
                     assert_ne!(
-                        all[i].1, all[j].1,
-                        "{} and {} collide on the same context bytes",
-                        all[i].0, all[j].0
+                        bytes_a, bytes_b,
+                        "{name_a} and {name_b} collide on the same context bytes"
                     );
                 }
             }
@@ -223,22 +253,7 @@ pub mod purpose {
         /// caller-supplied purposes too.
         #[test]
         fn every_purpose_fits_the_context_length_limit() {
-            let all: &[&[u8]] = &[
-                PLP_PRESENT_V1,
-                CREDENTIAL_V1,
-                SAAP_V1,
-                VAULT_SPEND_INTENT_V1,
-                VAULT_SETTLEMENT_RECEIPT_V1,
-                VAULT_WALLET_BIND_V1,
-                VAULT_HITL_APPROVAL_V1,
-                AUTH_LOGIN_V1,
-                AUTH_STEP_UP_V1,
-                AUTH_ENROL_V1,
-                AUTH_SUCCESSION_V1,
-                AUTH_REVOCATION_V1,
-                AUTH_DELEGATION_V1,
-            ];
-            for purpose in all {
+            for (_, purpose) in ALL {
                 assert!(purpose.len() <= pqc_sig::MAX_CONTEXT_LEN);
             }
         }
