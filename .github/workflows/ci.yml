@@ -15,6 +15,26 @@ jobs:
       - run: cargo build --all-targets
       - run: cargo test
 
+  # Zero warnings, kept at zero. Default features plus `component` (the WIT
+  # world's adapter, which ships). `puf` is research code outside the charter
+  # (R-04 in docs/DEVIATIONS.md) and is left out on purpose.
+  lint:
+    name: clippy + rustdoc (-D warnings)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: cargo clippy --lib --features component -- -D warnings
+        run: cargo clippy --lib --locked --features component -- -D warnings
+      - name: cargo doc --no-deps (-D warnings)
+        run: cargo doc --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
   # Declared rust-version in Cargo.toml, pinned and actually built rather than only stated.
   # 1.75 was the original declared MSRV but was never tested and does not build: the locked
   # zeroize_derive already requires the `edition2024` Cargo feature, which needs rustc 1.85+.
