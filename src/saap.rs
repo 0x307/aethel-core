@@ -1,8 +1,8 @@
 //! # SAAP Selective Attribute Verification Engine
 //!
 //! This module implements the **Selective Attribute Attestation Protocol (SAAP)**
-//! prove/verify engine for Aethel-ID. This is pre-release code with no formal
-//! security audit (see the crate README's security notice) — not "production-grade."
+//! prove/verify engine for Aethel-ID. This code has had no independent security
+//! audit (see the README's audit status), and its pathway is retired (D-13).
 //! It also covers a narrower surface than the full SAAP design: `saap_prove`
 //! and `verify_saap_proof` operate over an already-parsed credential; issuing
 //! one in the first place (BDLOP commitment issuance, an issuer signature) is

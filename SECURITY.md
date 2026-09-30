@@ -50,7 +50,7 @@ identities rather than attempting to carry them forward.
 
 ### The credential commitment does not provide the hiding property claimed for it
 
-**Open. Affects every release from 0.4.0 through 0.7.0.** Tracked as D-01 in
+**Open. Affects every release from 0.4.0 through 0.7.3.** Tracked as D-01 in
 [`docs/DEVIATIONS.md`](docs/DEVIATIONS.md).
 
 `AETHEL-SPEC-001` §7 specifies the credential commitment matrix with a randomness
@@ -83,8 +83,8 @@ bound fails the build rather than silently invalidating the argument.
 
 ### What to do with this today
 
-`aethel-core` is `0.x` and the README already says not to use it in production
-without a formal audit. That guidance stands and these findings sharpen it.
+`aethel-core` is `0.x` and has not been independently audited; the README states its
+audit status. These findings say where that matters most today.
 
 The `plp` identity path now runs at its specified module rank with a rejection
 bound derived from its challenge space. The credential path should still be treated
