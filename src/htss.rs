@@ -2,7 +2,7 @@
 //!
 //! ## What this module actually does
 //!
-//! [`SecretSharer`] is local, in-process Shamir 3-of-5 threshold secret sharing
+//! [`SecretSharer`](crate::htss::SecretSharer) is local, in-process Shamir 3-of-5 threshold secret sharing
 //! over a single `u64` scalar (`split_secret`/`reconstruct_secret`): a degree-2
 //! polynomial over `F_q`, evaluated at 5 points to produce shares, reconstructed
 //! from any 3 via Lagrange interpolation. That's it — there is no network
@@ -10,7 +10,7 @@
 //! anything, which is also why this can run fully offline (see the crate
 //! README's "Offline generation" claim, CI-proven by network denial).
 //!
-//! [`HypercubeNetwork`]/[`HypercubePacket`]/[`NodeAddress`] are real, tested
+//! [`HypercubeNetwork`](crate::htss::HypercubeNetwork)/[`HypercubePacket`](crate::htss::HypercubePacket)/[`NodeAddress`](crate::htss::NodeAddress) are real, tested
 //! code (not dead code — exercised by `tests/plp_tests.rs`), but what they
 //! implement is a **local simulation** of dimension-disjoint path assignment
 //! across a modeled Q_5 graph (32 nodes, 80 edges): `route_payload_shares`
@@ -47,11 +47,11 @@
 //!
 //! ## Key Structures
 //!
-//! - [`NodeAddress`] — 5-bit hypercube node coordinate (a modeled graph vertex)
-//! - [`ZkProofSegment`] — one Shamir share plus a path authentication tag
-//! - [`HypercubePacket`] — simulated in-process routing state for one segment
-//! - [`SecretSharer`] — Shamir 3-of-5 split and Lagrange reconstruction (the real work)
-//! - [`HypercubeNetwork`] — the modeled 32-node Q_5 graph and its local routing simulation
+//! - [`NodeAddress`](crate::htss::NodeAddress) — 5-bit hypercube node coordinate (a modeled graph vertex)
+//! - [`ZkProofSegment`](crate::htss::ZkProofSegment) — one Shamir share plus a path authentication tag
+//! - [`HypercubePacket`](crate::htss::HypercubePacket) — simulated in-process routing state for one segment
+//! - [`SecretSharer`](crate::htss::SecretSharer) — Shamir 3-of-5 split and Lagrange reconstruction (the real work)
+//! - [`HypercubeNetwork`](crate::htss::HypercubeNetwork) — the modeled 32-node Q_5 graph and its local routing simulation
 //!
 //! ## Parameters
 //!
@@ -136,11 +136,17 @@ pub struct ZkProofSegment {
 /// A routed packet carrying one proof segment through the hypercube.
 #[derive(Clone, Debug)]
 pub struct HypercubePacket {
+    /// Node the packet started from.
     pub source: NodeAddress,
+    /// Node it has to reach.
     pub destination: NodeAddress,
+    /// Node holding it now.
     pub current_node: NodeAddress,
+    /// Dimensions to cross, in order. Each hop flips that bit of the address.
     pub dimension_route: Vec<usize>,
+    /// Position in `dimension_route` of the next hop.
     pub route_index: usize,
+    /// The proof segment being carried.
     pub payload: ZkProofSegment,
 }
 
@@ -173,7 +179,7 @@ pub struct HtssShare {
     pub value: Vec<u8>,
     /// Merkle inclusion path for `(index, value)` against the sharing's root.
     /// Flattened 32-byte hashes, concatenated: `32 * merkle_proof_len(index)`
-    /// bytes. See [`build_share_tree`] for the fixed tree shape this proves
+    /// bytes. See `build_share_tree` for the fixed tree shape this proves
     /// membership in.
     pub path: Vec<u8>,
 }
@@ -409,7 +415,7 @@ impl SecretSharer {
     /// **L1-internal**: `secret` and every derived intermediate are zeroized
     /// before returning. Only the shares leave.
     ///
-    /// Refuses a secret larger than [`MAX_SECRET_BYTES`] with
+    /// Refuses a secret larger than `MAX_SECRET_BYTES` with
     /// `InvalidInputLength`.
     pub fn split_key_material(
         secret: &[u8],
@@ -796,7 +802,7 @@ impl SecretSharer {
     ///
     /// # The threshold property does not hold here
     ///
-    /// The non-constant coefficients come from [`Self::derive_coeff`], which is
+    /// The non-constant coefficients come from `derive_coeff`, which is
     /// not a cryptographic derivation and is a pure function of the
     /// caller-supplied `seed`. Anyone who knows or brute-forces `seed` (64 bits)
     /// recovers the secret from a **single** share. This also shares only
@@ -870,7 +876,9 @@ impl SecretSharer {
     /// Returns `InvalidShareSet` if the points are not interpolable. For
     /// distinct indices in `1..q` they always are, so this is a defence in
     /// depth rather than a case a correct caller meets. See
-    /// [`Self::mod_inverse`] for why it is reported rather than absorbed.
+    /// `mod_inverse` for why it is reported rather than absorbed.
+    // Left as index loops so the compiled component is byte-identical.
+    #[allow(clippy::needless_range_loop)]
     pub fn reconstruct_secret(shares: &[(u8, u64)]) -> Result<u64, IdentityError> {
         let q = MODULUS_Q as i64;
         let mut secret = 0i64;
@@ -935,6 +943,7 @@ impl SecretSharer {
 
 /// 32-node Q_5 hypercube network with dimension-disjoint routing.
 pub struct HypercubeNetwork {
+    /// Every node address in the hypercube.
     pub nodes: Vec<NodeAddress>,
 }
 
@@ -1062,11 +1071,11 @@ mod tests {
             core::array::from_fn(|i| merkle_leaf_hash((i + 1) as u8, &[i as u8; 4]));
         let (root, paths) = build_share_tree(&leaves);
 
-        for i in 0..TOTAL_SHARES {
+        for (i, path) in paths.iter().enumerate().take(TOTAL_SHARES) {
             let index = (i + 1) as u8;
             let value = [i as u8; 4];
             assert!(
-                verify_share_in_tree(index, &value, &paths[i], &root),
+                verify_share_in_tree(index, &value, path, &root),
                 "index {index}'s own path did not verify against the tree it came from"
             );
         }
@@ -1080,11 +1089,11 @@ mod tests {
     fn proof_length_matches_what_the_tree_builder_produces() {
         let leaves = [[0u8; 32]; TOTAL_SHARES];
         let (_, paths) = build_share_tree(&leaves);
-        for i in 0..TOTAL_SHARES {
+        for (i, path) in paths.iter().enumerate().take(TOTAL_SHARES) {
             let index = (i + 1) as u8;
             let expected = merkle_proof_len(index).expect("1..=5 is always Some") * 32;
             assert_eq!(
-                paths[i].len(),
+                path.len(),
                 expected,
                 "merkle_proof_len({index}) disagrees with build_share_tree's own output"
             );
@@ -1142,6 +1151,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the deprecated split_secret on purpose
     fn test_htss_split_reconstruct() {
         let secret: u64 = 5234123;
         let seed: u64 = 0xdeadbeef_cafebabe;
@@ -1154,6 +1164,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // routing takes any share set; split_secret is the short way to get one
     fn test_hypercube_routing() {
         let network = HypercubeNetwork::new();
         let src = NodeAddress(0b00000);

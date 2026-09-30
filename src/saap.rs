@@ -29,6 +29,16 @@
 //!
 //! - Challenge hash: `"AETHEL_SAAP_CHALLENGE_V1"`
 
+// The single-response prove and verify pathway below is retired (D-13 in
+// docs/DEVIATIONS.md, 0X3-110): nothing outside this file's tests calls it.
+// It is marked rather than deleted because `SaapProof` and
+// `SaapValidationError` are public, so removing it belongs in a breaking
+// release.
+#![allow(dead_code)]
+// Ring arithmetic indexes several coefficient arrays in step, so an index
+// loop is the clear form here (as in `component.rs`).
+#![allow(clippy::needless_range_loop)]
+
 use core::sync::atomic::{compiler_fence, Ordering};
 use sha3::{Shake256, digest::{Update, ExtendableOutput, XofReader}};
 use zeroize::Zeroize;
@@ -118,6 +128,7 @@ pub struct SaapProof {
 }
 
 impl SaapProof {
+    /// An all-zero proof, used as an output buffer.
     pub const fn zero() -> Self {
         Self {
             context_tag: [0u8; 32],
@@ -134,8 +145,11 @@ impl SaapProof {
 /// Typed verification failure reasons.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum SaapValidationError {
+    /// A response coefficient is at or above the rejection bound.
     NormBoundViolation,
+    /// The recomputed Fiat-Shamir challenge differs from the proof's.
     ChallengeMismatch,
+    /// A disclosed attribute does not match its commitment.
     InvalidAttributeCommitment,
 }
 
@@ -728,7 +742,7 @@ mod tests {
         let q = PARAM_Q as i64;
         for x in [-q - 1, -q, -1, 0, 1, q - 1, q, q + 1] {
             let r = mod_q(x);
-            assert!(r >= -(PARAM_Q / 2) && r <= PARAM_Q / 2,
+            assert!((-(PARAM_Q / 2)..=PARAM_Q / 2).contains(&r),
                 "mod_q({}) = {} out of range", x, r);
         }
     }

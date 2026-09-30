@@ -61,7 +61,7 @@
 //!
 //! exactly, and the challenge can be recomputed. `e_τ` is not stored anywhere:
 //! it is a deterministic function of the projection randomness and τ, so the
-//! prover re-derives it via [`plp::derive_error_tau`].
+//! prover re-derives it via `plp::derive_error_tau`.
 //!
 //! # Message masks are not small, and that is deliberate
 //!
@@ -89,6 +89,10 @@
 //! establish is a relaxed opening, which is what BDLOP binding is proved under and
 //! is adequate for the two relations that are built. It expresses no range. See
 //! `docs/PREDICATE-PROOFS.md`.
+
+// Ring arithmetic indexes several coefficient arrays in step, so an index
+// loop is the clear form here (as in `component.rs`).
+#![allow(clippy::needless_range_loop)]
 
 use alloc::vec::Vec;
 
@@ -633,6 +637,7 @@ fn infinity_norm(p: &Polynomial) -> i32 {
 /// `projection_randomness` is the same `rho` that produced the projection, and
 /// is needed to re-derive `e_τ` as a witness. `presentation_randomness` seeds
 /// the proof masks and must be fresh per presentation.
+#[allow(clippy::too_many_arguments)] // one argument per input the relations take
 pub fn prove(
     params: &IssuerParams,
     blinded: &BlindedCredential,

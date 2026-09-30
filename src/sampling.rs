@@ -11,26 +11,26 @@
 //!
 //! 2. **M-LWE Centered Binomial Distribution Sampler (CBD η=2)**: Constant-time
 //!    Centered Binomial Distribution polynomial sampler for Module-LWE ring
-//!    R_q = Z_q[X]/(X^256 + 1), including infinity norm checking for rejection
+//!    `R_q = Z_q[X]/(X^256 + 1)`, including infinity norm checking for rejection
 //!    sampling.
 //!
 //! ## Key Structures
 //!
-//! - [`Polynomial`] — Cache-line-aligned ring element (64-byte aligned)
-//! - [`VectorK`] — k-dimensional module vector
-//! - [`PlpProof`] — Output proof structure with response vector and iteration counter
-//! - [`RejectionError`] — Error type for exhausted iteration ceiling
-//! - [`PolyRq`] — Ring polynomial for the CBD sampler; `Copy`, so zeroization
+//! - [`Polynomial`](crate::sampling::Polynomial) — Cache-line-aligned ring element (64-byte aligned)
+//! - [`VectorK`](crate::sampling::VectorK) — k-dimensional module vector
+//! - [`PlpProof`](crate::sampling::PlpProof) — Output proof structure with response vector and iteration counter
+//! - [`RejectionError`](crate::sampling::RejectionError) — Error type for exhausted iteration ceiling
+//! - [`PolyRq`](crate::sampling::PolyRq) — Ring polynomial for the CBD sampler; `Copy`, so zeroization
 //!   is on-demand via `Zeroize::zeroize()`, not automatic on drop
 //!
 //! ## Key Functions
 //!
-//! - [`enclave_explicit_zeroize`] — Volatile memory zeroization with compiler barrier
-//! - [`ct_check_norm_bound`] — Constant-time infinity norm bound check
-//! - [`ct_cond_copy`] — Constant-time conditional byte copy (CMOV equivalent)
-//! - [`enclave_plp_prove_fixed_time`] — Fixed 16-iteration padded proof generation
-//! - [`poly_cbd_eta2`] — CBD η=2 polynomial sampler
-//! - [`poly_check_infinity_norm`] — Constant-time infinity norm check
+//! - [`enclave_explicit_zeroize`](crate::sampling::enclave_explicit_zeroize) — Volatile memory zeroization with compiler barrier
+//! - [`ct_check_norm_bound`](crate::sampling::ct_check_norm_bound) — Constant-time infinity norm bound check
+//! - [`ct_cond_copy`](crate::sampling::ct_cond_copy) — Constant-time conditional byte copy (CMOV equivalent)
+//! - [`enclave_plp_prove_fixed_time`](crate::sampling::enclave_plp_prove_fixed_time) — Fixed 16-iteration padded proof generation
+//! - [`poly_cbd_eta2`](crate::sampling::poly_cbd_eta2) — CBD η=2 polynomial sampler
+//! - [`poly_check_infinity_norm`](crate::sampling::poly_check_infinity_norm) — Constant-time infinity norm check
 //!
 //! ## Parameters
 //!
@@ -38,27 +38,40 @@
 //! - PARAM_GAMMA1=131_072, PARAM_BETA=78
 //! - FIXED_ITERATION_CEILING=16
 
+// Constant-time code: its index loops are left exactly as written, since an
+// iterator rewrite can change the generated code this module relies on.
+#![allow(clippy::needless_range_loop)]
+
 // ── Enclave Constant-Time Rejection Sampling (aethel-enclave-plp) ────────────
 
 use core::sync::atomic::{compiler_fence, Ordering};
 use sha3::{Shake256, digest::{Update, ExtendableOutput, XofReader}};
 
+/// Ring degree `N`.
 pub const RING_N: usize = 256;
+/// Module rank `k`.
 pub const MODULE_K: usize = 4;
+/// Prime modulus `q`.
 pub const PARAM_Q: i32 = 8_380_417;
+/// Masking bound `γ₁`.
 pub const PARAM_GAMMA1: i32 = 131_072;
+/// Rejection margin `β`.
 pub const PARAM_BETA: i32 = 78;
+/// `γ₁ − β`: a response is released only if every coefficient is below this.
 pub const REJECTION_BOUND: i32 = PARAM_GAMMA1 - PARAM_BETA;
+/// Iterations the fixed-time prover always runs, whichever one is accepted.
 pub const FIXED_ITERATION_CEILING: usize = 16;
 
 /// Cache-line-aligned polynomial in R_q.
 #[derive(Copy, Clone)]
 #[repr(align(64))]
 pub struct Polynomial {
+    /// Coefficients, lowest degree first.
     pub coeffs: [i32; RING_N],
 }
 
 impl Polynomial {
+    /// The zero polynomial.
     pub const fn zero() -> Self {
         Self { coeffs: [0i32; RING_N] }
     }
@@ -68,10 +81,12 @@ impl Polynomial {
 #[derive(Copy, Clone)]
 #[repr(align(64))]
 pub struct VectorK {
+    /// The `k` polynomials.
     pub vec: [Polynomial; MODULE_K],
 }
 
 impl VectorK {
+    /// The zero vector.
     pub const fn zero() -> Self {
         Self { vec: [Polynomial { coeffs: [0i32; RING_N] }; MODULE_K] }
     }
@@ -81,11 +96,14 @@ impl VectorK {
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct PlpProof {
+    /// The response vector `z`.
     pub z: VectorK,
+    /// The iteration whose response was accepted.
     pub iteration_counter: u32,
 }
 
 impl PlpProof {
+    /// An all-zero proof, used as the output buffer before any iteration runs.
     pub const fn zero() -> Self {
         Self {
             z: VectorK { vec: [Polynomial { coeffs: [0; RING_N] }; MODULE_K] },
@@ -166,8 +184,8 @@ pub fn ct_check_norm_bound(z: &VectorK, bound: i32) -> u32 {
 
 /// Constant-time conditional byte copy (CMOV equivalent).
 ///
-/// If mask == 0xFFFFFFFF: dst[i] = src[i]
-/// If mask == 0x00000000: dst[i] unchanged
+/// If mask == 0xFFFFFFFF: `dst[i] = src[i]`
+/// If mask == 0x00000000: `dst[i]` unchanged
 #[inline(always)]
 pub fn ct_cond_copy(dst: &mut [u8], src: &[u8], mask: u32) {
     let mask_u8 = mask as u8;
@@ -247,6 +265,7 @@ pub fn enclave_plp_prove_fixed_time(
 /// Error type for exhausted iteration ceiling.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum RejectionError {
+    /// Every iteration was rejected, so no response is released.
     AllIterationsRejected,
 }
 
@@ -435,7 +454,7 @@ pub const N_DEGREE: usize = 256;
 /// Prime modulus for the CBD sampler.
 pub const Q_MODULUS: i32 = 8_380_417;
 
-/// Ring polynomial R_q = Z_q[X]/(X^N + 1).
+/// Ring polynomial `R_q = Z_q[X]/(X^N + 1)`.
 ///
 /// P3-08 correction: despite this type's original doc claim, it cannot be
 /// "zeroize-on-drop" — it derives `Copy`, and `Copy` and `Drop` are mutually
@@ -446,6 +465,7 @@ pub const Q_MODULUS: i32 = 8_380_417;
 /// documented now so it's correct and available the moment something uses it.
 #[derive(Copy, Clone)]
 pub struct PolyRq {
+    /// Coefficients, lowest degree first.
     pub coeffs: [i32; N_DEGREE],
 }
 
@@ -490,7 +510,7 @@ pub fn poly_cbd_eta2(seed_bytes: &[u8]) -> PolyRq {
         let b1 = ((byte >> 3) & 0x01) as i32;
         let coeff = (a0 + a1) - (b0 + b1);
         // Store as centered representative mod Q
-        poly.coeffs[i] = ((coeff + Q_MODULUS) % Q_MODULUS) as i32;
+        poly.coeffs[i] = (coeff + Q_MODULUS) % Q_MODULUS;
     }
     poly
 }
@@ -551,7 +571,7 @@ mod tests {
         for &c in poly.coeffs.iter() {
             // Centered representative should be in {-2,-1,0,1,2} mod Q
             let centered = if c > Q_MODULUS / 2 { c - Q_MODULUS } else { c };
-            assert!(centered >= -2 && centered <= 2, "CBD coefficient out of range: {}", centered);
+            assert!((-2..=2).contains(&centered), "CBD coefficient out of range: {}", centered);
         }
     }
 
@@ -577,7 +597,7 @@ mod tests {
             for n in 0..RING_N {
                 let c = y.vec[k].coeffs[n];
                 assert!(
-                    c >= -PARAM_GAMMA1 && c <= PARAM_GAMMA1,
+                    (-PARAM_GAMMA1..=PARAM_GAMMA1).contains(&c),
                     "masking coefficient {} out of range [-γ₁, γ₁]", c
                 );
             }

@@ -290,7 +290,7 @@ impl CryptoRng for ShakeRng {}
 /// together from one entropy input.
 ///
 /// Both secrets stay in this struct. `public_key` is the only thing that leaves
-/// it, and the PLP seed is reachable only through [`Identity::plp_seed`], which
+/// it, and the PLP seed is reachable only through `Identity::plp_seed`, which
 /// is `pub(crate)` so the component adapter can hand it to `plp` without it
 /// crossing the WIT boundary.
 pub struct Identity {
@@ -389,7 +389,7 @@ impl Identity {
     ///
     /// This is the native `signing::Identity` → PLP bridge the gap analysis
     /// names: previously the only way to reach a PLP projection from an
-    /// `Identity` was through the crate-private [`Self::plp_seed`], reachable
+    /// `Identity` was through the crate-private `plp_seed`, reachable
     /// only from `component.rs`. This method mirrors the WIT
     /// `master-identity.project-at-context` resource method so the native
     /// and component paths share one derivation
@@ -435,6 +435,7 @@ impl Identity {
     ///
     /// Deliberately `pub(crate)`: this is private key material, and the whole
     /// point of holding it here is that it has no route across the WIT boundary.
+    #[cfg(any(feature = "component", test))]
     pub(crate) fn plp_seed(&self) -> &[u8; 32] {
         &self.plp_seed
     }

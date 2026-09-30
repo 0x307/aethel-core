@@ -18,9 +18,9 @@
 //!   the storage type for `MasterIdentity`'s private `secret_key` field (and
 //!   is also used throughout `plp` for public projection/proof data, hence
 //!   the crate-wide rule below rather than a narrower one).
-//! `saap::Polynomial` / `saap::VectorK` carry the same guarantee, asserted in
-//! `src/saap.rs` instead: that module became crate-private in P3-10 / 0X3-78,
-//! so an integration test can no longer name its types.
+//!   `saap::Polynomial` / `saap::VectorK` carry the same guarantee, asserted in
+//!   `src/saap.rs` instead: that module became crate-private in P3-10 / 0X3-78,
+//!   so an integration test can no longer name its types.
 //! - [`aethel_core::sampling::Polynomial`] / [`aethel_core::sampling::VectorK`] —
 //!   `VectorK` is the type `enclave_plp_prove_fixed_time`'s `s` parameter
 //!   uses to carry a raw secret. Neither derived `Debug` before this pass
