@@ -904,6 +904,124 @@ fn purpose_separation_holds_through_the_component() {
     );
 }
 
+/// Whether the registry the component exports is exactly the native one: the
+/// same names and the same bytes, in the same order. A function rather than an
+/// inline `assert_eq!` so the control below can show it says no.
+fn registries_agree(component: &[(String, Vec<u8>)], native: &[(&str, &[u8])]) -> bool {
+    component.len() == native.len()
+        && component
+            .iter()
+            .zip(native)
+            .all(|((cn, cb), (nn, nb))| cn == nn && cb.as_slice() == *nb)
+}
+
+fn registered(
+    store: &mut Store<()>,
+    identity: &exports::aethel::core::identity::Guest,
+) -> Vec<(String, Vec<u8>)> {
+    identity
+        .call_registered_purposes(store)
+        .expect("host call")
+        .into_iter()
+        .map(|p| (p.name, p.bytes))
+        .collect()
+}
+
+/// The component exports the registry itself (0X3-203). Its list equals the
+/// native `signing::purpose::ALL` exactly, and the control half shows the
+/// comparison can fail: a list with a purpose missing, an extra one, or one
+/// renamed is not the registry.
+#[test]
+fn the_component_exports_exactly_the_native_registry() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+    let from_component = registered(&mut store, &identity);
+    let native = aethel_core::signing::purpose::ALL;
+
+    assert!(!from_component.is_empty(), "the component exported no purposes");
+    assert!(registries_agree(&from_component, native), "component registry differs from native");
+
+    // Control: the same comparison rejects each way a list can be wrong.
+    let mut missing = from_component.clone();
+    missing.pop();
+    assert!(!registries_agree(&missing, native), "a missing purpose went unnoticed");
+
+    let mut extra = from_component.clone();
+    extra.push(("PLANTED_V1".into(), b"planted/v1".to_vec()));
+    assert!(!registries_agree(&extra, native), "an extra purpose went unnoticed");
+
+    let mut renamed = from_component.clone();
+    renamed[0].0.push('X');
+    assert!(!registries_agree(&renamed, native), "a rename went unnoticed");
+
+    let mut changed = from_component.clone();
+    changed[0].1[0] ^= 1;
+    assert!(!registries_agree(&changed, native), "changed bytes went unnoticed");
+}
+
+/// Everything the component lists is usable as a purpose: non-empty, within the
+/// 255-byte limit, pairwise distinct, and named.
+#[test]
+fn every_exported_purpose_is_well_formed() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+    let list = registered(&mut store, &identity);
+
+    for (name, bytes) in &list {
+        assert!(!name.is_empty(), "a purpose has no name");
+        assert!(!bytes.is_empty(), "{name} is empty");
+        assert!(bytes.len() <= 255, "{name} is over the 255-byte limit");
+    }
+    for (i, (name_a, bytes_a)) in list.iter().enumerate() {
+        for (name_b, bytes_b) in &list[i + 1..] {
+            assert_ne!(name_a, name_b, "two purposes share a name");
+            assert_ne!(bytes_a, bytes_b, "{name_a} and {name_b} share bytes");
+        }
+    }
+}
+
+/// Each exported purpose works, and only for itself: a signature made under it
+/// verifies under it (so a verifier that refused everything fails here), and
+/// under no other exported purpose, nor the empty context.
+#[test]
+fn every_exported_purpose_signs_and_verifies_only_under_itself() {
+    let (mut store, bindings) = instantiate();
+    let identity = bindings.aethel_core_identity();
+    let api = identity.master_identity();
+    let list = registered(&mut store, &identity);
+    let id = api
+        .call_generate(&mut store, b"deterministic entropy for tests!")
+        .expect("host call")
+        .expect("generate");
+    let pk = api.call_public_key(&mut store, id).expect("host call");
+    let message = b"one statement, many purposes";
+
+    for (name, bytes) in &list {
+        let signature = api
+            .call_sign_with_purpose(&mut store, id, bytes, message)
+            .expect("host call")
+            .unwrap_or_else(|_| panic!("sign-with-purpose refused {name}"));
+
+        for (other_name, other_bytes) in &list {
+            let verified = identity
+                .call_verify_signature_with_purpose(&mut store, &pk, other_bytes, message, &signature)
+                .expect("host call")
+                .expect("verify-signature-with-purpose");
+            assert_eq!(
+                verified,
+                name == other_name,
+                "a signature made under {name} {} under {other_name}",
+                if verified { "verified" } else { "failed to verify" }
+            );
+        }
+        let plain = identity
+            .call_verify_signature(&mut store, &pk, message, &signature)
+            .expect("host call")
+            .expect("verify-signature");
+        assert!(!plain, "a signature made under {name} verified under the empty context");
+    }
+}
+
 /// The 255-byte purpose limit is enforced at the component boundary as
 /// `invalid-input-length`, and a purpose of exactly 255 bytes is accepted and
 /// verifies, so the limit sits where the WIT documentation says it does.

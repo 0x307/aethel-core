@@ -356,6 +356,28 @@ interface identity {
   /// `identity-error`'s variant ordinals are unchanged.
   verify-signature-with-purpose: func(public-key: list<u8>, purpose: list<u8>, message: list<u8>, signature: list<u8>) -> result<bool, identity-error>;
 
+  /// A purpose in the registry: the constant's name and the exact bytes to pass
+  /// as `purpose` to `sign-with-purpose` and `verify-signature-with-purpose`.
+  record registered-purpose {
+    /// The registry's name for it, for example `AUTH_LOGIN_V1`. Stable: a
+    /// rename is a reviewed change, like a change to the bytes.
+    name: string,
+    /// The purpose bytes. Non-empty, at most 255 bytes, distinct from every
+    /// other entry.
+    bytes: list<u8>,
+  }
+
+  /// Every purpose in the registry (`signing::purpose::ALL`), in declaration
+  /// order.
+  ///
+  /// This is the authoritative list for anything above L1. A binding that
+  /// wants to offer only registered purposes reads them from here rather than
+  /// copying the constants, so a purpose added to the registry reaches it
+  /// without a hand edit and without that binding linking any cryptography.
+  /// Deterministic, takes no input and cannot fail. Additive: no existing
+  /// function or `identity-error` ordinal changes.
+  registered-purposes: func() -> list<registered-purpose>;
+
   /// Verify from `aethel-plp-1` wire bytes, binding the verifier's own
   /// context (A-4).
   ///
