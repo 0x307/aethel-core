@@ -200,8 +200,10 @@ pub mod purpose {
         /// this list is updated in the same reviewed change.
         #[test]
         fn all_lists_exactly_the_expected_purposes() {
-            let names: Vec<&str> = ALL.iter().map(|(name, _)| *name).collect();
-            assert_eq!(names, EXPECTED_NAMES);
+            assert_eq!(ALL.len(), EXPECTED_NAMES.len(), "the registry changed size");
+            for ((name, _), expected) in ALL.iter().zip(EXPECTED_NAMES) {
+                assert_eq!(name, expected);
+            }
         }
 
         /// `ALL` carries each constant's own bytes, not a copy that could drift.
