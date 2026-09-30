@@ -7,6 +7,32 @@ adheres to the breaking-change and deprecation rules in
 [`STABILITY.md`](./STABILITY.md) rather than strict SemVer prior to `1.0.0` — see that
 document for what counts as breaking inside `0.x`.
 
+## [0.7.3] - 2026-09-30
+
+Documentation and hygiene only. No change to the API, the WIT world, the wire formats or
+behaviour.
+
+### Changed
+
+- **The README no longer opens with a generic "do not use in production" banner.** It sat
+  under a header that says Tier: Production. The audit status is unchanged and still stated
+  in the header and the crate-family section: not independently audited, no CMVP validation.
+  The specific warning that the credential commitment does not hide (D-01) is unchanged.
+- **The crate builds with no compiler, clippy or rustdoc warnings,** and CI now fails on any
+  (`-D warnings`, default features and `component`). The undocumented public items in
+  `sampling`, `htss` and `saap` are documented, and broken doc links are fixed.
+- The retired single-response `saap` pathway (D-13) is marked as retired in the source. It is
+  still present: its types are public, so removing it waits for a breaking release.
+
+### Fixed
+
+- `Cargo.lock` moves the dev-dependency `wasmtime` from 48.0.1 to 48.0.3 for
+  RUSTSEC-2026-0315 and RUSTSEC-2026-0316. `wasmtime` is only used by this crate's own
+  component tests, so no published build was affected.
+
+The component's bytes differ from 0.7.2's only in panic-location line numbers and the crate
+version, so `COMPONENT_SHA256` changes.
+
 ## [0.7.2] - 2026-09-25
 
 Additive. Nothing existing changes: no function, type, wire format or error variant.
