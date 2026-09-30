@@ -5,8 +5,6 @@
 [![WASM](https://img.shields.io/badge/target-wasm32--unknown--unknown-green)](https://webassembly.org/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](#license)
 
-> ⚠️ **Security Notice**: This is a pre-release implementation. Do not use in production without a formal security audit.
-
 ## PLP in one paragraph
 
 An agent holds one [`signing::Identity`](src/signing.rs) (sealed at rest, never persisted

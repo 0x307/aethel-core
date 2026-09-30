@@ -4,8 +4,8 @@
 //!
 //! 1. **Enclave Constant-Time Rejection Sampling** (`#![no_std]`, written to be bare-metal
 //!    enclave-compatible, though nothing in this repo runs it inside an actual hardware
-//!    enclave/TEE — see the crate README's security notice; this is pre-release code with no
-//!    formal audit): constant-time rejection sampling enforcing a 16-iteration padded
+//!    enclave/TEE, and it has had no independent audit; see the README's audit
+//!    status): constant-time rejection sampling enforcing a 16-iteration padded
 //!    execution loop, constant-time norm checking, bitwise CMOV selection, and volatile
 //!    memory zeroization via compiler barriers.
 //!
