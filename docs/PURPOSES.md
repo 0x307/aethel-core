@@ -30,7 +30,7 @@ message — go through `Identity`.
 [`signing::Identity::sign_with_purpose`](../src/signing.rs) and
 [`signing::verify_with_purpose`](../src/signing.rs) use FIPS 204's native context
 mechanism — `pqc_sig::MlDsa65Keypair::sign_ctx_deterministic`/`verify_ctx` — rather than a
-crate-defined prefix construction. `pqc-sig` 0.4 exposes this directly, so a signature
+crate-defined prefix construction. `pqc-sig` exposes this directly (since 0.4), so a signature
 made under one context provably does not verify under another (the underlying `ml-dsa`
 crate enforces the context string as part of the signed message structure per FIPS 204
 §5.2). An empty context (`&[]`) is byte-identical to plain `sign`/`verify`; a non-empty
@@ -72,6 +72,39 @@ from every other — a rename or a collision is a visible, reviewed diff, not a 
 | `AUTH_SUCCESSION_V1` | `aethel-auth/succession/v1` | The **old** `Identity` | Naming a successor key. **Service identities only**: the record is a permanent public link between two identities, so it forfeits unlinkability by design. Never for a person. |
 | `AUTH_REVOCATION_V1` | `aethel-auth/revocation/v1` | The `Identity`, or an authority | Self-revocation or authority revocation. The statement only; enforcement is the relying party's own directory. |
 | `AUTH_DELEGATION_V1` | `aethel-auth/delegation/v1` | The principal's `Identity` | Granting a delegate scoped, time-bounded authority to act. The generalisation of the vault's spend-policy gate beyond money. |
+| `AGENT_RECEIPT_V1` | `aethel-core/agent-receipt/v1` | The agent's `Identity` | A receipt for an action the agent took. Binds the signature to being a receipt; the statement layout is the application's. Not a settlement receipt. See [Agent receipts](#agent-receipts). |
+
+### Agent receipts
+
+`AGENT_RECEIPT_V1` is for an agent saying what it did. A receipt signed with plain `sign`
+uses the empty context, so the same signature could be presented as any other statement the
+agent signs that way. Signing under this purpose binds it to being a receipt: it verifies
+under `AGENT_RECEIPT_V1` and under no other purpose, nor the empty context.
+
+What it covers:
+
+- That the signer meant the message as a receipt for an action.
+
+What it leaves to the application:
+
+- **The statement layout.** A receipt usually says what was done, for whom, and when, and
+  should name the relying party it is for, so it cannot be shown to a different one as if it
+  were theirs. The registry does not fix these fields or their encoding.
+- **Correlation.** The signature verifies under the agent's public key, so every verifier
+  holding receipts from one key can link them. That is the same as any other `sign` output.
+  An agent that must stay unlinkable across relying parties needs a separate identity per
+  relying party, or a PLP presentation instead of a signed receipt.
+
+What it is not:
+
+- **Not a settlement receipt.** `VAULT_SETTLEMENT_RECEIPT_V1` is aethel-vault's settlement
+  signer's and records a settled payment. A receipt for a general action is a different
+  statement, so it has its own purpose. Never sign one under the other's bytes.
+- **Not an authorisation.** A receipt records what already happened. Granting authority to
+  act is `AUTH_DELEGATION_V1`.
+
+It is registered under `aethel-core` because no other crate owns agent receipts: any crate
+that signs with an `Identity` can use it.
 
 ### Why these are defined in aethel-core, not aethel-vault
 

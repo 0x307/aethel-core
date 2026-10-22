@@ -7,7 +7,50 @@ adheres to the breaking-change and deprecation rules in
 [`STABILITY.md`](./STABILITY.md) rather than strict SemVer prior to `1.0.0` — see that
 document for what counts as breaking inside `0.x`.
 
-## [0.7.4] - Unreleased
+## [0.7.5] - Unreleased
+
+Additive. Nothing existing changes: no function, type, wire format or error variant, and no
+key, signature, projection or proof bytes. No version was yanked: 0.7.3 and 0.7.4 stay
+published.
+
+### Changed
+
+- **`pqc-sig` moves from 0.4 to 0.5.** pqc-sig 0.5 puts its algorithms behind features, so
+  aethel-core now names the one it uses: `features = ["ml-dsa"]`. SLH-DSA and its
+  `pkcs8`, `der` and `spki` dependencies are no longer in aethel-core's dependency graph.
+  pqc-sig's encodings are byte-identical across the move, and a new test proves aethel-core's
+  output is too (below). No `pqc-sig` type is in aethel-core's public API, so this is a patch
+  release.
+- **Apps still pinning `pqc-sig` 0.4 keep building.** Cargo resolves aethel-core's 0.5 and
+  your 0.4 side by side. The two lines' types are distinct, so pass keys and signatures
+  between them as bytes, which is what aethel-core's API already takes and returns.
+- **The `pqc-sig` 0.4 line is supported until 2027-05-31**: it gets security fixes until then,
+  and stays downloadable after. Move to 0.5 before that date. See the version policy in
+  [`STABILITY.md`](./STABILITY.md).
+
+### Added
+
+- **`signing::purpose::AGENT_RECEIPT_V1`** (`aethel-core/agent-receipt/v1`), a purpose for an
+  agent's receipt for an action it took. A receipt signed with plain `sign` uses the empty
+  context and is not bound to being a receipt; one signed under this purpose verifies under no
+  other. The statement layout is left to the application. It is not
+  `VAULT_SETTLEMENT_RECEIPT_V1`, which stays aethel-vault's. `docs/PURPOSES.md` says what it
+  covers. The component's `registered-purposes` lists it with no WIT change.
+- **A byte-identity test** (`signing::byte_identity_tests`). Fixed seeds, and the expected
+  public key, signature, purpose signature, PLP projection and PLP proof, all produced by
+  0.7.4 against `pqc-sig` 0.4.2. Asserted unchanged, natively and in the `no_std` wasm32 test
+  run.
+- **A version policy** in `STABILITY.md`: nothing is yanked, more than one line may be live,
+  and a legacy line gets security fixes for 6 months after its successor ships.
+
+### Fixed
+
+- `SECURITY.md` gives D-01's affected range as 0.4.0 through 0.7.5. It said 0.7.3.
+
+**The component's bytes change**, from the new purpose and the version bump.
+`component.sha256` is re-recorded from CI's canonical build.
+
+## [0.7.4] - 2026-09-30
 
 Additive. Nothing existing changes: no function, type, wire format or error variant. 0.7.3
 stays published and is not yanked.
