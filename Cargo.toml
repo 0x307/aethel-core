@@ -1,6 +1,6 @@
 [package]
 name = "aethel-core"
-version = "0.7.4"
+version = "0.7.5"
 edition = "2021"
 description = "Post-quantum anonymous identity for Rust and WASM. A no_std alternative to static W3C DIDs: per-context identifiers, no reusable public key, context-bound ML-DSA signing. Selective disclosure ships and is being hardened; see SECURITY.md."
 authors = ["Kenneth Harper"]
@@ -40,8 +40,10 @@ serde = { version = "1.0", default-features = false, features = ["alloc", "deriv
 # FIPS 204 ML-DSA signatures. Signing lives inside L1: the charter's "one
 # artifact, adding a language never adds crypto" rule means an SDK cannot carry
 # its own signature library, so aethel-core carries it and exposes it through
-# the WIT world.
-pqc-sig = { version = "0.4", default-features = false }
+# the WIT world. Since pqc-sig 0.5 the algorithms sit behind features, so ML-DSA
+# is named here. Only ML-DSA: SLH-DSA and its pkcs8/der/spki tail stay out of
+# the dependency graph.
+pqc-sig = { version = "0.5", default-features = false, features = ["ml-dsa"] }
 
 # AEAD for sealing an identity at rest. Sealing lives inside L1 for the same
 # reason signing does: the SDK cannot carry a cipher without breaking "one

@@ -50,7 +50,7 @@ identities rather than attempting to carry them forward.
 
 ### The credential commitment does not provide the hiding property claimed for it
 
-**Open. Affects every release from 0.4.0 through 0.7.3.** Tracked as D-01 in
+**Open. Affects every release from 0.4.0 through 0.7.5.** Tracked as D-01 in
 [`docs/DEVIATIONS.md`](docs/DEVIATIONS.md).
 
 `AETHEL-SPEC-001` §7 specifies the credential commitment matrix with a randomness

@@ -153,6 +153,13 @@ pub mod purpose {
         /// time-bounded authority to act. The generalisation of aethel-vault's
         /// `SpendPolicy` beyond money.
         AUTH_DELEGATION_V1 = b"aethel-auth/delegation/v1";
+
+        /// An agent's receipt for an action it took: what it did, for whom, and
+        /// when. The statement layout is the application's; this purpose only
+        /// binds the signature to being a receipt, so it cannot be presented as
+        /// any other statement the agent signs. Not a settlement receipt: that
+        /// is [`VAULT_SETTLEMENT_RECEIPT_V1`], aethel-vault's settlement signer's.
+        AGENT_RECEIPT_V1 = b"aethel-core/agent-receipt/v1";
     }
 
     #[cfg(test)]
@@ -179,6 +186,7 @@ pub mod purpose {
             "AUTH_SUCCESSION_V1",
             "AUTH_REVOCATION_V1",
             "AUTH_DELEGATION_V1",
+            "AGENT_RECEIPT_V1",
         ];
 
         /// Hash the exact registry, byte-length-prefixed so no concatenation
@@ -213,6 +221,7 @@ pub mod purpose {
                 ("PLP_PRESENT_V1", PLP_PRESENT_V1),
                 ("AUTH_LOGIN_V1", AUTH_LOGIN_V1),
                 ("AUTH_DELEGATION_V1", AUTH_DELEGATION_V1),
+                ("AGENT_RECEIPT_V1", AGENT_RECEIPT_V1),
             ];
             for (name, bytes) in by_hand {
                 let found = ALL.iter().find(|(n, _)| n == name).expect("listed");
@@ -370,7 +379,7 @@ impl Identity {
     ///
     /// Uses FIPS 204's native `ctx` mechanism
     /// ([`MlDsa65Keypair::sign_ctx_deterministic`]) rather than a
-    /// crate-defined prefix construction: `pqc-sig` 0.4 exposes it directly,
+    /// crate-defined prefix construction: `pqc-sig` exposes it directly,
     /// so there is no reason to build a weaker home-grown equivalent. An
     /// empty `purpose` (`&[]`) produces a signature byte-identical to
     /// [`Self::sign`] — both are FIPS 204 "pure" mode with the empty context
@@ -1272,5 +1281,108 @@ mod seal_tests {
         let nonce_a = &a[1..1 + SEAL_NONCE_BYTES];
         let nonce_b = &b[1..1 + SEAL_NONCE_BYTES];
         assert_ne!(nonce_a, nonce_b, "two keys produced the same nonce");
+    }
+}
+
+/// Byte-identity guard for dependency moves.
+///
+/// Every expected value below was produced by aethel-core 0.7.4 (tag `v0.7.4`,
+/// commit `4cc2e52`), built against `pqc-sig` 0.4.2, before `pqc-sig` moved to
+/// 0.5. They are asserted unchanged here, so a dependency bump that alters a
+/// key, a signature, a projection or a proof fails this test instead of
+/// shipping. Never regenerate them from the current code: that would make the
+/// test compare the crate with itself.
+///
+/// The values are SHA3-256 digests of the full outputs, plus their lengths,
+/// which pins every byte without carrying 18 KB of hex.
+///
+/// It runs natively and, through `wasm-bindgen-test`, in the `no_std` wasm32
+/// test run (`wasm-pack test --node -- --no-default-features`).
+#[cfg(test)]
+mod byte_identity_tests {
+    use super::*;
+    use alloc::string::String;
+    use core::fmt::Write;
+    use sha3::{Digest, Sha3_256};
+
+    const ENTROPY: &[u8; 32] = b"aethel-core byte-identity guard!";
+    const TAU: &[u8] = b"aethel-core/byte-identity/tau";
+    const RANDOMNESS: [u8; 32] = [0x5A; 32];
+    const MESSAGE: &[u8] = b"aethel-core byte-identity message";
+
+    const PUBLIC_KEY: (usize, &str) =
+        (1952, "1429617ae4d2f10984004fe0d6ffd791bc79f2238cdca9b60adcbbdae52ead7b");
+    const PROJECTION: (usize, &str) =
+        (4160, "afe118b195e29e3c248c6de4f381770598d78f747700d490826510a0ad61932f");
+    const PROOF: (usize, &str) =
+        (9216, "096eb35fd3f289e393f230b4d3eb906b143ef3e3c7e135a47c0e0d4a20b92393");
+    const SIGNATURE: (usize, &str) =
+        (3309, "e309b2c430f59eb7d6a60ea7b621c59e2aa1997e8d10b9aceb40298fafc5225d");
+    /// Signed under `purpose::PLP_PRESENT_V1`, so the FIPS 204 context path is
+    /// pinned as well as the empty-context one.
+    const PURPOSE_SIGNATURE: (usize, &str) =
+        (3309, "393e67327c79532e9ff29df25d6c4c061ada0416758333fee42f33a7df0fb0d9");
+
+    fn sha3_hex(bytes: &[u8]) -> String {
+        let mut out = String::new();
+        for byte in Sha3_256::digest(bytes) {
+            write!(out, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        out
+    }
+
+    fn assert_pinned(what: &str, bytes: &[u8], expected: (usize, &str)) {
+        assert_eq!(bytes.len(), expected.0, "{what}: length changed since 0.7.4");
+        assert_eq!(sha3_hex(bytes), expected.1, "{what}: bytes changed since 0.7.4");
+    }
+
+    fn assert_outputs_match_0_7_4() {
+        let id = Identity::generate(ENTROPY).expect("generate");
+        let public_key = id.public_key();
+        assert_pinned("public key", &public_key, PUBLIC_KEY);
+
+        let projection = id.project_at_context(TAU, &RANDOMNESS).expect("project");
+        let proof = id.prove(TAU, &RANDOMNESS).expect("prove");
+        assert_pinned("PLP projection", &projection.to_bytes(), PROJECTION);
+        assert_pinned("PLP proof", &proof.to_bytes(), PROOF);
+        assert!(
+            crate::plp::Verifier::verify(&projection, &proof),
+            "the pinned proof must still verify"
+        );
+
+        let signature = id.sign(MESSAGE).expect("sign");
+        assert_pinned("signature", &signature, SIGNATURE);
+        assert_eq!(verify(&public_key, MESSAGE, &signature), Ok(true));
+
+        let purpose_signature = id
+            .sign_with_purpose(purpose::PLP_PRESENT_V1, MESSAGE)
+            .expect("sign");
+        assert_pinned("purpose signature", &purpose_signature, PURPOSE_SIGNATURE);
+        assert_eq!(
+            verify_with_purpose(&public_key, purpose::PLP_PRESENT_V1, MESSAGE, &purpose_signature),
+            Ok(true)
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn outputs_are_byte_identical_to_0_7_4() {
+        assert_outputs_match_0_7_4();
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn outputs_are_byte_identical_to_0_7_4_wasm() {
+        assert_outputs_match_0_7_4();
+    }
+
+    /// Control: the comparison can fail. One flipped bit in a real output must
+    /// not match its pinned digest.
+    #[test]
+    fn a_changed_byte_is_detected() {
+        let mut public_key = Identity::generate(ENTROPY).expect("generate").public_key();
+        public_key[0] ^= 1;
+        assert_eq!(public_key.len(), PUBLIC_KEY.0);
+        assert_ne!(sha3_hex(&public_key), PUBLIC_KEY.1);
     }
 }
