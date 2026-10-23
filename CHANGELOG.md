@@ -46,6 +46,15 @@ published.
 ### Fixed
 
 - `SECURITY.md` gives D-01's affected range as 0.4.0 through 0.7.5. It said 0.7.3.
+- `Cargo.lock` moves the dev-dependency `wasmtime` from 48.0.3 to 48.0.7, for
+  RUSTSEC-2026-0325, 0326, 0327, 0353 through 0359, 0361 through 0364, 0378 and 0379.
+  `wasmtime` is only used by this crate's own component tests, so no published build was
+  affected.
+- Rustdoc on rustc 1.99 rejects intra-doc links whose explicit target repeats the label. The
+  module docs of `plp`, `htss` and `identity_error` drop those targets. Text only.
+- CI's offline-generation job names rustup's directories when it runs cargo under `sudo`, so
+  the network-isolated steps run again. Its negative control now also requires that its test
+  actually ran and failed, so a toolchain failure cannot count as proof of isolation.
 
 **The component's bytes change**, from the new purpose and the version bump.
 `component.sha256` is re-recorded from CI's canonical build.
