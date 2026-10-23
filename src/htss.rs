@@ -2,7 +2,7 @@
 //!
 //! ## What this module actually does
 //!
-//! [`SecretSharer`](crate::htss::SecretSharer) is local, in-process Shamir 3-of-5 threshold secret sharing
+//! [`SecretSharer`] is local, in-process Shamir 3-of-5 threshold secret sharing
 //! over a single `u64` scalar (`split_secret`/`reconstruct_secret`): a degree-2
 //! polynomial over `F_q`, evaluated at 5 points to produce shares, reconstructed
 //! from any 3 via Lagrange interpolation. That's it — there is no network
@@ -10,7 +10,7 @@
 //! anything, which is also why this can run fully offline (see the crate
 //! README's "Offline generation" claim, CI-proven by network denial).
 //!
-//! [`HypercubeNetwork`](crate::htss::HypercubeNetwork)/[`HypercubePacket`](crate::htss::HypercubePacket)/[`NodeAddress`](crate::htss::NodeAddress) are real, tested
+//! [`HypercubeNetwork`]/[`HypercubePacket`](crate::htss::HypercubePacket)/[`NodeAddress`] are real, tested
 //! code (not dead code — exercised by `tests/plp_tests.rs`), but what they
 //! implement is a **local simulation** of dimension-disjoint path assignment
 //! across a modeled Q_5 graph (32 nodes, 80 edges): `route_payload_shares`
@@ -47,11 +47,11 @@
 //!
 //! ## Key Structures
 //!
-//! - [`NodeAddress`](crate::htss::NodeAddress) — 5-bit hypercube node coordinate (a modeled graph vertex)
-//! - [`ZkProofSegment`](crate::htss::ZkProofSegment) — one Shamir share plus a path authentication tag
+//! - [`NodeAddress`] — 5-bit hypercube node coordinate (a modeled graph vertex)
+//! - [`ZkProofSegment`] — one Shamir share plus a path authentication tag
 //! - [`HypercubePacket`](crate::htss::HypercubePacket) — simulated in-process routing state for one segment
-//! - [`SecretSharer`](crate::htss::SecretSharer) — Shamir 3-of-5 split and Lagrange reconstruction (the real work)
-//! - [`HypercubeNetwork`](crate::htss::HypercubeNetwork) — the modeled 32-node Q_5 graph and its local routing simulation
+//! - [`SecretSharer`] — Shamir 3-of-5 split and Lagrange reconstruction (the real work)
+//! - [`HypercubeNetwork`] — the modeled 32-node Q_5 graph and its local routing simulation
 //!
 //! ## Parameters
 //!

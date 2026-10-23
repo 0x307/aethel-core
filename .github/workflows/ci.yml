@@ -106,18 +106,34 @@ jobs:
           cargo test --no-run --lib --test plp_tests
           cargo test --no-run --test network_isolation_negative_control
 
+      # rustup's directories are named explicitly. sudo resets HOME to /root,
+      # and once the runner stopped exporting RUSTUP_HOME, rustup under sudo
+      # looked in /root/.rustup, found no toolchain, and exited before cargo
+      # ran. That failed the generation step, and it let the negative control
+      # below "fail as expected" without testing anything. The negative control
+      # now also requires that its test actually ran and failed.
       - name: Generation suite MUST succeed with no network interface available
         run: |
-          sudo -E env "PATH=$PATH" unshare --net -- \
+          sudo -E env "PATH=$PATH" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" \
+            unshare --net -- \
             cargo test --offline --lib --test plp_tests
 
       - name: Negative control MUST fail with no network interface available
         run: |
-          if sudo -E env "PATH=$PATH" unshare --net -- \
-               cargo test --offline --test network_isolation_negative_control; then
+          if sudo -E env "PATH=$PATH" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" \
+               unshare --net -- \
+               cargo test --offline --test network_isolation_negative_control > negative-control.log 2>&1; then
+            cat negative-control.log
             echo "::error::negative-control network call succeeded inside the network-isolated step — isolation is NOT enforced, the offline-generation claim is unproven"
             exit 1
           fi
+          cat negative-control.log
+          # A failure only counts if the test ran and failed. Anything earlier
+          # (no toolchain, a build error) says nothing about isolation.
+          grep -q "^test network_call_succeeds_when_a_route_exists \.\.\. FAILED" negative-control.log || {
+            echo "::error::the negative control did not run its test, so its failure is not evidence of isolation"
+            exit 1
+          }
           echo "Negative control failed as expected under network isolation — isolation confirmed real."
 
   # P3-08 follow-up: zeroize_wipes_master_identity_secret_wasm (src/plp.rs)

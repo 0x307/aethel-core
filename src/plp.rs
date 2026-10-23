@@ -13,11 +13,11 @@
 //! ## Key Structures
 //!
 //! - [`Poly`](crate::plp::Poly) — Polynomial in `R_q = Z_q[X]/(X^N + 1)`
-//! - [`MasterIdentity`](crate::plp::MasterIdentity) — Holds the permanent master secret polynomial s
-//! - [`EphemeralProjection`](crate::plp::EphemeralProjection) — Single-use public projection for a given context τ
-//! - [`ZkIdentityProof`](crate::plp::ZkIdentityProof) — ZK sigma protocol proof (W, c, z)
-//! - [`Prover`](crate::plp::Prover) — Generates ZK identity proofs with rejection sampling
-//! - [`Verifier`](crate::plp::Verifier) — Verifies ZK proofs against ephemeral projections
+//! - [`MasterIdentity`] — Holds the permanent master secret polynomial s
+//! - [`EphemeralProjection`] — Single-use public projection for a given context τ
+//! - [`ZkIdentityProof`] — ZK sigma protocol proof (W, c, z)
+//! - [`Prover`] — Generates ZK identity proofs with rejection sampling
+//! - [`Verifier`] — Verifies ZK proofs against ephemeral projections
 //!
 //! ## Parameters
 //!
