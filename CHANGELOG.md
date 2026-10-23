@@ -56,8 +56,9 @@ published.
   the network-isolated steps run again. Its negative control now also requires that its test
   actually ran and failed, so a toolchain failure cannot count as proof of isolation.
 
-**The component's bytes change**, from the new purpose and the version bump.
-`component.sha256` is re-recorded from CI's canonical build.
+**The component's bytes change**, from the new purpose, the version bump, and `wit-parser`,
+`wit-component` and `wasm-encoder` 0.254.2, which came with the wasmtime update and which
+`wit-bindgen` builds on. `component.sha256` is re-recorded from CI's canonical build.
 
 ## [0.7.4] - 2026-09-30
 
