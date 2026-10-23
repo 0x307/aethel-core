@@ -10,8 +10,8 @@
 //! `InvalidInputLength`, `SerializationError`, `ThresholdNotMet`,
 //! `RejectionSamplingFailed`, and `InvalidShareSet`.
 //!
-//! Three are **reserved and currently unreachable**: [`IdentityError::NormBoundViolation`](crate::identity_error::IdentityError::NormBoundViolation),
-//! [`IdentityError::ChallengeMismatch`](crate::identity_error::IdentityError::ChallengeMismatch) and [`IdentityError::InvalidAttributeCommitment`](crate::identity_error::IdentityError::InvalidAttributeCommitment). They
+//! Three are **reserved and currently unreachable**: [`IdentityError::NormBoundViolation`],
+//! [`IdentityError::ChallengeMismatch`] and [`IdentityError::InvalidAttributeCommitment`]. They
 //! are named here deliberately rather than removed — see their individual doc
 //! comments and `component_error_variant_reachability` in
 //! `tests/component_execution.rs`, which pins the split so it cannot drift
