@@ -482,6 +482,12 @@ impl Drop for Identity {
 /// Returns `Ok(false)` for a well-formed signature that does not verify, and
 /// `Err` for input that cannot be parsed at all. Collapsing those two into one
 /// answer is the sentinel-return mistake this crate has already been bitten by.
+///
+/// **Prefer [`verify_strict`].** Here a rejected signature is `Ok(false)`, so
+/// `verify(..).is_ok()` or a bare `?` accepts a forgery. `verify_strict`
+/// returns `Err` for every refusal. This function is unchanged and stays. (In
+/// practice it also returns `Ok(false)`, not `Err`, for a key or signature of
+/// the wrong length; `verify_strict` tells those apart.)
 pub fn verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> Result<bool, IdentityError> {
     let pk = SigPublicKey {
         algorithm: pqc_sig::SigAlgorithm::MlDsa65,
@@ -512,6 +518,9 @@ pub fn verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> Result<boo
 /// a well-formed signature that does not verify under `purpose` (including
 /// one made under a *different* purpose), and `Err` only for input that
 /// cannot be parsed at all.
+///
+/// **Prefer [`verify_strict_with_purpose`]**, for the reason given on
+/// [`verify`]. This function is unchanged and stays.
 pub fn verify_with_purpose(
     public_key: &[u8],
     purpose: &[u8],
@@ -534,6 +543,122 @@ pub fn verify_with_purpose(
         Ok(()) => Ok(true),
         Err(_) => Ok(false),
     }
+}
+
+// ── Strict verification (CORE-04) ─────────────────────────────────────────────
+
+/// Why [`verify_strict`] or [`VerifyingKey`] refused a signature.
+///
+/// Every refusal is an `Err`, including a well-formed signature that simply
+/// does not verify ([`VerifyError::BadSignature`]). That is the difference from
+/// [`verify`], whose `Ok(false)` a caller can drop with `.is_ok()` or `?` and
+/// so accept a forgery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum VerifyError {
+    /// The public key is not a 1952-byte ML-DSA-65 public key.
+    InvalidPublicKey,
+    /// The signature is not a well-formed ML-DSA-65 signature: wrong length,
+    /// or an encoding FIPS 204 rejects.
+    MalformedSignature,
+    /// The purpose is longer than [`pqc_sig::MAX_CONTEXT_LEN`] (255) bytes.
+    PurposeTooLong,
+    /// A well-formed signature that does not verify under this key, message
+    /// and purpose.
+    BadSignature,
+}
+
+impl core::fmt::Display for VerifyError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            VerifyError::InvalidPublicKey => "not an ML-DSA-65 public key",
+            VerifyError::MalformedSignature => "not a well-formed ML-DSA-65 signature",
+            VerifyError::PurposeTooLong => "purpose longer than 255 bytes",
+            VerifyError::BadSignature => "signature does not verify",
+        })
+    }
+}
+
+impl core::error::Error for VerifyError {}
+
+/// A parsed ML-DSA-65 public key, for verifying many signatures without
+/// decoding the key again each time.
+///
+/// [`verify`] and [`verify_strict`] take key bytes and decode them on every
+/// call, which for ML-DSA includes expanding the public matrix. A verifier
+/// that checks many signatures from one identity parses the key once with
+/// [`VerifyingKey::from_bytes`] and reuses it. Holds only public material.
+#[derive(Clone, Debug)]
+pub struct VerifyingKey {
+    inner: ml_dsa::VerifyingKey<ml_dsa::MlDsa65>,
+}
+
+impl VerifyingKey {
+    /// Parse an ML-DSA-65 public key, as returned by [`Identity::public_key`].
+    pub fn from_bytes(public_key: &[u8]) -> Result<Self, VerifyError> {
+        let encoded = ml_dsa::EncodedVerifyingKey::<ml_dsa::MlDsa65>::try_from(public_key)
+            .map_err(|_| VerifyError::InvalidPublicKey)?;
+        Ok(Self {
+            inner: ml_dsa::VerifyingKey::<ml_dsa::MlDsa65>::decode(&encoded),
+        })
+    }
+
+    /// The key's 1952-byte encoding, identical to the bytes it was parsed from.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.inner.encode().to_vec()
+    }
+
+    /// Verify a signature made with [`Identity::sign`]. `Ok(())` only if it
+    /// verifies; every refusal is an `Err`.
+    pub fn verify_strict(&self, message: &[u8], signature: &[u8]) -> Result<(), VerifyError> {
+        self.verify_strict_with_purpose(&[], message, signature)
+    }
+
+    /// Verify a signature made with [`Identity::sign_with_purpose`] under
+    /// `purpose`. An empty `purpose` is the same as [`Self::verify_strict`].
+    pub fn verify_strict_with_purpose(
+        &self,
+        purpose: &[u8],
+        message: &[u8],
+        signature: &[u8],
+    ) -> Result<(), VerifyError> {
+        if purpose.len() > pqc_sig::MAX_CONTEXT_LEN {
+            return Err(VerifyError::PurposeTooLong);
+        }
+        let sig = ml_dsa::Signature::<ml_dsa::MlDsa65>::try_from(signature)
+            .map_err(|_| VerifyError::MalformedSignature)?;
+        if self.inner.verify_with_context(message, purpose, &sig) {
+            Ok(())
+        } else {
+            Err(VerifyError::BadSignature)
+        }
+    }
+}
+
+/// Verify an ML-DSA-65 signature, refusing with an `Err` on any failure.
+///
+/// The strict form of [`verify`]: `Ok(())` means the signature verifies under
+/// `public_key` for `message`, and a signature that does not verify is
+/// `Err(VerifyError::BadSignature)` rather than `Ok(false)`. It accepts exactly
+/// the signatures [`verify`] accepts. To check many signatures under one key,
+/// parse it once with [`VerifyingKey`].
+pub fn verify_strict(
+    public_key: &[u8],
+    message: &[u8],
+    signature: &[u8],
+) -> Result<(), VerifyError> {
+    VerifyingKey::from_bytes(public_key)?.verify_strict(message, signature)
+}
+
+/// Verify a signature made with [`Identity::sign_with_purpose`], refusing
+/// with an `Err` on any failure. The strict form of [`verify_with_purpose`].
+pub fn verify_strict_with_purpose(
+    public_key: &[u8],
+    purpose: &[u8],
+    message: &[u8],
+    signature: &[u8],
+) -> Result<(), VerifyError> {
+    VerifyingKey::from_bytes(public_key)?.verify_strict_with_purpose(purpose, message, signature)
 }
 
 // ── Sealing an identity at rest ───────────────────────────────────────────────
@@ -1384,5 +1509,144 @@ mod byte_identity_tests {
         public_key[0] ^= 1;
         assert_eq!(public_key.len(), PUBLIC_KEY.0);
         assert_ne!(sha3_hex(&public_key), PUBLIC_KEY.1);
+    }
+}
+
+#[cfg(test)]
+mod strict_verify_tests {
+    //! CORE-04: `verify_strict` and `VerifyingKey`. Every case that refuses is
+    //! paired with the same input made right, which must be accepted, and
+    //! every answer is compared with the unchanged `verify`.
+    use super::*;
+
+    fn identity(seed: u8) -> Identity {
+        Identity::generate(&[seed; 32]).unwrap()
+    }
+
+    #[test]
+    fn a_right_signature_is_accepted_by_every_path() {
+        let id = identity(1);
+        let pk = id.public_key();
+        let msg = b"strict verify";
+        let sig = id.sign(msg).unwrap();
+        assert_eq!(verify(&pk, msg, &sig), Ok(true));
+        assert_eq!(verify_strict(&pk, msg, &sig), Ok(()));
+        assert_eq!(crate::verify_strict(&pk, msg, &sig), Ok(()));
+        let vk = VerifyingKey::from_bytes(&pk).unwrap();
+        assert_eq!(vk.verify_strict(msg, &sig), Ok(()));
+        assert_eq!(vk.to_bytes(), pk, "to_bytes returns the parsed bytes");
+    }
+
+    #[test]
+    fn a_wrong_signature_is_refused_by_every_path() {
+        let id = identity(2);
+        let pk = id.public_key();
+        let msg = b"strict verify";
+        let sig = id.sign(msg).unwrap();
+        let vk = VerifyingKey::from_bytes(&pk).unwrap();
+
+        let other = identity(3).sign(msg).unwrap();
+        assert_eq!(verify(&pk, msg, &other), Ok(false));
+        assert_eq!(verify_strict(&pk, msg, &other), Err(VerifyError::BadSignature));
+        assert_eq!(vk.verify_strict(msg, &other), Err(VerifyError::BadSignature));
+
+        assert_eq!(verify(&pk, b"another message", &sig), Ok(false));
+        assert_eq!(
+            vk.verify_strict(b"another message", &sig),
+            Err(VerifyError::BadSignature)
+        );
+
+        // One flipped bit anywhere: in the challenge, the response and the hints.
+        for pos in [0, 31, 32, 1000, 3000, sig.len() - 1] {
+            let mut bad = sig.clone();
+            bad[pos] ^= 0x01;
+            assert_eq!(verify(&pk, msg, &bad), Ok(false), "verify, byte {pos}");
+            assert!(verify_strict(&pk, msg, &bad).is_err(), "verify_strict, byte {pos}");
+            assert!(vk.verify_strict(msg, &bad).is_err(), "VerifyingKey, byte {pos}");
+        }
+    }
+
+    #[test]
+    fn a_parsed_key_is_reused_across_calls() {
+        let id = identity(4);
+        let vk = VerifyingKey::from_bytes(&id.public_key()).unwrap();
+        let other = identity(5);
+        for i in 0u8..12 {
+            let msg = [i; 17];
+            let right = id.sign(&msg).unwrap();
+            let wrong = other.sign(&msg).unwrap();
+            // Alternate, so a key whose state changed after a refusal would show.
+            assert_eq!(vk.verify_strict(&msg, &wrong), Err(VerifyError::BadSignature));
+            assert_eq!(vk.verify_strict(&msg, &right), Ok(()));
+        }
+    }
+
+    #[test]
+    fn strict_agrees_with_verify_on_every_input() {
+        let ids = [identity(6), identity(7)];
+        let pks: Vec<Vec<u8>> = ids.iter().map(|i| i.public_key()).collect();
+        let mut agree = 0;
+        for (s, signer) in ids.iter().enumerate() {
+            for m in 0u8..4 {
+                let msg = [m; 9];
+                let sig = signer.sign(&msg).unwrap();
+                let mut flipped = sig.clone();
+                flipped[usize::from(m) * 700] ^= 0x80;
+                for (k, pk) in pks.iter().enumerate() {
+                    for candidate in [&sig, &flipped] {
+                        let old = verify(pk, &msg, candidate).unwrap();
+                        let new = verify_strict(pk, &msg, candidate).is_ok();
+                        assert_eq!(old, new, "signer {s}, key {k}, msg {m}");
+                        assert_eq!(old, k == s && candidate == &sig);
+                        agree += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(agree, 32);
+    }
+
+    #[test]
+    fn purposes_are_separated_strictly() {
+        let id = identity(8);
+        let vk = VerifyingKey::from_bytes(&id.public_key()).unwrap();
+        let msg = b"receipt";
+        let a = purpose::AGENT_RECEIPT_V1;
+        let sig = id.sign_with_purpose(a, msg).unwrap();
+        assert_eq!(vk.verify_strict_with_purpose(a, msg, &sig), Ok(()));
+        assert_eq!(
+            verify_strict_with_purpose(&id.public_key(), a, msg, &sig),
+            Ok(())
+        );
+        assert_eq!(vk.verify_strict(msg, &sig), Err(VerifyError::BadSignature));
+        assert_eq!(
+            vk.verify_strict_with_purpose(b"another/purpose/v1", msg, &sig),
+            Err(VerifyError::BadSignature)
+        );
+        // Empty purpose is the plain signature, both ways.
+        let plain = id.sign(msg).unwrap();
+        assert_eq!(vk.verify_strict_with_purpose(&[], msg, &plain), Ok(()));
+        // Over-long purpose: refused before any verification.
+        assert_eq!(
+            vk.verify_strict_with_purpose(&[0u8; 256], msg, &sig),
+            Err(VerifyError::PurposeTooLong)
+        );
+        assert!(vk.verify_strict_with_purpose(&[0u8; 255], msg, &sig).is_err());
+    }
+
+    #[test]
+    fn malformed_input_is_named() {
+        let id = identity(9);
+        let pk = id.public_key();
+        let sig = id.sign(b"m").unwrap();
+        assert_eq!(VerifyingKey::from_bytes(&pk[..1951]).err(), Some(VerifyError::InvalidPublicKey));
+        assert_eq!(verify_strict(&[], b"m", &sig), Err(VerifyError::InvalidPublicKey));
+        assert_eq!(verify_strict(&pk, b"m", &sig[..3308]), Err(VerifyError::MalformedSignature));
+        assert_eq!(verify_strict(&pk, b"m", &[]), Err(VerifyError::MalformedSignature));
+        // verify says Ok(false) for all of these, unchanged.
+        assert_eq!(verify(&pk[..1951], b"m", &sig), Ok(false));
+        assert_eq!(verify(&pk, b"m", &sig[..3308]), Ok(false));
+        // Control: the untruncated inputs verify.
+        assert_eq!(verify_strict(&pk, b"m", &sig), Ok(()));
     }
 }

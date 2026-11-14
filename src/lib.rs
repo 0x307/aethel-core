@@ -169,6 +169,10 @@ pub use saap::{SaapProof, SaapValidationError};
 // `signing::Identity::sign_with_purpose` for how it is used.
 pub use signing::{verify, verify_with_purpose, Identity};
 
+// CORE-04: the strict forms, where every refusal is an `Err`. Additive; the
+// two above are unchanged. `VerifyingKey` and `VerifyError` stay in `signing`.
+pub use signing::{verify_strict, verify_strict_with_purpose};
+
 // A-4: the bytes-only verify entry point the gap analysis names —
 // `verify_projection(projection_bytes, proof_bytes, context) -> Result<bool, _>`
 // — decoding `aethel-plp-1` wire envelopes so a caller never touches

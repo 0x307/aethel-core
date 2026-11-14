@@ -321,6 +321,10 @@ Most application code should prefer [`signing::Identity`](src/signing.rs)'s
   never encoded as, hashed into, or substituted for a Base address; USDC settlement is a
   separate dialect this crate has no notion of. See
   [`docs/PLP-ALGORITHM.md` §9](docs/PLP-ALGORITHM.md#9-plp-vs-didpkheip155--two-dialects-not-two-competitors-a-2).
+- **Strict verification.** `signing::verify_strict` (and `verify_strict_with_purpose`) returns
+  `Err` for every refusal, where `verify` returns `Ok(false)` for a signature that does not
+  verify. Prefer it: an ignored `Ok(false)` accepts a forgery. `signing::VerifyingKey` parses a
+  public key once and verifies many signatures with it. `verify` is unchanged.
 - **A key signs under one purpose only.** `signing::Identity::sign_with_purpose`/`verify_with_purpose`
   use FIPS 204's native context mechanism, so a signature made for one purpose (attach
   challenge, receipt, HITL approval, ...) provably does not verify under another. See

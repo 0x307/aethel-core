@@ -45,6 +45,14 @@ serde = { version = "1.0", default-features = false, features = ["alloc", "deriv
 # the dependency graph.
 pqc-sig = { version = "0.5", default-features = false, features = ["ml-dsa"] }
 
+# The ML-DSA implementation pqc-sig itself uses, named directly for one thing:
+# `signing::VerifyingKey` keeps a decoded key (with its expanded public matrix)
+# so it can verify many signatures without decoding the key each time, which
+# pqc-sig's byte-only verify API can't do. Same version and features pqc-sig
+# already brings in, so no crate is added to the graph. Signing still goes
+# through pqc-sig.
+ml-dsa = { version = "0.1.1", default-features = false, features = ["alloc"] }
+
 # AEAD for sealing an identity at rest. Sealing lives inside L1 for the same
 # reason signing does: the SDK cannot carry a cipher without breaking "one
 # artifact, adding a language never adds crypto".
