@@ -465,6 +465,7 @@ pub fn puf_seed_to_vector_k(key: &[u8; 64]) -> VectorK {
 // sampling.rs are pure-Rust and already cover this functionality.
 
 #[cfg(all(feature = "enclave", not(target_arch = "wasm32"), not(target_os = "windows")))]
+#[allow(unsafe_code)]
 pub mod ffi {
     use core::ffi::c_void;
     use super::{RING_N, MODULE_K};

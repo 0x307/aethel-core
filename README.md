@@ -327,21 +327,18 @@ Most application code should prefer [`signing::Identity`](src/signing.rs)'s
 
 ## Unsafe Code
 
-The default build (`std`, no `puf`, no `enclave`) contains exactly 5 `unsafe` blocks, all in
-[`src/sampling.rs`](src/sampling.rs) (lines ~98, ~167, ~173, ~179, ~408 at time of writing),
-each carrying a `// SAFETY:` comment above it explaining the invariant it relies on:
+The default build (`std`, no `puf`, no `enclave`) has no `unsafe` code, and
+`#![forbid(unsafe_code)]` makes that a compile error rather than a count to keep current. Since
+0.7.6, `sampling`'s zeroization goes through the `zeroize` crate's volatile writes, and
+`enclave_plp_prove_fixed_time` selects its proof with a field-by-field constant-time copy
+instead of byte-slice views of `PlpProof`.
 
-- Two `enclave_explicit_zeroize` / `PolyRq::zeroize` blocks use `core::ptr::write_volatile` in
-  a loop over a pointer derived from a live `&mut` reference, sized to `size_of::<T>()`,
-  followed by a `compiler_fence` — this is what makes secret zeroization survive dead-store
-  elimination.
-- Three blocks in `enclave_plp_prove_fixed_time` reinterpret same-sized, non-aliasing local
-  `PlpProof` values as byte slices (`core::slice::from_raw_parts[_mut]`) to run a
-  constant-time conditional copy (`ct_cond_copy`) without branching on secret data.
+Two builds relax this to `deny(unsafe_code)` with one module allowed each:
 
-Enabling `puf` or `enclave` additionally compiles 2 more `unsafe` blocks, in `src/puf.rs`'s
-`ffi` module — a wrapper around the C enclave shim described in
-[What runs today vs. what is designed](#what-runs-today-vs-what-is-designed).
+- `component`: the bindings `wit_bindgen::generate!` emits use `unsafe` for the canonical ABI.
+  The adapter's own code has none.
+- `puf` with `enclave`: `src/puf.rs`'s `ffi` module, 2 `unsafe` blocks wrapping the C enclave
+  shim described in [What runs today vs. what is designed](#what-runs-today-vs-what-is-designed).
 
 ## Shared WASM Modules
 

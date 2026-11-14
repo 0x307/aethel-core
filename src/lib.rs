@@ -49,11 +49,12 @@
 //!
 //! ## Unsafe Code
 //!
-//! The default build (no `puf`, no `enclave`) contains exactly 5 `unsafe` blocks, all in
-//! [`sampling`], each carrying a `// SAFETY:` comment explaining the invariant it relies on
-//! (volatile zeroization writes and constant-time byte-slice reinterpretation of same-sized,
-//! non-aliasing structs). Enabling `puf` or `enclave` additionally compiles 2 more `unsafe`
-//! blocks in `puf::ffi`, an FFI wrapper around a C enclave shim that is not shipped by
+//! None in the default build: `#![forbid(unsafe_code)]` applies to it. Zeroization goes
+//! through the `zeroize` crate's volatile writes, and the fixed-time prover selects its
+//! proof field by field. With `component` or `enclave`, the crate is `deny(unsafe_code)`
+//! instead, with one allowed module each: the bindings `wit_bindgen::generate!` emits for
+//! the component (canonical ABI glue), and `puf::ffi` with `puf` and `enclave` together, an
+//! FFI wrapper with 2 `unsafe` blocks around a C enclave shim that is not shipped by
 //! default.
 //!
 //! ---
@@ -83,7 +84,12 @@
 //!
 
 #![cfg_attr(not(feature = "std"), no_std)]
-// unsafe_code is required for volatile memory operations in sampling.rs and puf.rs
+// No `unsafe` in this crate's own code (CORE-01). Forbidden outright in the
+// default build. Two exceptions, each scoped to one module: the `enclave` FFI
+// wrapper in puf.rs, and the bindings `wit_bindgen::generate!` emits for the
+// component, which use `unsafe` for the canonical ABI.
+#![cfg_attr(not(any(feature = "enclave", feature = "component")), forbid(unsafe_code))]
+#![cfg_attr(any(feature = "enclave", feature = "component"), deny(unsafe_code))]
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
@@ -135,7 +141,10 @@ pub mod ct_verify;
 pub mod identity_error;
 
 /// WebAssembly Component Model adapter implementing the `aethel:core` WIT world.
+// The generated bindings need `unsafe` for the canonical ABI; the adapter's
+// own code has none.
 #[cfg(feature = "component")]
+#[allow(unsafe_code)]
 pub mod component;
 
 // ── Re-exports of public API types ───────────────────────────────────────────
