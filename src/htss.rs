@@ -565,7 +565,7 @@ impl SecretSharer {
         }
 
         let width = shares[0].value.len();
-        if width == 0 || width % LIMB_EVAL_BYTES != 0 {
+        if width == 0 || !width.is_multiple_of(LIMB_EVAL_BYTES) {
             return Err(IdentityError::SerializationError);
         }
         if shares

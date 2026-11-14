@@ -1,6 +1,6 @@
 # aethel-core — Post-Quantum Ephemeral Identity Engine
 
-> **Tier:** Production · **MSRV:** 1.85 · **License:** Apache-2.0 · Not independently audited, see [the crate family](#the-0x307-crate-family)
+> **Tier:** Production · **MSRV:** 1.87 · **License:** Apache-2.0 · Not independently audited, see [the crate family](#the-0x307-crate-family)
 
 [![WASM](https://img.shields.io/badge/target-wasm32--unknown--unknown-green)](https://webassembly.org/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](#license)
@@ -248,7 +248,7 @@ its target matrix and production/research status.
 ## Building
 
 ### Prerequisites
-- Rust 1.85+ (`rustup target add wasm32-unknown-unknown` for WASM builds)
+- Rust 1.87+ (`rustup target add wasm32-unknown-unknown` for WASM builds)
 
 ### Native Build + Tests
 

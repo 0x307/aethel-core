@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+    # PRs into main only. A stacked PR's base is another feature branch, so
+    # the stack's story PRs don't run CI; the merge PR, opened against main
+    # and holding the whole stack, does.
+    branches: [main]
 
 jobs:
   test:
@@ -43,14 +47,15 @@ jobs:
   # Declared rust-version in Cargo.toml, pinned and actually built rather than only stated.
   # 1.75 was the original declared MSRV but was never tested and does not build: the locked
   # zeroize_derive already requires the `edition2024` Cargo feature, which needs rustc 1.85+.
-  # 1.85 also matches the MSRV declared by pqc-kem/pqc-sig, so this keeps all three repos in
-  # the Identity Release initiative on the same floor.
+  # Raised to 1.87 in 0.7.6: ctutils 0.4.4, the fix for RUSTSEC-2026-0385 (reached through
+  # pqc-sig's ml-dsa), requires rustc 1.87, and pqc-sig 0.5.1 already declares 1.87. That
+  # matches pqc-kem and pqc-sig again.
   msrv:
-    name: MSRV (1.85) build
+    name: MSRV (1.87) build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.87.0
         with:
           targets: wasm32-unknown-unknown
       # MSRV is a promise about what a *consumer* compiles: the library and the

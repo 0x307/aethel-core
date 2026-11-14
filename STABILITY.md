@@ -50,6 +50,12 @@ without you changing anything.
 - Internal refactors with no change to the public surface
 - Documentation changes
 
+**Security exception.** A fix for a security defect can ship in a patch release even when it
+falls under "Breaking" above, if the alternative is leaving the defect in the supported line.
+That covers refusing input that is unsafe to accept (a low-order key, say) and raising the MSRV
+because a dependency's security fix needs a newer compiler. The changelog entry names the rule
+it breaks and why, and the change is never used for anything that isn't the fix.
+
 **If it's ambiguous which side of this a change falls on, it's treated as breaking.** That's
 the conservative default this policy exists to give you — the cost of an unnecessary minor
 version bump is much lower than the cost of a silent break.
