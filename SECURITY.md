@@ -20,6 +20,11 @@ the one committed number in that posture; everything else is best-effort.
 This project ships `0.x`. Security fixes land on the latest published minor version. Older
 `0.x` minors are not backported to, consistent with the stated stability policy.
 
+We fix forward: a security fix ships as a new release with a RustSec advisory that names the
+affected and fixed versions. A version is yanked only when it can't be installed or would
+mislead, and the reason is recorded in [`CHANGELOG.md`](./CHANGELOG.md#yanked-versions). The
+rule is in [`STABILITY.md`](./STABILITY.md#versions-and-yanks).
+
 ## Known limitations
 
 A cryptographic review of the identity and credential paths completed on 2026-09-08

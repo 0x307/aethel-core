@@ -7,6 +7,43 @@ adheres to the breaking-change and deprecation rules in
 [`STABILITY.md`](./STABILITY.md) rather than strict SemVer prior to `1.0.0` — see that
 document for what counts as breaking inside `0.x`.
 
+## Yanked versions
+
+Twelve versions are yanked. Each line gives the date it was yanked, in UTC from the crates.io
+audit log, and the reason. No reason was written down when these yanks were made, so each says
+"reason not recorded". Where this changelog or [`SECURITY.md`](./SECURITY.md) documents a defect
+in that version, the line names it, without claiming it was the reason. Each was yanked after its
+successor was published. 0.2.0 has an entry below but was never published to crates.io; 0.3.3
+and 0.5.1 were published and have no entry below, so their lines say what changed.
+
+- **0.1.0**: yanked 2026-09-01, after 0.1.5 was published. Reason not recorded. Its `build.rs`
+  wrote a `dist/` directory into the source tree on every build (fixed in 0.1.5), and reusing a
+  context τ leaked the master secret (AETHEL-F-02, fixed in 0.3.0).
+- **0.1.5**: yanked 2026-09-01, after 0.3.0 was published. Reason not recorded. Reusing a context
+  τ leaked the master secret (AETHEL-F-02, fixed in 0.3.0).
+- **0.3.0**: yanked 2026-09-01, two minutes after 0.3.1 was published. Reason not recorded. Its
+  Fiat-Shamir challenge did not bind `b_τ`, so a proof could be made for a projection with no
+  identity behind it (0X3-108, fixed in 0.3.1).
+- **0.3.1**: yanked 2026-09-03, when 0.3.2 was published. Reason not recorded. It required
+  `pqc-sig` 0.1, which was yanked (0.3.2 moved to 0.3).
+- **0.3.2**: yanked 2026-09-04, when 0.3.3 was published. Reason not recorded.
+- **0.3.3**: yanked 2026-09-07, after 0.4.0 was published. Reason not recorded. No library code
+  changed from 0.3.2: it changed the crates.io description, keywords and categories, and
+  re-recorded `component.sha256`.
+- **0.4.0**: yanked 2026-09-09, after 0.5.0 was published. Reason not recorded. `SECURITY.md`
+  records two defects in it, both fixed in 0.5.0: the projection ran at module rank 1 where the
+  specification requires 4, and the rejection-sampling bound was not derived from the challenge
+  space.
+- **0.5.0**: yanked 2026-09-10, after 0.5.1 was published. Reason not recorded. It required
+  `pqc-sig` 0.3, whose last unyanked version, 0.3.1, was yanked that day.
+- **0.5.1**: yanked 2026-09-10, a minute after 0.6.0 was published. Reason not recorded. Its only
+  change from 0.5.0 was `pqc-sig` 0.3 to 0.4.
+- **0.6.0**: yanked 2026-09-18, after 0.6.1 was published. Reason not recorded.
+- **0.6.1**: yanked 2026-09-24, after 0.7.0 and 0.7.1 were published. Reason not recorded.
+- **0.7.0**: yanked 2026-09-24, after 0.7.1 was published. Reason not recorded. Its crates.io
+  description listed zero-knowledge selective disclosure as a finished property, which D-01 says
+  it is not (fixed in 0.7.1).
+
 ## [0.7.5] - 2026-10-23
 
 Additive. Nothing existing changes: no function, type, wire format or error variant, and no
