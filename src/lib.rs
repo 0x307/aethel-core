@@ -15,19 +15,21 @@
 //!   dimension-disjoint routing across Q_5 (32 nodes, 80 edges).
 //! - **`saap`** (crate-private; its prove and verify pathway is retired, D-13) — Selective Attribute Attestation Protocol: BDLOP vector commitment
 //!   scheme with ZK selective disclosure and norm-bound verification.
-//! - **[`sampling`]** — Enclave constant-time rejection sampling: 16-iteration padded
-//!   loop, CMOV selection, volatile zeroization, and CBD η=2 sampler.
+//! - **[`sampling`]** — Fixed-iteration rejection sampling (16-iteration padded loop,
+//!   masked selection, zeroization) and the CBD η=2 sampler. Not verified constant time.
 //! - `puf` (research, non-default `puf` feature) — SRAM PUF + BCH(1023,512,55) fuzzy
 //!   extractor: GF(2^10) arithmetic, Berlekamp-Massey, Chien Search, and pure Rust WASM
 //!   implementation. Not part of the default build or the `aethel:core` WIT world.
-//! - **[`ct_verify`]** — Valgrind/ctgrind constant-time verification harness.
+//! - **[`ct_verify`]** — A smoke test of the fixed-iteration prover. It does not verify
+//!   constant-time behaviour, and there is no constant-time claim (see its docs).
 //!
 //! ## Security Properties
 //!
 //! - **Unlinkability**: `Adv_Adversary_Link(b_τ1, b_τ2) ≤ Negl(λ)` under M-LWE hardness.
 //! - **Post-Quantum Soundness**: Reduces to Decision M-LWE_{k,k+1,η,q} over R_q.
 //! - **Zero Static Keys**: No public key is ever written to persistent storage or ledger.
-//! - **Constant-Time**: All secret-dependent operations execute in fixed time (I_max=16).
+//! - **Fixed iteration count**: the enclave prover always runs I_max=16 iterations and
+//!   selects with masks. Its timing is not tested, so no constant-time claim is made.
 //!
 //! ## Parameters (AETHEL-SAAP-LEVEL1)
 //!
@@ -121,7 +123,7 @@ pub mod signing;
 
 pub mod credential;
 
-/// Enclave constant-time rejection sampling and CBD η=2 sampler.
+/// Fixed-iteration rejection sampling and CBD η=2 sampler (not verified constant time).
 pub mod sampling;
 
 /// `aethel-plp-1` — versioned wire envelope for PLP projections and proofs
@@ -132,7 +134,7 @@ pub mod wire;
 #[cfg(feature = "puf")]
 pub mod puf;
 
-/// Valgrind/ctgrind constant-time verification harness.
+/// Smoke test of the fixed-iteration prover. Makes no constant-time claim.
 pub mod ct_verify;
 
 /// Rust-side mirror of the `aethel:core` WIT world's `identity-error` variant.
@@ -196,7 +198,7 @@ pub const PARAM_BETA: i64 = 78;
 /// Rejection threshold γ₁ - β = 130_994.
 pub const REJECTION_BOUND: i64 = PARAM_GAMMA1 - PARAM_BETA;
 
-/// Fixed iteration ceiling for constant-time enclave loop.
+/// Fixed iteration ceiling for the enclave prover's padded loop.
 pub const FIXED_ITERATION_CEILING: usize = 16;
 
 /// Magic header bytes for the Ephemeral Identity Attestation Bundle (EIAB).

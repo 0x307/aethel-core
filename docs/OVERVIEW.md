@@ -289,7 +289,7 @@ c' = Hash(A_{τ2} ∥ b_{τ2} ∥ W ∥ τ₂) ≠ c
 | Security Dimension | Mechanism | Guarantee | Status |
 |---|---|---|---|
 | Mathematical Hardness | M-LWE over R_q^k | Computationally indistinguishable from uniform noise | Shipped |
-| Execution State | Constant-time software execution (`sampling.rs`, verified via `ct_verify.rs`'s Valgrind/ctgrind harness) | No timing or power side-channel leakage in the tested paths | Shipped, not literally enclave-executed |
+| Execution State | Fixed-iteration rejection loop with masked selection (`sampling.rs`) | None claimed: timing is not tested (the Valgrind harness this row used to cite was never in the repo; see `ct_verify.rs`) | Shipped, not literally enclave-executed, not verified constant time |
 | Key Derivation | Caller-supplied 32-byte seed (`MasterIdentity::from_seed`) | No key ever written to disk by this crate | Shipped |
 | Threshold Sharing | Shamir 3-of-5 (`htss::SecretSharer`) | Fewer than 3 shares reveal nothing; see `docs/HTSS-TOPOLOGY.md` for what's local-simulation vs. aspirational | Shipped (local, in-process) |
 
@@ -302,7 +302,7 @@ Removed from this table: "Nullifier Correlation (Kolmogorov-Blind ε-DP noise)" 
 1. **Shor's Algorithm**: Cannot extract keys because no static public key is ever written anywhere by this crate — there is no persistence layer of any kind, on-chain or otherwise.
 2. **Grover's Algorithm**: Cannot brute-force the state because identity bindings use collision-resistant hashes and lattice commitments operating at ≥256-bit post-quantum security margins.
 3. **Cold-Boot Attacks**: The master secret **s** is never written to non-volatile storage by this crate; it only ever exists as a caller-supplied value in memory.
-4. **Timing Side-Channels**: Fixed 16-iteration padded rejection sampling loop with constant-time CMOV selection prevents timing leakage (verified via `ct_verify.rs`).
+4. **Timing Side-Channels**: The enclave prover runs a fixed 16-iteration padded loop with masked selection. Its timing is not tested, so no constant-time claim is made (see `ct_verify.rs`).
 
 **Threats named in earlier drafts of this document, not applicable to what ships:** "Graph Analysis" via nullifiers (no nullifier concept exists here) and "Power/EM Side-Channels" via first-order masking / PRNG jitter injection (no such masking is implemented — the shipped constant-time work is the rejection-sampling loop and norm check, not power-trace countermeasures).
 

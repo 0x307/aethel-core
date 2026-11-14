@@ -101,16 +101,22 @@ const MODULUS_Q: u64 = 8380417;
 const TOTAL_SHARES: usize = 5; // n in the 3-of-5 scheme
 
 /// A 5-bit hypercube node coordinate (0..31).
+///
+/// **In-process simulation, not key protection.** Models a hypercube in memory; nothing is sent to any node, so no path or share is protected by it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NodeAddress(pub u8);
 
 impl NodeAddress {
     /// Return the neighbor of this node along dimension `dim`.
+    ///
+    /// **In-process simulation, not key protection.** Models a hypercube in memory; nothing is sent to any node, so no path or share is protected by it.
     pub fn neighbor(&self, dim: usize) -> Self {
         NodeAddress(self.0 ^ (1 << dim))
     }
 
     /// Hamming distance between two node addresses.
+    ///
+    /// **In-process simulation, not key protection.** Models a hypercube in memory; nothing is sent to any node, so no path or share is protected by it.
     pub fn hamming_distance(&self, other: &Self) -> usize {
         (self.0 ^ other.0).count_ones() as usize
     }
@@ -123,6 +129,8 @@ impl NodeAddress {
 /// out and route — the split is the point, not a leak. A lone share below
 /// the `THRESHOLD_K`-of-`n` threshold carries no usable information about the
 /// underlying secret (that's what makes it Shamir sharing and not a copy).
+///
+/// **In-process simulation, not key protection.** Models a hypercube in memory; nothing is sent to any node, so no path or share is protected by it.
 #[derive(Clone, Debug)]
 pub struct ZkProofSegment {
     /// Share index (1-based).
@@ -134,6 +142,8 @@ pub struct ZkProofSegment {
 }
 
 /// A routed packet carrying one proof segment through the hypercube.
+///
+/// **In-process simulation, not key protection.** Models a hypercube in memory; nothing is sent to any node, so no path or share is protected by it.
 #[derive(Clone, Debug)]
 pub struct HypercubePacket {
     /// Node the packet started from.
@@ -151,6 +161,8 @@ pub struct HypercubePacket {
 }
 
 /// Shamir 3-of-5 secret sharing over Z_q.
+///
+/// **In-process simulation, not key protection.** Shares are computed and reconstructed in the caller's memory. They protect a key only once the caller gives them to separate custodians; this crate does not do that.
 pub struct SecretSharer;
 
 /// A single threshold share of split key material.
@@ -171,6 +183,8 @@ pub struct SecretSharer;
 /// value)` only against a root the verifier already trusts. See
 /// [`SecretSharer::reconstruct_key_material`] for what that trust boundary is
 /// and is not.
+///
+/// **In-process simulation, not key protection.** Shares are computed and reconstructed in the caller's memory. They protect a key only once the caller gives them to separate custodians; this crate does not do that.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HtssShare {
     /// Evaluation point x, in `1..=n`. Never zero — `f(0)` is the secret.
@@ -417,6 +431,8 @@ impl SecretSharer {
     ///
     /// Refuses a secret larger than `MAX_SECRET_BYTES` with
     /// `InvalidInputLength`.
+    ///
+    /// **In-process simulation, not key protection.** Shares are computed and reconstructed in the caller's memory. They protect a key only once the caller gives them to separate custodians; this crate does not do that.
     pub fn split_key_material(
         secret: &[u8],
         nonce: &[u8],
@@ -535,6 +551,8 @@ impl SecretSharer {
     /// on the public key. A caller who receives `(shares, root)` as one
     /// untrusted bundle and passes both straight through gets nothing extra
     /// from this check.
+    ///
+    /// **In-process simulation, not key protection.** Shares are computed and reconstructed in the caller's memory. They protect a key only once the caller gives them to separate custodians; this crate does not do that.
     pub fn reconstruct_key_material(
         shares: &[HtssShare],
         root: &[u8; 32],
@@ -638,6 +656,8 @@ impl SecretSharer {
     /// non-Rust caller parses, so it needs to be reachable and tested by
     /// ordinary native tests rather than only by building for a specific
     /// target.
+    ///
+    /// **In-process simulation, not key protection.** Shares are computed and reconstructed in the caller's memory. They protect a key only once the caller gives them to separate custodians; this crate does not do that.
     pub fn split_key_material_bytes(secret: &[u8], nonce: &[u8]) -> Result<Vec<u8>, IdentityError> {
         let (shares, root) = Self::split_key_material(secret, nonce)?;
         let width = shares[0].value.len();
@@ -662,6 +682,8 @@ impl SecretSharer {
     /// malformed input, and `InvalidShareSet` for a well-formed share set that
     /// fails the root check — never a sentinel value that a caller could
     /// mistake for a recovered secret.
+    ///
+    /// **In-process simulation, not key protection.** Shares are computed and reconstructed in the caller's memory. They protect a key only once the caller gives them to separate custodians; this crate does not do that.
     pub fn reconstruct_key_material_bytes(bytes: &[u8]) -> Result<Vec<u8>, IdentityError> {
         if bytes.len() < 37 {
             return Err(IdentityError::SerializationError);
@@ -810,6 +832,8 @@ impl SecretSharer {
     ///
     /// Use [`Self::split_key_material`]. See P3-12 and
     /// `tests/htss_key_material.rs`.
+    ///
+    /// **In-process simulation, not key protection.** Shares are computed and reconstructed in the caller's memory. They protect a key only once the caller gives them to separate custodians; this crate does not do that.
     #[deprecated(
         since = "0.1.1",
         note = "threshold not enforced: coefficients derive non-cryptographically from a \
@@ -859,6 +883,8 @@ impl SecretSharer {
     /// happily interpolates through however many points it's given and
     /// returns a wrong answer silently. This is the entry point that refuses
     /// to do that.
+    ///
+    /// **In-process simulation, not key protection.** Shares are computed and reconstructed in the caller's memory. They protect a key only once the caller gives them to separate custodians; this crate does not do that.
     pub fn reconstruct_secret_checked(shares: &[(u8, u64)]) -> Result<u64, IdentityError> {
         if shares.len() < THRESHOLD_K {
             return Err(IdentityError::ThresholdNotMet);
@@ -877,6 +903,8 @@ impl SecretSharer {
     /// distinct indices in `1..q` they always are, so this is a defence in
     /// depth rather than a case a correct caller meets. See
     /// `mod_inverse` for why it is reported rather than absorbed.
+    ///
+    /// **In-process simulation, not key protection.** Shares are computed and reconstructed in the caller's memory. They protect a key only once the caller gives them to separate custodians; this crate does not do that.
     // Left as index loops so the compiled component is byte-identical.
     #[allow(clippy::needless_range_loop)]
     pub fn reconstruct_secret(shares: &[(u8, u64)]) -> Result<u64, IdentityError> {
@@ -942,6 +970,8 @@ impl SecretSharer {
 }
 
 /// 32-node Q_5 hypercube network with dimension-disjoint routing.
+///
+/// **In-process simulation, not key protection.** Models a hypercube in memory; nothing is sent to any node, so no path or share is protected by it.
 pub struct HypercubeNetwork {
     /// Every node address in the hypercube.
     pub nodes: Vec<NodeAddress>,
@@ -949,12 +979,16 @@ pub struct HypercubeNetwork {
 
 impl HypercubeNetwork {
     /// Create a new 32-node Q_5 hypercube network.
+    ///
+    /// **In-process simulation, not key protection.** Models a hypercube in memory; nothing is sent to any node, so no path or share is protected by it.
     pub fn new() -> Self {
         let nodes = (0..NUM_NODES).map(|i| NodeAddress(i as u8)).collect();
         Self { nodes }
     }
 
     /// Compute 5 orthogonal dimension-disjoint routing paths from `src` to `dst`.
+    ///
+    /// **In-process simulation, not key protection.** Models a hypercube in memory; nothing is sent to any node, so no path or share is protected by it.
     pub fn compute_orthogonal_paths(_src: NodeAddress, _dst: NodeAddress) -> Vec<Vec<usize>> {
         let mut paths = Vec::with_capacity(HYPERCUBE_DIM);
         for d_start in 0..HYPERCUBE_DIM {
@@ -968,6 +1002,8 @@ impl HypercubeNetwork {
     }
 
     /// Route proof shares from `src` to `dst` along orthogonal paths.
+    ///
+    /// **In-process simulation, not key protection.** Models a hypercube in memory; nothing is sent to any node, so no path or share is protected by it.
     pub fn route_payload_shares(
         &self,
         src: NodeAddress,

@@ -217,8 +217,10 @@ pub fn ct_cond_copy(dst: &mut [u8], src: &[u8], mask: u32) {
 /// Fixed 16-iteration padded proof generation.
 ///
 /// Executes exactly FIXED_ITERATION_CEILING iterations regardless of when
-/// a valid candidate is found. Uses constant-time CMOV selection to capture
-/// the first valid proof without timing leaks.
+/// a valid candidate is found, and captures the first valid proof with a
+/// masked copy rather than a branch. Its timing is not tested, so no
+/// constant-time claim is made (see [`crate::ct_verify`]). Research code: the
+/// identity path does not call it.
 pub fn enclave_plp_prove_fixed_time(
     proof_out: &mut PlpProof,
     s: &VectorK,

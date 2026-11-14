@@ -48,8 +48,10 @@ integration tests + 1 doctest, all passing on default features):
 - `saap` — crate-internal primitives the credential module builds on. The single-response
   `saap_prove`/`verify_saap_proof` pathway was retired from the WIT world in 0.1.5 (D-13)
 - `htss` — 3-of-5 threshold secret splitting and reconstruction, hypercube routing
-- `sampling` — constant-time rejection sampling, CBD η=2 sampler, norm checking
-- `ct_verify` — a Valgrind/ctgrind constant-time verification harness (doctest-covered)
+- `sampling` — fixed-iteration rejection sampling, CBD η=2 sampler, norm checking (not
+  verified constant time)
+- `ct_verify` — a smoke test of the fixed-iteration prover. It makes no constant-time claim:
+  the Valgrind harness it used to describe was never in the repo
 - `identity_error` — the Rust-side mirror of the WIT world's `identity-error` variant, plus
   checked wrappers (`*_checked` functions) that return it instead of panicking
 - `component` — the WebAssembly Component Model adapter implementing the `aethel:core` WIT
@@ -97,8 +99,8 @@ integration tests + 1 doctest, all passing on default features):
 | `saap` | Selective Attribute Attestation Protocol — BDLOP commitment + ZK selective disclosure | Default |
 | `credential` | Issuer-authenticated credential issuance/presentation, superseding `saap`'s public surface | Default |
 | `htss` | Threshold secret sharing (Shamir 3-of-5) for identity backup, modeled over a Q_5 routing graph — a principal/operator ritual, not a hosted service | Default |
-| `sampling` | Constant-time rejection sampling — 16-iteration fixed loop, CMOV, zeroization | Default |
-| `ct_verify` | Constant-time verification harness | Default |
+| `sampling` | Rejection sampling with a 16-iteration fixed loop, masked selection and zeroization. Timing not tested | Default |
+| `ct_verify` | Smoke test of the fixed-iteration prover; no constant-time claim | Default |
 | `identity_error` | Mirror of the WIT `identity-error` variant, plus checked wrappers | Default |
 | `puf` | SRAM PUF fuzzy extractor — BCH(1023,512,55) over GF(2^10), research code | Non-default (`puf` feature) |
 
@@ -312,7 +314,8 @@ Most application code should prefer [`signing::Identity`](src/signing.rs)'s
 
 - **Post-quantum secure**: Based on Module Learning With Errors (M-LWE), conjectured secure against quantum adversaries
 - **Ephemeral identifiers**: Each context `τ` produces a mathematically independent projection — no linkability across contexts
-- **Constant-time**: All secret-dependent operations use fixed-iteration loops and CMOV selection
+- **No constant-time claim**: the enclave prover runs a fixed 16 iterations and selects with
+  masks, but nothing tests its timing, so it is not claimed to be constant time
 - **No traditional crypto**: Zero AES, RSA, ECDSA, or classical elliptic curve operations
 - **PLP is an identity, not an address. Spend rails stay `eip155`.** A PLP projection is
   never encoded as, hashed into, or substituted for a Base address; USDC settlement is a
@@ -329,8 +332,8 @@ Most application code should prefer [`signing::Identity`](src/signing.rs)'s
 No build without `component` has `unsafe` code, and
 `#![forbid(unsafe_code)]` makes that a compile error rather than a count to keep current. Since
 0.7.6, `sampling`'s zeroization goes through the `zeroize` crate's volatile writes, and
-`enclave_plp_prove_fixed_time` selects its proof with a field-by-field constant-time copy
-instead of byte-slice views of `PlpProof`.
+`enclave_plp_prove_fixed_time` selects its proof with a field-by-field masked copy instead
+of byte-slice views of `PlpProof`.
 
 The one exception is `component`, which relaxes this to `deny(unsafe_code)` with one module
 allowed: the bindings `wit_bindgen::generate!` emits use `unsafe` for the canonical ABI. The
