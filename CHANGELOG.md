@@ -152,8 +152,9 @@ would otherwise need a minor release: **the MSRV rises from 1.85 to 1.87**, and
   now; its tests and `plp_tests` allow the lint, as `sampling` already does. Same behaviour.
 
 **The component's bytes change**, from the `sampling` and `signing` changes and the version
-bump. `component.sha256` is re-recorded from CI's canonical build. aethel-sdk vendors the
-component by git revision, so it needs a re-vendor after 0.7.6 is published.
+bump. `component.sha256` is now `7be435d9…`, re-recorded from CI's canonical build of
+`b6efb8d`. aethel-sdk vendors the component by git revision, so it needs a re-vendor after
+0.7.6 is published.
 
 ## [0.7.5] - 2026-10-23
 
