@@ -14,6 +14,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --all-targets
       - run: cargo test
+      # `enclave` is a no-op since 0.7.6 (its C sources never built and were
+      # removed), but the feature stays, so it is built on Linux here, alone
+      # and with `puf`, the combination that used to pull in the FFI.
+      - run: cargo build --locked --features enclave
+      - run: cargo build --locked --features puf,enclave
 
   # Zero warnings, kept at zero. Default features plus `component` (the WIT
   # world's adapter, which ships). `puf` is research code outside the charter

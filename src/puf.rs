@@ -455,88 +455,12 @@ pub fn puf_seed_to_vector_k(key: &[u8; 64]) -> VectorK {
     v
 }
 
-// ── Native/enclave C FFI (Linux/macOS GCC/Clang enclave builds only) ─────────
-// Not available on WASM or Windows (C files use GCC-specific __asm__ __volatile__).
-// Gated behind the `enclave` feature (off by default): the linked C sources
-// are an incomplete enclave-only path (e.g. c/ct_sampling.c calls
-// plp_generate_candidate/ct_cond_copy, which are declared nowhere in this
-// repo) and must not be pulled into a default build. Nothing in this crate's
-// working code path calls into this module — BchFuzzyExtractor and
-// sampling.rs are pure-Rust and already cover this functionality.
-
-#[cfg(all(feature = "enclave", not(target_arch = "wasm32"), not(target_os = "windows")))]
-#[allow(unsafe_code)]
-pub mod ffi {
-    use core::ffi::c_void;
-    use super::{RING_N, MODULE_K};
-
-    /// C-compatible polynomial type.
-    #[repr(C)]
-    pub struct CPolynomial {
-        pub coeffs: [i32; RING_N],
-    }
-
-    /// C-compatible vector type.
-    #[repr(C)]
-    pub struct CVectorK {
-        pub vec: [CPolynomial; MODULE_K],
-    }
-
-    /// C-compatible proof type.
-    #[repr(C)]
-    pub struct CPlpProof {
-        pub z: CVectorK,
-        pub iteration_counter: u32,
-    }
-
-    extern "C" {
-        pub fn gf_init_tables();
-        pub fn gf_mul(a: u16, b: u16) -> u16;
-        pub fn aethel_bch_decode_1023_512_55(
-            received: *const u8,
-            corrected: *mut u8,
-        ) -> i32;
-        pub fn ct_check_norm_bound(
-            z: *const i32,
-            bound: i32,
-        ) -> u32;
-        pub fn enclave_explicit_zeroize(v: *mut c_void, n: usize);
-        pub fn enclave_plp_prove_fixed_time(
-            proof_out: *mut CPlpProof,
-            s: *const i32,
-            tau: *const u8,
-        );
-    }
-
-    /// Safe wrapper around `aethel_bch_decode_1023_512_55`.
-    pub fn bch_decode(received: &[u8; 128]) -> Option<[u8; 64]> {
-        let mut corrected = [0u8; 64];
-        let result = unsafe {
-            aethel_bch_decode_1023_512_55(
-                received.as_ptr(),
-                corrected.as_mut_ptr(),
-            )
-        };
-        if result == 0 { Some(corrected) } else { None }
-    }
-
-    /// Safe wrapper around `enclave_explicit_zeroize`.
-    pub fn safe_zeroize(buf: &mut [u8]) {
-        unsafe {
-            enclave_explicit_zeroize(
-                buf.as_mut_ptr() as *mut c_void,
-                buf.len(),
-            );
-        }
-    }
-}
-
 // ── Public API (WASM-compatible) ──────────────────────────────────────────────
 
 /// Decode a BCH(1023,512,55) codeword using the pure Rust implementation.
 ///
-/// Available on all targets. On native targets, prefer `ffi::bch_decode`
-/// for the constant-time C implementation.
+/// Available on all targets. The C decoder and the `ffi::bch_decode` wrapper
+/// this used to point to were removed in 0.7.6 with the `enclave` sources.
 pub fn bch_decode_rust(received: &[u8; 128]) -> Option<[u8; 64]> {
     BchFuzzyExtractor::reconstruct(received, &[0u8; 64])
 }

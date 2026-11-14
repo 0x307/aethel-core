@@ -106,11 +106,6 @@ wasmtime = { version = "48.0.1", default-features = false, features = ["runtime"
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 getrandom = { version = "0.2", features = ["js"] }
 
-# ── Build dependencies ────────────────────────────────────────────────────────
-
-[build-dependencies]
-cc = "1.0"
-
 # ── Feature flags ─────────────────────────────────────────────────────────────
 
 [features]
@@ -127,8 +122,12 @@ std = [
     "chacha20poly1305/std",
 ]
 
-# enclave: Enables constant-time enclave execution paths and volatile zeroization
-# Activates the fixed-iteration rejection sampling loop and CMOV selection
+# enclave: does nothing since 0.7.6 (CORE-02). It used to compile C enclave
+# sources (c/*.c) and declare FFI to them in puf::ffi, but c/ct_sampling.c called
+# functions defined nowhere, so the feature never built on Linux or macOS, and
+# on Windows and wasm32 it compiled nothing. The C and the FFI are removed. The
+# feature name stays so a manifest that names it still resolves; it goes in
+# the next minor release.
 enclave = []
 
 # component: Builds the WebAssembly Component Model adapter in `src/component.rs`,

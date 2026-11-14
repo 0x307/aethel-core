@@ -42,20 +42,19 @@
 //!   implementing the `aethel:core` WIT world. This is the only WebAssembly surface; a
 //!   `wasm-bindgen` cdylib used to sit alongside it and was retired (see the note at the
 //!   bottom of this file).
-//! - `enclave`: Enables constant-time enclave execution paths and volatile zeroization.
+//! - `enclave`: does nothing since 0.7.6. Its C sources never built and were removed; the
+//!   name stays so manifests that name it still resolve.
 //! - `puf` (research, non-default): Compiles the `puf` module. SRAM PUF is out of scope
 //!   for the `aethel:core` WIT world and has no WASM export of its own; this feature
 //!   exists for research use only, not for production identity derivation.
 //!
 //! ## Unsafe Code
 //!
-//! None in the default build: `#![forbid(unsafe_code)]` applies to it. Zeroization goes
-//! through the `zeroize` crate's volatile writes, and the fixed-time prover selects its
-//! proof field by field. With `component` or `enclave`, the crate is `deny(unsafe_code)`
-//! instead, with one allowed module each: the bindings `wit_bindgen::generate!` emits for
-//! the component (canonical ABI glue), and `puf::ffi` with `puf` and `enclave` together, an
-//! FFI wrapper with 2 `unsafe` blocks around a C enclave shim that is not shipped by
-//! default.
+//! None: `#![forbid(unsafe_code)]` applies to every build except `component`.
+//! Zeroization goes through the `zeroize` crate's volatile writes, and the fixed-time
+//! prover selects its proof field by field. With `component` the crate is
+//! `deny(unsafe_code)` instead, with one module allowed: the bindings
+//! `wit_bindgen::generate!` emits (canonical ABI glue).
 //!
 //! ---
 //!
@@ -84,12 +83,11 @@
 //!
 
 #![cfg_attr(not(feature = "std"), no_std)]
-// No `unsafe` in this crate's own code (CORE-01). Forbidden outright in the
-// default build. Two exceptions, each scoped to one module: the `enclave` FFI
-// wrapper in puf.rs, and the bindings `wit_bindgen::generate!` emits for the
-// component, which use `unsafe` for the canonical ABI.
-#![cfg_attr(not(any(feature = "enclave", feature = "component")), forbid(unsafe_code))]
-#![cfg_attr(any(feature = "enclave", feature = "component"), deny(unsafe_code))]
+// No `unsafe` in this crate's own code (CORE-01). Forbidden outright in every
+// build except `component`, whose `wit_bindgen::generate!` bindings use
+// `unsafe` for the canonical ABI; that one module is allowed.
+#![cfg_attr(not(feature = "component"), forbid(unsafe_code))]
+#![cfg_attr(feature = "component", deny(unsafe_code))]
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 

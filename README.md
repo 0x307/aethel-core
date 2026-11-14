@@ -63,11 +63,10 @@ integration tests + 1 doctest, all passing on default features):
   part of the default build, and it does not appear in the `aethel:core` WIT world. Enabling
   `--features puf` compiles it; the default build does not, and no exported operation reaches
   it.
-- **`enclave` feature** — gates a set of `extern "C"` FFI declarations (`src/puf.rs`'s `ffi`
-  module) into a C enclave shim (`c/bch_decoder.c`, `c/ct_norm.c`, `c/ct_sampling.c`) that this
-  repo does not build a real target for; `c/ct_sampling.c` calls C functions declared nowhere
-  in this repo. Nothing in the working code path (`plp`, `saap`, `htss`, `sampling`, `puf`
-  without `enclave`) calls into it.
+- **`enclave` feature** does nothing since 0.7.6. It used to compile a C enclave shim
+  (`c/*.c`) and declare FFI to it in `src/puf.rs`, but `c/ct_sampling.c` called functions
+  defined nowhere, so the feature never built on Linux or macOS. The C sources and the FFI are
+  removed; the name stays so a manifest that names it still resolves.
 - **`aethel-runtime`** and the substrate repos (`pqvm`, `waven`, `wamr`, `awre`, `qies`,
   `obfuscation`) — separate repositories this crate does not depend on, build, or test.
   Nothing in this repo implies they ship alongside it.
@@ -122,7 +121,7 @@ See [`docs/PURPOSES.md`](docs/PURPOSES.md) for the full purpose-bytes registry
 |---------|---------|-------------|
 | `std` | ✅ Yes | Standard library support, heap allocation. |
 | `component` | ❌ No | Builds the WebAssembly Component Model adapter implementing the `aethel:core` WIT world. The one WASM artifact; see [The WASM Component](#the-wasm-component-l1-boundary). |
-| `enclave` | ❌ No | Compiles the C enclave FFI shim (see [What runs today vs. what is designed](#what-runs-today-vs-what-is-designed)). Not buildable against a real enclave target in this repo. |
+| `enclave` | ❌ No | Does nothing since 0.7.6; kept so manifests that name it still resolve. Its C sources never built and were removed (see [What runs today vs. what is designed](#what-runs-today-vs-what-is-designed)). |
 | `puf` | ❌ No | Compiles the `puf` module (SRAM PUF fuzzy extraction). Research only, and not reachable through the `aethel:core` WIT world. |
 
 ## WASM Exports
@@ -327,18 +326,15 @@ Most application code should prefer [`signing::Identity`](src/signing.rs)'s
 
 ## Unsafe Code
 
-The default build (`std`, no `puf`, no `enclave`) has no `unsafe` code, and
+No build without `component` has `unsafe` code, and
 `#![forbid(unsafe_code)]` makes that a compile error rather than a count to keep current. Since
 0.7.6, `sampling`'s zeroization goes through the `zeroize` crate's volatile writes, and
 `enclave_plp_prove_fixed_time` selects its proof with a field-by-field constant-time copy
 instead of byte-slice views of `PlpProof`.
 
-Two builds relax this to `deny(unsafe_code)` with one module allowed each:
-
-- `component`: the bindings `wit_bindgen::generate!` emits use `unsafe` for the canonical ABI.
-  The adapter's own code has none.
-- `puf` with `enclave`: `src/puf.rs`'s `ffi` module, 2 `unsafe` blocks wrapping the C enclave
-  shim described in [What runs today vs. what is designed](#what-runs-today-vs-what-is-designed).
+The one exception is `component`, which relaxes this to `deny(unsafe_code)` with one module
+allowed: the bindings `wit_bindgen::generate!` emits use `unsafe` for the canonical ABI. The
+adapter's own code has none.
 
 ## Shared WASM Modules
 
