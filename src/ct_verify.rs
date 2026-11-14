@@ -58,9 +58,9 @@ pub fn run_ct_verification() -> CtVerifyResult {
     let mut secret_s = VectorK {
         vec: [Polynomial { coeffs: [0i32; RING_N] }; MODULE_K],
     };
-    for k in 0..MODULE_K {
-        for n in 0..RING_N {
-            secret_s.vec[k].coeffs[n] = (n % 5) as i32 - 2;
+    for poly in secret_s.vec.iter_mut() {
+        for (n, c) in poly.coeffs.iter_mut().enumerate() {
+            *c = (n % 5) as i32 - 2;
         }
     }
 
@@ -84,9 +84,9 @@ pub fn run_c_harness_equivalent() -> bool {
     let mut secret_s = VectorK {
         vec: [Polynomial { coeffs: [0i32; RING_N] }; MODULE_K],
     };
-    for k in 0..MODULE_K {
-        for n in 0..RING_N {
-            secret_s.vec[k].coeffs[n] = (n % 3) as i32 - 1;
+    for poly in secret_s.vec.iter_mut() {
+        for (n, c) in poly.coeffs.iter_mut().enumerate() {
+            *c = (n % 3) as i32 - 1;
         }
     }
 
@@ -97,6 +97,8 @@ pub fn run_c_harness_equivalent() -> bool {
 }
 
 #[cfg(test)]
+// Index loops over the prover's fixed-size arrays, as in `sampling`'s tests.
+#[allow(clippy::needless_range_loop)]
 mod tests {
     use super::*;
 

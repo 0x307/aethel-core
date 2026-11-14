@@ -147,6 +147,9 @@ would otherwise need a minor release: **the MSRV rises from 1.85 to 1.87**, and
 - `ci.yml` runs on pull requests into `main` only, the filter `cargo-deny.yml` already had.
   Stacked story PRs no longer run it; the merge PR into `main` does. `push` is unchanged.
 - The MSRV job is renamed `MSRV (1.87) build` and pins Rust 1.87.0.
+- Clippy 1.100 (stable since 2026-11-09) flags index loops in `ct_verify` and
+  `tests/plp_tests.rs` as `needless_range_loop`. `ct_verify`'s two input loops use iterators
+  now; its tests and `plp_tests` allow the lint, as `sampling` already does. Same behaviour.
 
 **The component's bytes change**, from the `sampling` and `signing` changes and the version
 bump. `component.sha256` is re-recorded from CI's canonical build. aethel-sdk vendors the

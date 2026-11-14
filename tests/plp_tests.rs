@@ -14,6 +14,10 @@
 //! 6. **Sampling** — Constant-time rejection sampling and CBD η=2 sampler
 //! 7. **Norm Bounds** — Rejection bound enforcement
 
+// Index loops over the prover's fixed-size arrays, as in `sampling`'s own tests.
+// clippy 1.100 started flagging these (needless_range_loop).
+#![allow(clippy::needless_range_loop)]
+
 use aethel_core::plp::{MasterIdentity, Prover, Verifier};
 use aethel_core::htss::{HypercubeNetwork, NodeAddress, SecretSharer};
 use aethel_core::sampling::{
