@@ -1,7 +1,7 @@
 //! # Fixed-iteration prover smoke test (no constant-time claim)
 //!
 //! **This module does not verify constant-time behaviour, and this crate makes no
-//! constant-time claim for [`enclave_plp_prove_fixed_time`](crate::sampling::enclave_plp_prove_fixed_time).** Until 0.7.6 this module
+//! constant-time claim for `enclave_plp_prove_fixed_time` (deprecated in 0.7.6: not secure, do not use).** Until 0.7.6 this module
 //! described itself as a Valgrind/ctgrind harness that "proves constant-time compliance".
 //! That harness was never in the repository: the `tests/valgrind_ct_harness.rs` and
 //! `tests/ct_harness.c` files its docs pointed to do not exist, no CI job ran Valgrind, and
@@ -23,6 +23,7 @@
 
 // ── Rust module implementation ────────────────────────────────────────────────
 
+#[allow(deprecated)]
 use crate::sampling::{
     enclave_plp_prove_fixed_time, PlpProof, Polynomial, RejectionError, VectorK,
     MODULE_K, RING_N,
@@ -53,6 +54,7 @@ pub enum CtVerifyResult {
 /// let result = run_ct_verification();
 /// println!("CT verification result: {:?}", result);
 /// ```
+#[allow(deprecated)]
 pub fn run_ct_verification() -> CtVerifyResult {
     // Initialize secret vector with small coefficients (as in the Valgrind harness)
     let mut secret_s = VectorK {
@@ -80,6 +82,7 @@ pub fn run_ct_verification() -> CtVerifyResult {
 /// Coefficient pattern `(n % 3) - 1` and tau pattern `0x77`, the inputs of a
 /// C harness that was specified but never added to this repository. Returns
 /// `true` if proof generation succeeded. It does not check timing.
+#[allow(deprecated)]
 pub fn run_c_harness_equivalent() -> bool {
     let mut secret_s = VectorK {
         vec: [Polynomial { coeffs: [0i32; RING_N] }; MODULE_K],
@@ -99,6 +102,7 @@ pub fn run_c_harness_equivalent() -> bool {
 #[cfg(test)]
 // Index loops over the prover's fixed-size arrays, as in `sampling`'s tests.
 #[allow(clippy::needless_range_loop)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

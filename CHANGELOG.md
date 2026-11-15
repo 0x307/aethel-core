@@ -55,6 +55,12 @@ Two changes use the security exception now in [`STABILITY.md`](./STABILITY.md) Â
 would otherwise need a minor release: **the MSRV rises from 1.85 to 1.87**, and
 **`sampling::enclave_explicit_zeroize` takes `T: Zeroize` instead of any `T`**. Both are below.
 
+### Deprecated
+
+- **`sampling::enclave_plp_prove_fixed_time` is not secure: do not use it.** It is deprecated
+  and hidden from the docs in 0.7.6 and is removed in 0.8. It is research code: the identity
+  path, `signing` and `plp::Prover` don't call it. If you call it, stop.
+
 ### Changed
 
 - **MSRV raised from 1.85 to 1.87** (security exception). `ctutils` 0.4.4, the fix for

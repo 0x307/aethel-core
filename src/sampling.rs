@@ -28,7 +28,7 @@
 //! - [`enclave_explicit_zeroize`](crate::sampling::enclave_explicit_zeroize) — Volatile memory zeroization with compiler barrier
 //! - [`ct_check_norm_bound`](crate::sampling::ct_check_norm_bound) — Constant-time infinity norm bound check
 //! - [`ct_cond_copy`](crate::sampling::ct_cond_copy) — Constant-time conditional byte copy (CMOV equivalent)
-//! - [`enclave_plp_prove_fixed_time`](crate::sampling::enclave_plp_prove_fixed_time) — Fixed 16-iteration padded proof generation
+//! - `enclave_plp_prove_fixed_time`: fixed 16-iteration padded proof generation. Deprecated in 0.7.6: not secure, do not use
 //! - [`poly_cbd_eta2`](crate::sampling::poly_cbd_eta2) — CBD η=2 polynomial sampler
 //! - [`poly_check_infinity_norm`](crate::sampling::poly_check_infinity_norm) — Constant-time infinity norm check
 //!
@@ -221,6 +221,10 @@ pub fn ct_cond_copy(dst: &mut [u8], src: &[u8], mask: u32) {
 /// masked copy rather than a branch. Its timing is not tested, so no
 /// constant-time claim is made (see [`crate::ct_verify`]). Research code: the
 /// identity path does not call it.
+///
+/// **Not secure: do not use.** Deprecated in 0.7.6 and removed in 0.8.
+#[deprecated(since = "0.7.6", note = "not secure: do not use. Removed in 0.8.")]
+#[doc(hidden)]
 pub fn enclave_plp_prove_fixed_time(
     proof_out: &mut PlpProof,
     s: &VectorK,
@@ -527,6 +531,7 @@ pub fn poly_check_infinity_norm(poly: &PolyRq, bound: i32) -> bool {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 
