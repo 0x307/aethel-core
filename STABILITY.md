@@ -50,6 +50,12 @@ without you changing anything.
 - Internal refactors with no change to the public surface
 - Documentation changes
 
+**Security exception.** A fix for a security defect can ship in a patch release even when it
+falls under "Breaking" above, if the alternative is leaving the defect in the supported line.
+That covers refusing input that is unsafe to accept (a low-order key, say) and raising the MSRV
+because a dependency's security fix needs a newer compiler. The changelog entry names the rule
+it breaks and why, and the change is never used for anything that isn't the fix.
+
 **If it's ambiguous which side of this a change falls on, it's treated as breaking.** That's
 the conservative default this policy exists to give you — the cost of an unnecessary minor
 version bump is much lower than the cost of a silent break.
@@ -92,11 +98,22 @@ early. The floor is what's meant to hold indefinitely, including through a slow 
 
 ### Versions and yanks
 
-**We never yank a published version, including for a security bug.** A security bug is fixed
-forward: a new release with the fix, and a RustSec advisory that names the affected versions,
-so `cargo audit` and `cargo deny` flag them for everyone who depends on them. A yank only
-stops new resolutions. It does not reach builds that already have a `Cargo.lock`, and it
-breaks the ones that do not, so it is the wrong tool for telling people to upgrade.
+**We fix forward, and yank only with a recorded reason.** A fix ships as a new release. A
+security fix also gets a [RustSec](https://rustsec.org/) advisory that names the affected
+versions and the fixed one, so `cargo audit` and `cargo deny` flag the affected versions in your
+build and you learn about the problem and the fix together. A security bug alone is not a reason
+to yank.
+
+A version is yanked only when it can't be installed (it fails to build or resolve for a
+consumer) or when it would mislead (its published code or README describes behaviour it doesn't
+have, in a way a consumer would act on). Each yank gets one line in
+[`CHANGELOG.md`](./CHANGELOG.md#yanked-versions) giving the reason. A yanked version still
+resolves from an existing `Cargo.lock`, so nothing already built breaks; new resolutions skip
+it.
+
+The gates that keep a release from needing a yank are in CI: the byte-identity test
+(`signing::byte_identity_tests`), the `aethel-plp-1` vectors (`tests/plp_vectors.rs`), and the
+component's reproducible build checked against `component.sha256`.
 
 **More than one line may be live at once.** A line is a `0.x` minor series (`0.4`, `0.5`).
 When a new line ships, the previous one is not withdrawn.
@@ -105,7 +122,10 @@ When a new line ships, the previous one is not withdrawn.
 marked unsupported in its README and in `CHANGELOG.md`, and stays downloadable. Each release
 that starts a window states the date it ends.
 
-This policy was adopted on 2026-10-22. It does not change versions yanked before that date.
+Twelve versions are yanked: 0.1.0, 0.1.5, 0.3.0 to 0.3.3, 0.4.0, 0.5.0, 0.5.1, 0.6.0, 0.6.1
+and 0.7.0. They were yanked before this rule was written, and no reason was recorded at the
+time. [`CHANGELOG.md`](./CHANGELOG.md#yanked-versions) has one line for each with what is known.
+They stay yanked and get no patches. If you are on one of them, move to 0.7.x.
 
 ## 6. Support posture
 

@@ -1,141 +1,29 @@
-//! # Valgrind/ctgrind Constant-Time Verification Harness
+//! # Fixed-iteration prover smoke test (no constant-time claim)
 //!
-//! This module provides the complete verification harness for mechanically proving
-//! constant-time compliance of the Aethel-ID enclave rejection sampling implementation.
+//! **This module does not verify constant-time behaviour, and this crate makes no
+//! constant-time claim for `enclave_plp_prove_fixed_time` (deprecated in 0.7.6: not secure, do not use).** Until 0.7.6 this module
+//! described itself as a Valgrind/ctgrind harness that "proves constant-time compliance".
+//! That harness was never in the repository: the `tests/valgrind_ct_harness.rs` and
+//! `tests/ct_harness.c` files its docs pointed to do not exist, no CI job ran Valgrind, and
+//! the functions here only run the prover once without poisoning any input. A timing test
+//! (dudect-style) was considered for 0.7.6 and not added, because a statistical timing test
+//! on shared CI runners is not reliable enough to gate on. So the claim was removed instead.
 //!
-//! ## Purpose
+//! What the prover does do, by construction: it always runs
+//! [`FIXED_ITERATION_CEILING`](crate::sampling::FIXED_ITERATION_CEILING) iterations, and it
+//! selects the accepted response with masks rather than a branch. Whether the compiled code
+//! is free of secret-dependent timing (division, comparisons, the SHAKE-based samplers) is
+//! unchecked.
 //!
-//! Uses Valgrind Memcheck client requests to poison secret inputs (`s` and `tau`)
-//! as "undefined memory" in Valgrind's shadow VM. Any secret-dependent conditional
-//! branch or memory access index will trigger a Valgrind error:
+//! What the functions here check: the fixed-iteration loop completes and returns a proof
+//! for two fixed inputs. Nothing more.
 //!
-//! - `"Conditional jump or move depends on uninitialised value(s)"` → timing leak
-//! - `"Use of uninitialised value of size 8 (Memory Address)"` → cache leak
-//!
-//! A clean run (`ERROR SUMMARY: 0 errors from 0 contexts`) proves constant-time
-//! compliance.
-//!
-//! ## Expected Test Result Matrix
-//!
-//! | Code Construction | Valgrind Memcheck Behavior | CT Verification Result |
-//! |---|---|---|
-//! | Branch on Secret (`if secret_s[i] > 0`) | Conditional jump depends on uninitialised value | FAILED (Timing Leak) |
-//! | Secret-Indexed Array (`table[secret_s[i]]`) | Use of uninitialised value of size 8 | FAILED (Cache Leak) |
-//! | `enclave_plp_prove_fixed_time` | ERROR SUMMARY: 0 errors from 0 contexts | PASSED (Constant-Time) |
-//!
-//! ## CI Execution
-//!
-//! ```bash
-//! # 1. Compile the Rust integration test binary
-//! cargo test --test valgrind_ct_harness --no-run --release
-//! # 2. Locate the compiled executable artifact
-//! TEST_BIN=$(find target/release/deps -maxdepth 1 -type f -name "valgrind_ct_harness*")
-//! # 3. Execute under Valgrind Memcheck with strict leak detection
-//! valgrind \
-//!   --tool=memcheck \
-//!   --track-origins=yes \
-//!   --leak-check=full \
-//!   --error-exitcode=101 \
-//!   --verbose \
-//!   $TEST_BIN --nocapture
-//! ```
-//!
-//! ## Rust Test Harness
-//!
-//! The Rust test harness (reproduced verbatim from the specification) is located
-//! in `tests/valgrind_ct_harness.rs`. The C harness is in `tests/ct_harness.c`.
-
-// ── Rust Test Harness (tests/valgrind_ct_harness.rs) ─────────────────────────
-//
-// Verbatim from specification:
-//
-// ```rust
-// use aethel_enclave_plp::*;
-// use valgrind_request::{make_mem_defined, make_mem_undefined};
-//
-// fn is_running_on_valgrind() -> bool {
-//     unsafe { valgrind_request::running_on_valgrind() > 0 }
-// }
-//
-// #[test]
-// fn ctgrind_verify_enclave_plp_constant_time() {
-//     if !is_running_on_valgrind() {
-//         eprintln!("\n[WARNING] Test is NOT running under Valgrind Memcheck!");
-//     }
-//     let mut secret_s = VectorK { vec: [Polynomial { coeffs: [0; RING_N] }; MODULE_K] };
-//     for k in 0..MODULE_K {
-//         for n in 0..RING_N {
-//             secret_s.vec[k].coeffs[n] = (n % 5) as i32 - 2;
-//         }
-//     }
-//     let mut tau = [0x5Au8; 32];
-//     let mut proof_out = PlpProof::zero();
-//     // POISON SECRETS: Mark secret memory as "undefined" in Valgrind's shadow VM
-//     unsafe {
-//         make_mem_undefined(
-//             &mut secret_s as *mut _ as *mut libc::c_void,
-//             core::mem::size_of::<VectorK>(),
-//         );
-//         make_mem_undefined(tau.as_mut_ptr() as *mut libc::c_void, tau.len());
-//     }
-//     let result = enclave_plp_prove_fixed_time(&mut proof_out, &secret_s, &tau);
-//     unsafe {
-//         make_mem_defined(&mut proof_out as *mut _ as *mut libc::c_void, core::mem::size_of::<PlpProof>());
-//         make_mem_defined(&mut secret_s as *mut _ as *mut libc::c_void, core::mem::size_of::<VectorK>());
-//     }
-//     assert!(result.is_ok(), "Proof generation failed during CT test");
-// }
-// ```
-
-// ── C Verification Harness (tests/ct_harness.c) ───────────────────────────────
-//
-// Verbatim from specification:
-//
-// ```c
-// #include <stdio.h>
-// #include <stdint.h>
-// #include <stdlib.h>
-// #include <string.h>
-// #include <valgrind/memcheck.h>
-//
-// #define RING_N 256
-// #define MODULE_K 4
-//
-// typedef struct { int32_t coeffs[RING_N]; } Polynomial;
-// typedef struct { Polynomial vec[MODULE_K]; } VectorK;
-// typedef struct { VectorK z; uint32_t iteration_counter; } PlpProof;
-//
-// extern int32_t enclave_plp_prove_fixed_time(PlpProof* proof_out, const VectorK* s, const uint8_t tau[32]);
-//
-// int main(void) {
-//     VectorK secret_s;
-//     uint8_t tau[32];
-//     PlpProof proof_out;
-//     memset(&secret_s, 0, sizeof(VectorK));
-//     memset(tau, 0x77, 32);
-//     memset(&proof_out, 0, sizeof(PlpProof));
-//     for (int k = 0; k < MODULE_K; k++) {
-//         for (int n = 0; n < RING_N; n++) {
-//             secret_s.vec[k].coeffs[n] = (n % 3) - 1;
-//         }
-//     }
-//     VALGRIND_MAKE_MEM_UNDEFINED(&secret_s, sizeof(VectorK));
-//     VALGRIND_MAKE_MEM_UNDEFINED(tau, 32);
-//     int32_t status = enclave_plp_prove_fixed_time(&proof_out, &secret_s, tau);
-//     VALGRIND_MAKE_MEM_DEFINED(&proof_out, sizeof(PlpProof));
-//     VALGRIND_MAKE_MEM_DEFINED(&secret_s, sizeof(VectorK));
-//     if (status == 0) {
-//         printf("[SUCCESS] Constant-Time Proof Executed Cleanly.\n");
-//         return 0;
-//     } else {
-//         printf("[ERROR] Proof generation failed.\n");
-//         return 1;
-//     }
-// }
-// ```
+//! The prover itself is research code that the identity path (`plp`, `signing`, the
+//! component) does not call.
 
 // ── Rust module implementation ────────────────────────────────────────────────
 
+#[allow(deprecated)]
 use crate::sampling::{
     enclave_plp_prove_fixed_time, PlpProof, Polynomial, RejectionError, VectorK,
     MODULE_K, RING_N,
@@ -144,25 +32,20 @@ use crate::sampling::{
 /// Result of a constant-time verification run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CtVerifyResult {
-    /// All iterations completed without secret-dependent branches.
+    /// The fixed-iteration loop completed and produced a proof. Says nothing
+    /// about timing.
     Passed,
     /// Proof generation failed (all 16 iterations rejected).
     ProofFailed(RejectionError),
-    /// Not running under Valgrind — results are informational only.
+    /// Not running under Valgrind. Never returned: no function here detects
+    /// Valgrind. Kept because the enum is public.
     NotUnderValgrind,
 }
 
-/// Run the constant-time verification test without Valgrind poisoning.
+/// Run the fixed-iteration prover once on a fixed input.
 ///
-/// This function exercises the same code path as the Valgrind harness but
-/// without memory poisoning. It verifies that:
-///
-/// 1. The fixed-iteration loop completes without panicking.
-/// 2. A valid proof is produced for the given inputs.
-/// 3. The proof's iteration counter is within `[0, FIXED_ITERATION_CEILING)`.
-///
-/// For full constant-time verification, run the test binary under Valgrind
-/// Memcheck as described in the module documentation.
+/// Checks that the loop completes and produces a proof. It does not check
+/// timing; see the module docs for why there is no constant-time claim.
 ///
 /// # Example
 ///
@@ -171,14 +54,15 @@ pub enum CtVerifyResult {
 /// let result = run_ct_verification();
 /// println!("CT verification result: {:?}", result);
 /// ```
+#[allow(deprecated)]
 pub fn run_ct_verification() -> CtVerifyResult {
     // Initialize secret vector with small coefficients (as in the Valgrind harness)
     let mut secret_s = VectorK {
         vec: [Polynomial { coeffs: [0i32; RING_N] }; MODULE_K],
     };
-    for k in 0..MODULE_K {
-        for n in 0..RING_N {
-            secret_s.vec[k].coeffs[n] = (n % 5) as i32 - 2;
+    for poly in secret_s.vec.iter_mut() {
+        for (n, c) in poly.coeffs.iter_mut().enumerate() {
+            *c = (n % 5) as i32 - 2;
         }
     }
 
@@ -193,19 +77,19 @@ pub fn run_ct_verification() -> CtVerifyResult {
     }
 }
 
-/// Run the C-harness equivalent verification test.
+/// Run the fixed-iteration prover once on a second fixed input.
 ///
-/// Mirrors the C `main()` function from `tests/ct_harness.c`, using the
-/// same coefficient pattern `(n % 3) - 1` and tau pattern `0x77`.
-///
-/// Returns `true` if proof generation succeeded, `false` otherwise.
+/// Coefficient pattern `(n % 3) - 1` and tau pattern `0x77`, the inputs of a
+/// C harness that was specified but never added to this repository. Returns
+/// `true` if proof generation succeeded. It does not check timing.
+#[allow(deprecated)]
 pub fn run_c_harness_equivalent() -> bool {
     let mut secret_s = VectorK {
         vec: [Polynomial { coeffs: [0i32; RING_N] }; MODULE_K],
     };
-    for k in 0..MODULE_K {
-        for n in 0..RING_N {
-            secret_s.vec[k].coeffs[n] = (n % 3) as i32 - 1;
+    for poly in secret_s.vec.iter_mut() {
+        for (n, c) in poly.coeffs.iter_mut().enumerate() {
+            *c = (n % 3) as i32 - 1;
         }
     }
 
@@ -216,14 +100,14 @@ pub fn run_c_harness_equivalent() -> bool {
 }
 
 #[cfg(test)]
+// Index loops over the prover's fixed-size arrays, as in `sampling`'s tests.
+#[allow(clippy::needless_range_loop)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 
-    /// Verify that the fixed-time proof generation completes successfully
-    /// with the Valgrind harness coefficient pattern.
-    ///
-    /// When run under Valgrind with `--tool=memcheck`, this test will detect
-    /// any secret-dependent branches or memory accesses.
+    /// The fixed-iteration prover completes on the first fixed input. A
+    /// smoke test; it checks no timing property.
     #[test]
     fn test_ct_verification_passes() {
         let result = run_ct_verification();

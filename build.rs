@@ -1,8 +1,10 @@
 // aethel-core/build.rs
 //
-// C compilation is only performed for GCC/Clang targets on Linux/macOS
-// (enclave/SGX deployments). On WASM and MSVC targets, the pure Rust
-// implementations in sampling.rs and puf.rs are used instead.
+// No C is compiled. The C enclave sources (c/*.c) and the cc step that built
+// them under the `enclave` feature were removed in 0.7.6 (CORE-02):
+// c/ct_sampling.c had no includes and called functions defined nowhere, so
+// `--features enclave` never built on Linux or macOS. sampling.rs and puf.rs
+// are the implementation on every target.
 //
 // This script used to also generate a dist/ directory (a WIT copy, an ABI JSON
 // descriptor, an integration README, and a best-effort copy of the built
@@ -21,10 +23,6 @@
 // needs a staging directory. See README's "The WASM Component (L1 boundary)".
 
 fn main() {
-    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
-    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
-    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-
     // Rerun triggers
     println!("cargo:rerun-if-changed=src/lib.rs");
     println!("cargo:rerun-if-changed=build.rs");
@@ -60,35 +58,6 @@ fn main() {
 
     println!("cargo:rustc-env=AETHEL_CORE_GIT_REVISION={revision}");
     println!("cargo:rustc-env=AETHEL_CORE_COMPONENT_SHA256={component_sha256}");
-
-    // Skip C compilation for:
-    // - WASM targets (pure Rust implementations used)
-    // - MSVC targets (C files use GCC-specific __asm__ __volatile__)
-    // - Windows targets (enclave C code is Linux/SGX-specific)
-    // - Any build without the `enclave` feature: these C sources are an
-    //   incomplete enclave-only path (c/ct_sampling.c calls
-    //   plp_generate_candidate/ct_cond_copy, declared nowhere in this repo)
-    //   and must not break a default build. src/puf.rs gates its matching
-    //   `extern "C"` declarations behind the same feature.
-    let enclave_feature = std::env::var("CARGO_FEATURE_ENCLAVE").is_ok();
-    if target_arch == "wasm32"
-        || target_env == "msvc"
-        || target_os == "windows"
-        || !enclave_feature
-    {
-        return;
-    }
-
-    // GCC/Clang on Linux/macOS — compile the enclave C files
-    cc::Build::new()
-        .file("c/bch_decoder.c")
-        .file("c/ct_norm.c")
-        .file("c/ct_sampling.c")
-        .flag("-std=c11")
-        .flag("-O2")
-        .flag("-Wall")
-        .flag("-Wextra")
-        .compile("aethel_core_c");
 }
 
 /// Read a committed provenance file, failing the build if it is absent.

@@ -14,8 +14,13 @@
 //! 6. **Sampling** — Constant-time rejection sampling and CBD η=2 sampler
 //! 7. **Norm Bounds** — Rejection bound enforcement
 
+// Index loops over the prover's fixed-size arrays, as in `sampling`'s own tests.
+// clippy 1.100 started flagging these (needless_range_loop).
+#![allow(clippy::needless_range_loop)]
+
 use aethel_core::plp::{MasterIdentity, Prover, Verifier};
 use aethel_core::htss::{HypercubeNetwork, NodeAddress, SecretSharer};
+#[allow(deprecated)]
 use aethel_core::sampling::{
     ct_check_norm_bound, enclave_explicit_zeroize, enclave_plp_prove_fixed_time,
     PlpProof, Polynomial, VectorK,
@@ -299,6 +304,7 @@ fn test_enclave_fixed_iteration_proof() {
     let tau = [0x5Au8; 32];
     let mut proof_out = PlpProof::zero();
 
+    #[allow(deprecated)]
     let result = enclave_plp_prove_fixed_time(&mut proof_out, &secret_s, &tau);
     assert!(
         result.is_ok(),

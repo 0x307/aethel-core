@@ -12,9 +12,9 @@ project: "aethel-core"
 > integration. None of it is the crate's default or production key-derivation path:
 > - `puf` is a non-default Cargo feature; the default build does not compile this module at all.
 > - The real BCH(1023,512,55) encoder in `src/puf.rs` is a simplified placeholder, not the full
->   constant-time decoder described in §6 below (that C decoder exists in `c/bch_decoder.c` but
->   is gated behind the separate, also-non-default `enclave` feature, and is not buildable
->   against a real enclave target in this repo).
+>   constant-time decoder described in §6 below. A C decoder (`c/bch_decoder.c`) sat behind the
+>   `enclave` feature until 0.7.6, when the C sources were removed because the feature never
+>   built.
 > - §10's hardware targets (ARM TrustZone, Apple Secure Enclave, AWS Nitro Enclaves, RISC-V
 >   Keystone) are not implemented or tested against in this repo.
 > - `MasterIdentity::from_seed` — the crate's actual, default identity-derivation entry point —

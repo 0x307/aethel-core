@@ -28,7 +28,7 @@
 //! - [`enclave_explicit_zeroize`](crate::sampling::enclave_explicit_zeroize) — Volatile memory zeroization with compiler barrier
 //! - [`ct_check_norm_bound`](crate::sampling::ct_check_norm_bound) — Constant-time infinity norm bound check
 //! - [`ct_cond_copy`](crate::sampling::ct_cond_copy) — Constant-time conditional byte copy (CMOV equivalent)
-//! - [`enclave_plp_prove_fixed_time`](crate::sampling::enclave_plp_prove_fixed_time) — Fixed 16-iteration padded proof generation
+//! - `enclave_plp_prove_fixed_time`: fixed 16-iteration padded proof generation. Deprecated in 0.7.6: not secure, do not use
 //! - [`poly_cbd_eta2`](crate::sampling::poly_cbd_eta2) — CBD η=2 polynomial sampler
 //! - [`poly_check_infinity_norm`](crate::sampling::poly_check_infinity_norm) — Constant-time infinity norm check
 //!
@@ -113,45 +113,65 @@ impl PlpProof {
 }
 
 // `Polynomial`/`VectorK`/`PlpProof` are `Copy`, so none of them can implement
-// `Drop` — meaning no `ZeroizeOnDrop`. They already have a correct, audited,
-// constant-time volatile-write zeroization path in `enclave_explicit_zeroize`
-// (used by `enclave_plp_prove_fixed_time` below); these impls give that same
-// path a standard `zeroize::Zeroize` interface, matching the rest of the
-// crate (P3-08), without introducing new `unsafe` code or changing behavior.
+// `Drop`, meaning no `ZeroizeOnDrop`. They are wiped field by field through the
+// `zeroize` crate, whose integer and array impls use volatile writes and a
+// compiler fence, so the wipe survives dead-store elimination. No `unsafe` in
+// this crate (CORE-01): the volatile writes live in `zeroize`.
 
 impl zeroize::Zeroize for Polynomial {
     fn zeroize(&mut self) {
-        enclave_explicit_zeroize(self);
+        self.coeffs.zeroize();
     }
 }
 
 impl zeroize::Zeroize for VectorK {
     fn zeroize(&mut self) {
-        enclave_explicit_zeroize(self);
+        for poly in self.vec.iter_mut() {
+            poly.zeroize();
+        }
     }
 }
 
 impl zeroize::Zeroize for PlpProof {
     fn zeroize(&mut self) {
-        enclave_explicit_zeroize(self);
+        self.z.zeroize();
+        self.iteration_counter.zeroize();
     }
 }
 
 /// Volatile memory zeroization with compiler barrier.
-pub fn enclave_explicit_zeroize<T: Sized>(data: &mut T) {
-    let ptr = data as *mut T as *mut u8;
-    let len = core::mem::size_of::<T>();
-    // SAFETY: `ptr` is derived from `&mut T`, so it is non-null, aligned, and valid for
-    // `len = size_of::<T>()` bytes for the duration of this loop; `0..len` never advances
-    // past that allocation. Byte-wise writes need no alignment beyond `u8`. `write_volatile`
-    // (rather than a plain store) and the `compiler_fence` below prevent the compiler from
-    // eliding or reordering this zeroization around the secret's last use.
-    unsafe {
-        for i in 0..len {
-            core::ptr::write_volatile(ptr.add(i), 0u8);
+///
+/// Wipes `data` through its [`zeroize::Zeroize`] impl (volatile writes), then
+/// issues a sequentially consistent compiler fence.
+///
+/// Until 0.7.6 this took any `T: Sized` and wrote zero bytes over it with
+/// `unsafe` code. That was unsound for a safe function: an all-zero bit
+/// pattern is not a valid value of every type (a reference, a `Box`, a
+/// `NonZero*`), so safe code could create undefined behaviour through it. The
+/// bound is now `T: Zeroize`, which every type this crate wipes, every integer
+/// and every array of them implement. See the 0.7.6 changelog entry.
+pub fn enclave_explicit_zeroize<T: zeroize::Zeroize>(data: &mut T) {
+    data.zeroize();
+    compiler_fence(Ordering::SeqCst);
+}
+
+/// Constant-time conditional copy of a whole proof, field by field.
+///
+/// `mask` must be `0xFFFF_FFFF` (copy `src` into `dst`) or `0` (leave `dst`
+/// unchanged). Every coefficient and the counter are written either way, so
+/// the work done does not depend on `mask`. Replaces a byte-slice view of
+/// `PlpProof` that needed `unsafe` (CORE-01); the selected values are the same.
+#[inline(always)]
+fn ct_cond_copy_proof(dst: &mut PlpProof, src: &PlpProof, mask: u32) {
+    let mask_i32 = mask as i32;
+    for k in 0..MODULE_K {
+        for n in 0..RING_N {
+            let d = dst.z.vec[k].coeffs[n];
+            dst.z.vec[k].coeffs[n] = d ^ (mask_i32 & (src.z.vec[k].coeffs[n] ^ d));
         }
     }
-    compiler_fence(Ordering::SeqCst);
+    let d = dst.iteration_counter;
+    dst.iteration_counter = d ^ (mask & (src.iteration_counter ^ d));
 }
 
 #[inline(always)]
@@ -197,8 +217,14 @@ pub fn ct_cond_copy(dst: &mut [u8], src: &[u8], mask: u32) {
 /// Fixed 16-iteration padded proof generation.
 ///
 /// Executes exactly FIXED_ITERATION_CEILING iterations regardless of when
-/// a valid candidate is found. Uses constant-time CMOV selection to capture
-/// the first valid proof without timing leaks.
+/// a valid candidate is found, and captures the first valid proof with a
+/// masked copy rather than a branch. Its timing is not tested, so no
+/// constant-time claim is made (see [`crate::ct_verify`]). Research code: the
+/// identity path does not call it.
+///
+/// **Not secure: do not use.** Deprecated in 0.7.6 and removed in 0.8.
+#[deprecated(since = "0.7.6", note = "not secure: do not use. Removed in 0.8.")]
+#[doc(hidden)]
 pub fn enclave_plp_prove_fixed_time(
     proof_out: &mut PlpProof,
     s: &VectorK,
@@ -215,38 +241,10 @@ pub fn enclave_plp_prove_fixed_time(
         candidate_proof.iteration_counter = iter as u32;
         let reject_mask = ct_check_norm_bound(&candidate_z, REJECTION_BOUND);
         let capture_mask = (!reject_mask) & (!proof_captured_mask);
-        // SAFETY: `candidate_proof` is a live local of type `PlpProof`, so the pointer is
-        // non-null, aligned, and valid for exactly `size_of::<PlpProof>()` bytes — `PlpProof`
-        // is `#[repr(C)]` with no padding-sensitive invariants, so reinterpreting it as a
-        // byte slice is sound. The slice only borrows for this statement and is read-only.
-        let cand_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &candidate_proof as *const PlpProof as *const u8,
-                core::mem::size_of::<PlpProof>(),
-            )
-        };
-        // SAFETY: `proof_out` is the `&mut PlpProof` this function was called with, valid
-        // and uniquely borrowed for `size_of::<PlpProof>()` bytes; it aliases neither
-        // `candidate_proof` nor `dummy_buffer` (distinct objects), which is what lets the
-        // read of `cand_bytes` above and the writes below coexist safely.
-        let target_bytes = unsafe {
-            core::slice::from_raw_parts_mut(
-                proof_out as *mut PlpProof as *mut u8,
-                core::mem::size_of::<PlpProof>(),
-            )
-        };
-        // SAFETY: `dummy_buffer` is a live local of type `PlpProof`, distinct from
-        // `candidate_proof` and `*proof_out`; same size/alignment/no-alias reasoning as
-        // `target_bytes` above. Its only purpose is to receive the discarded ct_cond_copy
-        // branch so both branches take equal time.
-        let dummy_bytes = unsafe {
-            core::slice::from_raw_parts_mut(
-                &mut dummy_buffer as *mut PlpProof as *mut u8,
-                core::mem::size_of::<PlpProof>(),
-            )
-        };
-        ct_cond_copy(target_bytes, cand_bytes, capture_mask);
-        ct_cond_copy(dummy_bytes, cand_bytes, !capture_mask);
+        // `dummy_buffer` receives the discarded branch so both branches do the
+        // same work.
+        ct_cond_copy_proof(proof_out, &candidate_proof, capture_mask);
+        ct_cond_copy_proof(&mut dummy_buffer, &candidate_proof, !capture_mask);
         proof_captured_mask |= capture_mask;
     }
 
@@ -477,17 +475,10 @@ impl PolyRq {
 }
 
 impl zeroize::Zeroize for PolyRq {
-    /// Zeroize all coefficients using volatile writes.
+    /// Zeroize all coefficients using volatile writes (through the `zeroize`
+    /// crate's array impl), then a compiler fence.
     fn zeroize(&mut self) {
-        for i in 0..N_DEGREE {
-            // SAFETY: `&mut self.coeffs[i]` is a valid, uniquely-borrowed, aligned `i32`
-            // reference for the duration of this call; `write_volatile` and the
-            // `compiler_fence` below prevent the compiler from eliding this zeroization as
-            // a dead store now that `self.coeffs` has no further reads in this scope.
-            unsafe {
-                core::ptr::write_volatile(&mut self.coeffs[i], 0i32);
-            }
-        }
+        self.coeffs.zeroize();
         compiler_fence(Ordering::SeqCst);
     }
 }
@@ -540,6 +531,7 @@ pub fn poly_check_infinity_norm(poly: &PolyRq, bound: i32) -> bool {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 
@@ -588,6 +580,44 @@ mod tests {
         let result = enclave_plp_prove_fixed_time(&mut proof_out, &s, &tau);
         assert!(result.is_ok(), "proof generation should succeed: {:?}", result);
     }
+
+    /// SHA3-256 over every coefficient (little-endian) and the iteration
+    /// counter of a proof: the observable output, without padding bytes.
+    fn proof_digest(p: &PlpProof) -> [u8; 32] {
+        use sha3::{Digest, Sha3_256};
+        let mut h = Sha3_256::new();
+        for k in 0..MODULE_K {
+            for n in 0..RING_N {
+                Digest::update(&mut h, p.z.vec[k].coeffs[n].to_le_bytes());
+            }
+        }
+        Digest::update(&mut h, p.iteration_counter.to_le_bytes());
+        h.finalize().into()
+    }
+
+    /// Golden vector for the fixed-time prover (CORE-01). Recorded from the
+    /// 0.7.5 implementation, whose capture step reinterpreted `PlpProof` as
+    /// bytes with `unsafe`; the safe field-wise selection must give the same
+    /// proof for the same inputs.
+    #[test]
+    fn fixed_time_prover_output_is_unchanged() {
+        let mut s = VectorK::zero();
+        for k in 0..MODULE_K {
+            for n in 0..RING_N {
+                s.vec[k].coeffs[n] = ((n * 7 + k) % 5) as i32 - 2;
+            }
+        }
+        for (tau_byte, expected) in [(0x5Au8, GOLDEN_5A), (0x77u8, GOLDEN_77)] {
+            let mut proof = PlpProof::zero();
+            enclave_plp_prove_fixed_time(&mut proof, &s, &[tau_byte; 32]).unwrap();
+            let got = proof_digest(&proof);
+            let hex: alloc::string::String = got.iter().map(|b| alloc::format!("{b:02x}")).collect();
+            assert_eq!(hex, expected, "tau byte {tau_byte:#04x}, iteration {}", proof.iteration_counter);
+        }
+    }
+
+    const GOLDEN_5A: &str = "f148909bb3302513073ea2ca199eb171bdd5de0345748eebda594ae5aab7877c";
+    const GOLDEN_77: &str = "c9399d28fb6b6ffc83f638057dfb6c36c3592ee63b3e9b000a45ab793e998ba3";
 
     #[test]
     fn test_masking_vector_range() {

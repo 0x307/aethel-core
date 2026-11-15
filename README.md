@@ -1,6 +1,6 @@
 # aethel-core — Post-Quantum Ephemeral Identity Engine
 
-> **Tier:** Production · **MSRV:** 1.85 · **License:** Apache-2.0 · Not independently audited, see [the crate family](#the-0x307-crate-family)
+> **Tier:** Production · **MSRV:** 1.87 · **License:** Apache-2.0 · Not independently audited, see [the crate family](#the-0x307-crate-family)
 
 [![WASM](https://img.shields.io/badge/target-wasm32--unknown--unknown-green)](https://webassembly.org/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](#license)
@@ -48,8 +48,10 @@ integration tests + 1 doctest, all passing on default features):
 - `saap` — crate-internal primitives the credential module builds on. The single-response
   `saap_prove`/`verify_saap_proof` pathway was retired from the WIT world in 0.1.5 (D-13)
 - `htss` — 3-of-5 threshold secret splitting and reconstruction, hypercube routing
-- `sampling` — constant-time rejection sampling, CBD η=2 sampler, norm checking
-- `ct_verify` — a Valgrind/ctgrind constant-time verification harness (doctest-covered)
+- `sampling` — fixed-iteration rejection sampling, CBD η=2 sampler, norm checking (not
+  verified constant time)
+- `ct_verify` — a smoke test of the fixed-iteration prover. It makes no constant-time claim:
+  the Valgrind harness it used to describe was never in the repo
 - `identity_error` — the Rust-side mirror of the WIT world's `identity-error` variant, plus
   checked wrappers (`*_checked` functions) that return it instead of panicking
 - `component` — the WebAssembly Component Model adapter implementing the `aethel:core` WIT
@@ -63,11 +65,10 @@ integration tests + 1 doctest, all passing on default features):
   part of the default build, and it does not appear in the `aethel:core` WIT world. Enabling
   `--features puf` compiles it; the default build does not, and no exported operation reaches
   it.
-- **`enclave` feature** — gates a set of `extern "C"` FFI declarations (`src/puf.rs`'s `ffi`
-  module) into a C enclave shim (`c/bch_decoder.c`, `c/ct_norm.c`, `c/ct_sampling.c`) that this
-  repo does not build a real target for; `c/ct_sampling.c` calls C functions declared nowhere
-  in this repo. Nothing in the working code path (`plp`, `saap`, `htss`, `sampling`, `puf`
-  without `enclave`) calls into it.
+- **`enclave` feature** does nothing since 0.7.6. It used to compile a C enclave shim
+  (`c/*.c`) and declare FFI to it in `src/puf.rs`, but `c/ct_sampling.c` called functions
+  defined nowhere, so the feature never built on Linux or macOS. The C sources and the FFI are
+  removed; the name stays so a manifest that names it still resolves.
 - **`aethel-runtime`** and the substrate repos (`pqvm`, `waven`, `wamr`, `awre`, `qies`,
   `obfuscation`) — separate repositories this crate does not depend on, build, or test.
   Nothing in this repo implies they ship alongside it.
@@ -98,8 +99,8 @@ integration tests + 1 doctest, all passing on default features):
 | `saap` | Selective Attribute Attestation Protocol — BDLOP commitment + ZK selective disclosure | Default |
 | `credential` | Issuer-authenticated credential issuance/presentation, superseding `saap`'s public surface | Default |
 | `htss` | Threshold secret sharing (Shamir 3-of-5) for identity backup, modeled over a Q_5 routing graph — a principal/operator ritual, not a hosted service | Default |
-| `sampling` | Constant-time rejection sampling — 16-iteration fixed loop, CMOV, zeroization | Default |
-| `ct_verify` | Constant-time verification harness | Default |
+| `sampling` | Rejection sampling with a 16-iteration fixed loop, masked selection and zeroization. Timing not tested | Default |
+| `ct_verify` | Smoke test of the fixed-iteration prover; no constant-time claim | Default |
 | `identity_error` | Mirror of the WIT `identity-error` variant, plus checked wrappers | Default |
 | `puf` | SRAM PUF fuzzy extractor — BCH(1023,512,55) over GF(2^10), research code | Non-default (`puf` feature) |
 
@@ -122,7 +123,7 @@ See [`docs/PURPOSES.md`](docs/PURPOSES.md) for the full purpose-bytes registry
 |---------|---------|-------------|
 | `std` | ✅ Yes | Standard library support, heap allocation. |
 | `component` | ❌ No | Builds the WebAssembly Component Model adapter implementing the `aethel:core` WIT world. The one WASM artifact; see [The WASM Component](#the-wasm-component-l1-boundary). |
-| `enclave` | ❌ No | Compiles the C enclave FFI shim (see [What runs today vs. what is designed](#what-runs-today-vs-what-is-designed)). Not buildable against a real enclave target in this repo. |
+| `enclave` | ❌ No | Does nothing since 0.7.6; kept so manifests that name it still resolve. Its C sources never built and were removed (see [What runs today vs. what is designed](#what-runs-today-vs-what-is-designed)). |
 | `puf` | ❌ No | Compiles the `puf` module (SRAM PUF fuzzy extraction). Research only, and not reachable through the `aethel:core` WIT world. |
 
 ## WASM Exports
@@ -247,7 +248,7 @@ its target matrix and production/research status.
 ## Building
 
 ### Prerequisites
-- Rust 1.85+ (`rustup target add wasm32-unknown-unknown` for WASM builds)
+- Rust 1.87+ (`rustup target add wasm32-unknown-unknown` for WASM builds)
 
 ### Native Build + Tests
 
@@ -313,12 +314,17 @@ Most application code should prefer [`signing::Identity`](src/signing.rs)'s
 
 - **Post-quantum secure**: Based on Module Learning With Errors (M-LWE), conjectured secure against quantum adversaries
 - **Ephemeral identifiers**: Each context `τ` produces a mathematically independent projection — no linkability across contexts
-- **Constant-time**: All secret-dependent operations use fixed-iteration loops and CMOV selection
+- **No constant-time claim**: the enclave prover runs a fixed 16 iterations and selects with
+  masks, but nothing tests its timing, so it is not claimed to be constant time
 - **No traditional crypto**: Zero AES, RSA, ECDSA, or classical elliptic curve operations
 - **PLP is an identity, not an address. Spend rails stay `eip155`.** A PLP projection is
   never encoded as, hashed into, or substituted for a Base address; USDC settlement is a
   separate dialect this crate has no notion of. See
   [`docs/PLP-ALGORITHM.md` §9](docs/PLP-ALGORITHM.md#9-plp-vs-didpkheip155--two-dialects-not-two-competitors-a-2).
+- **Strict verification.** `signing::verify_strict` (and `verify_strict_with_purpose`) returns
+  `Err` for every refusal, where `verify` returns `Ok(false)` for a signature that does not
+  verify. Prefer it: an ignored `Ok(false)` accepts a forgery. `signing::VerifyingKey` parses a
+  public key once and verifies many signatures with it. `verify` is unchanged.
 - **A key signs under one purpose only.** `signing::Identity::sign_with_purpose`/`verify_with_purpose`
   use FIPS 204's native context mechanism, so a signature made for one purpose (attach
   challenge, receipt, HITL approval, ...) provably does not verify under another. See
@@ -327,21 +333,15 @@ Most application code should prefer [`signing::Identity`](src/signing.rs)'s
 
 ## Unsafe Code
 
-The default build (`std`, no `puf`, no `enclave`) contains exactly 5 `unsafe` blocks, all in
-[`src/sampling.rs`](src/sampling.rs) (lines ~98, ~167, ~173, ~179, ~408 at time of writing),
-each carrying a `// SAFETY:` comment above it explaining the invariant it relies on:
+No build without `component` has `unsafe` code, and
+`#![forbid(unsafe_code)]` makes that a compile error rather than a count to keep current. Since
+0.7.6, `sampling`'s zeroization goes through the `zeroize` crate's volatile writes, and
+`enclave_plp_prove_fixed_time` selects its proof with a field-by-field masked copy instead
+of byte-slice views of `PlpProof`.
 
-- Two `enclave_explicit_zeroize` / `PolyRq::zeroize` blocks use `core::ptr::write_volatile` in
-  a loop over a pointer derived from a live `&mut` reference, sized to `size_of::<T>()`,
-  followed by a `compiler_fence` — this is what makes secret zeroization survive dead-store
-  elimination.
-- Three blocks in `enclave_plp_prove_fixed_time` reinterpret same-sized, non-aliasing local
-  `PlpProof` values as byte slices (`core::slice::from_raw_parts[_mut]`) to run a
-  constant-time conditional copy (`ct_cond_copy`) without branching on secret data.
-
-Enabling `puf` or `enclave` additionally compiles 2 more `unsafe` blocks, in `src/puf.rs`'s
-`ffi` module — a wrapper around the C enclave shim described in
-[What runs today vs. what is designed](#what-runs-today-vs-what-is-designed).
+The one exception is `component`, which relaxes this to `deny(unsafe_code)` with one module
+allowed: the bindings `wit_bindgen::generate!` emits use `unsafe` for the canonical ABI. The
+adapter's own code has none.
 
 ## Shared WASM Modules
 
@@ -412,19 +412,22 @@ Apache-2.0.
 
 ## The 0x307 crate family
 
-`aethel-core` is one of six open-source crates from [0x307](https://0x307.com/crates), held to one
+`aethel-core` is one of nine open-source crates from [0x307](https://0x307.com/crates), held to one
 audit and stability standard.
 
-| Crate | Tier | What it does |
-|---|---|---|
-| [pqc-sig](https://crates.io/crates/pqc-sig) | Production | ML-DSA, SLH-DSA and FN-DSA signatures (FIPS 204/205/206) |
-| [pqc-kem](https://crates.io/crates/pqc-kem) | Production | ML-KEM (FIPS 203), the X25519 + ML-KEM-768 hybrid, X-Wing, and sealed boxes |
-| [aethel-core](https://crates.io/crates/aethel-core) (this crate) | Production | Post-quantum anonymous identity: a separate identifier per context, context-bound ML-DSA signing |
-| [aethel-sdk](https://crates.io/crates/aethel-sdk) | Preview | The SDK over aethel-core, and the place to start |
-| [aethel-vault](https://crates.io/crates/aethel-vault) | Preview | Agent-held wallet: policy-gated x402 / EIP-3009 signing with ML-DSA-65 spend records |
-| [pqc-privacy](https://crates.io/crates/pqc-privacy) | Lab | Research bundle, kept off every identity and payment path |
+| Crate | Tier | What it does | Builds on |
+|---|---|---|---|
+| [pqc-kem](https://crates.io/crates/pqc-kem) | Production | ML-KEM (FIPS 203), the X25519 + ML-KEM-768 hybrid, X-Wing, and sealed boxes | none in the family |
+| [pqc-sig](https://crates.io/crates/pqc-sig) | Production | ML-DSA, SLH-DSA and FN-DSA signatures (FIPS 204/205/206) | none in the family |
+| [aethel-core](https://crates.io/crates/aethel-core) (this crate) | Production | Post-quantum anonymous identity: a separate identifier per context, context-bound ML-DSA signing | pqc-sig 0.5 |
+| [aethel-auth](https://crates.io/crates/aethel-auth) | Production | Delegated authority for agent identities: login proofs, bounded delegation, step-up approval, revocation | aethel-core 0.7 |
+| [aethel-sdk](https://crates.io/crates/aethel-sdk) | Preview | The SDK over aethel-core, and the place to start | pqc-sig 0.5 (aethel-core 0.7 vendored) |
+| [erand-nats](https://crates.io/crates/erand-nats) | Preview | A post-quantum NATS client inside a WASM component | pqc-kem 0.2, pqc-sig 0.4 |
+| [witan](https://crates.io/crates/witan) | Preview | Post-quantum gossip engine with message-level authentication, as a WASM component | pqc-kem 0.2, pqc-sig 0.4 |
+| [aethel-vault](https://crates.io/crates/aethel-vault) | Lab | Agent-held wallet: policy-gated x402 / EIP-3009 signing with ML-DSA-65 spend records | aethel-core 0.7 |
+| [pqc-privacy](https://crates.io/crates/pqc-privacy) | Lab | Research bundle, kept off every identity and payment path | pqc-kem 0.3, pqc-sig 0.5 |
 
-**Production** crates are thin, standards-bound libraries meant to be depended on today. **Preview** crates work and are published, with APIs still settling. **Lab** crates are research, never on an identity or payment path.
+**Production** crates are thin, standards-bound libraries meant to be depended on today. **Preview** crates work and are published, with APIs still settling. **Lab** crates are research and experiments: try them, but keep them off a production identity or payment path.
 
 **Runnable examples:** [0x307/examples](https://github.com/0x307/examples), one program per
 crate, pinned to the published versions.

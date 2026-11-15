@@ -1,6 +1,6 @@
 [package]
 name = "aethel-core"
-version = "0.7.5"
+version = "0.7.6"
 edition = "2021"
 description = "Post-quantum anonymous identity for Rust and WASM. A no_std alternative to static W3C DIDs: per-context identifiers, no reusable public key, context-bound ML-DSA signing. Selective disclosure ships and is being hardened; see SECURITY.md."
 authors = ["Kenneth Harper"]
@@ -11,7 +11,7 @@ documentation = "https://docs.rs/aethel-core"
 keywords = ["post-quantum", "identity", "did", "wasm", "zero-knowledge"]
 categories = ["cryptography", "no-std", "wasm"]
 readme = "README.md"
-rust-version = "1.85"
+rust-version = "1.87"
 build = "build.rs"
 
 # ── Library configuration ─────────────────────────────────────────────────────
@@ -44,6 +44,14 @@ serde = { version = "1.0", default-features = false, features = ["alloc", "deriv
 # is named here. Only ML-DSA: SLH-DSA and its pkcs8/der/spki tail stay out of
 # the dependency graph.
 pqc-sig = { version = "0.5", default-features = false, features = ["ml-dsa"] }
+
+# The ML-DSA implementation pqc-sig itself uses, named directly for one thing:
+# `signing::VerifyingKey` keeps a decoded key (with its expanded public matrix)
+# so it can verify many signatures without decoding the key each time, which
+# pqc-sig's byte-only verify API can't do. Same version and features pqc-sig
+# already brings in, so no crate is added to the graph. Signing still goes
+# through pqc-sig.
+ml-dsa = { version = "0.1.1", default-features = false, features = ["alloc"] }
 
 # AEAD for sealing an identity at rest. Sealing lives inside L1 for the same
 # reason signing does: the SDK cannot carry a cipher without breaking "one
@@ -106,11 +114,6 @@ wasmtime = { version = "48.0.1", default-features = false, features = ["runtime"
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 getrandom = { version = "0.2", features = ["js"] }
 
-# ── Build dependencies ────────────────────────────────────────────────────────
-
-[build-dependencies]
-cc = "1.0"
-
 # ── Feature flags ─────────────────────────────────────────────────────────────
 
 [features]
@@ -127,8 +130,12 @@ std = [
     "chacha20poly1305/std",
 ]
 
-# enclave: Enables constant-time enclave execution paths and volatile zeroization
-# Activates the fixed-iteration rejection sampling loop and CMOV selection
+# enclave: does nothing since 0.7.6 (CORE-02). It used to compile C enclave
+# sources (c/*.c) and declare FFI to them in puf::ffi, but c/ct_sampling.c called
+# functions defined nowhere, so the feature never built on Linux or macOS, and
+# on Windows and wasm32 it compiled nothing. The C and the FFI are removed. The
+# feature name stays so a manifest that names it still resolves; it goes in
+# the next minor release.
 enclave = []
 
 # component: Builds the WebAssembly Component Model adapter in `src/component.rs`,

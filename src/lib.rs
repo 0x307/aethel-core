@@ -15,19 +15,21 @@
 //!   dimension-disjoint routing across Q_5 (32 nodes, 80 edges).
 //! - **`saap`** (crate-private; its prove and verify pathway is retired, D-13) — Selective Attribute Attestation Protocol: BDLOP vector commitment
 //!   scheme with ZK selective disclosure and norm-bound verification.
-//! - **[`sampling`]** — Enclave constant-time rejection sampling: 16-iteration padded
-//!   loop, CMOV selection, volatile zeroization, and CBD η=2 sampler.
+//! - **[`sampling`]** — Fixed-iteration rejection sampling (16-iteration padded loop,
+//!   masked selection, zeroization) and the CBD η=2 sampler. Not verified constant time.
 //! - `puf` (research, non-default `puf` feature) — SRAM PUF + BCH(1023,512,55) fuzzy
 //!   extractor: GF(2^10) arithmetic, Berlekamp-Massey, Chien Search, and pure Rust WASM
 //!   implementation. Not part of the default build or the `aethel:core` WIT world.
-//! - **[`ct_verify`]** — Valgrind/ctgrind constant-time verification harness.
+//! - **[`ct_verify`]** — A smoke test of the fixed-iteration prover. It does not verify
+//!   constant-time behaviour, and there is no constant-time claim (see its docs).
 //!
 //! ## Security Properties
 //!
 //! - **Unlinkability**: `Adv_Adversary_Link(b_τ1, b_τ2) ≤ Negl(λ)` under M-LWE hardness.
 //! - **Post-Quantum Soundness**: Reduces to Decision M-LWE_{k,k+1,η,q} over R_q.
 //! - **Zero Static Keys**: No public key is ever written to persistent storage or ledger.
-//! - **Constant-Time**: All secret-dependent operations execute in fixed time (I_max=16).
+//! - **Fixed iteration count**: the enclave prover always runs I_max=16 iterations and
+//!   selects with masks. Its timing is not tested, so no constant-time claim is made.
 //!
 //! ## Parameters (AETHEL-SAAP-LEVEL1)
 //!
@@ -42,37 +44,40 @@
 //!   implementing the `aethel:core` WIT world. This is the only WebAssembly surface; a
 //!   `wasm-bindgen` cdylib used to sit alongside it and was retired (see the note at the
 //!   bottom of this file).
-//! - `enclave`: Enables constant-time enclave execution paths and volatile zeroization.
+//! - `enclave`: does nothing since 0.7.6. Its C sources never built and were removed; the
+//!   name stays so manifests that name it still resolve.
 //! - `puf` (research, non-default): Compiles the `puf` module. SRAM PUF is out of scope
 //!   for the `aethel:core` WIT world and has no WASM export of its own; this feature
 //!   exists for research use only, not for production identity derivation.
 //!
 //! ## Unsafe Code
 //!
-//! The default build (no `puf`, no `enclave`) contains exactly 5 `unsafe` blocks, all in
-//! [`sampling`], each carrying a `// SAFETY:` comment explaining the invariant it relies on
-//! (volatile zeroization writes and constant-time byte-slice reinterpretation of same-sized,
-//! non-aliasing structs). Enabling `puf` or `enclave` additionally compiles 2 more `unsafe`
-//! blocks in `puf::ffi`, an FFI wrapper around a C enclave shim that is not shipped by
-//! default.
+//! None: `#![forbid(unsafe_code)]` applies to every build except `component`.
+//! Zeroization goes through the `zeroize` crate's volatile writes, and the fixed-time
+//! prover selects its proof field by field. With `component` the crate is
+//! `deny(unsafe_code)` instead, with one module allowed: the bindings
+//! `wit_bindgen::generate!` emits (canonical ABI glue).
 //!
 //! ---
 //!
 //! ## The 0x307 crate family
 //!
-//! `aethel-core` is one of six open-source crates from [0x307](https://0x307.com/crates), held to one
+//! `aethel-core` is one of nine open-source crates from [0x307](https://0x307.com/crates), held to one
 //! audit and stability standard.
 //!
-//! | Crate | Tier | What it does |
-//! |---|---|---|
-//! | [pqc-sig](https://crates.io/crates/pqc-sig) | Production | ML-DSA, SLH-DSA and FN-DSA signatures (FIPS 204/205/206) |
-//! | [pqc-kem](https://crates.io/crates/pqc-kem) | Production | ML-KEM (FIPS 203), the X25519 + ML-KEM-768 hybrid, X-Wing, and sealed boxes |
-//! | [aethel-core](https://crates.io/crates/aethel-core) (this crate) | Production | Post-quantum anonymous identity: a separate identifier per context, context-bound ML-DSA signing |
-//! | [aethel-sdk](https://crates.io/crates/aethel-sdk) | Preview | The SDK over aethel-core, and the place to start |
-//! | [aethel-vault](https://crates.io/crates/aethel-vault) | Preview | Agent-held wallet: policy-gated x402 / EIP-3009 signing with ML-DSA-65 spend records |
-//! | [pqc-privacy](https://crates.io/crates/pqc-privacy) | Lab | Research bundle, kept off every identity and payment path |
+//! | Crate | Tier | What it does | Builds on |
+//! |---|---|---|---|
+//! | [pqc-kem](https://crates.io/crates/pqc-kem) | Production | ML-KEM (FIPS 203), the X25519 + ML-KEM-768 hybrid, X-Wing, and sealed boxes | none in the family |
+//! | [pqc-sig](https://crates.io/crates/pqc-sig) | Production | ML-DSA, SLH-DSA and FN-DSA signatures (FIPS 204/205/206) | none in the family |
+//! | [aethel-core](https://crates.io/crates/aethel-core) (this crate) | Production | Post-quantum anonymous identity: a separate identifier per context, context-bound ML-DSA signing | pqc-sig 0.5 |
+//! | [aethel-auth](https://crates.io/crates/aethel-auth) | Production | Delegated authority for agent identities: login proofs, bounded delegation, step-up approval, revocation | aethel-core 0.7 |
+//! | [aethel-sdk](https://crates.io/crates/aethel-sdk) | Preview | The SDK over aethel-core, and the place to start | pqc-sig 0.5 (aethel-core 0.7 vendored) |
+//! | [erand-nats](https://crates.io/crates/erand-nats) | Preview | A post-quantum NATS client inside a WASM component | pqc-kem 0.2, pqc-sig 0.4 |
+//! | [witan](https://crates.io/crates/witan) | Preview | Post-quantum gossip engine with message-level authentication, as a WASM component | pqc-kem 0.2, pqc-sig 0.4 |
+//! | [aethel-vault](https://crates.io/crates/aethel-vault) | Lab | Agent-held wallet: policy-gated x402 / EIP-3009 signing with ML-DSA-65 spend records | aethel-core 0.7 |
+//! | [pqc-privacy](https://crates.io/crates/pqc-privacy) | Lab | Research bundle, kept off every identity and payment path | pqc-kem 0.3, pqc-sig 0.5 |
 //!
-//! **Production** crates are thin, standards-bound libraries meant to be depended on today. **Preview** crates work and are published, with APIs still settling. **Lab** crates are research, never on an identity or payment path.
+//! **Production** crates are thin, standards-bound libraries meant to be depended on today. **Preview** crates work and are published, with APIs still settling. **Lab** crates are research and experiments: try them, but keep them off a production identity or payment path.
 //!
 //! **Runnable examples:** [0x307/examples](https://github.com/0x307/examples), one program per
 //! crate, pinned to the published versions.
@@ -83,7 +88,11 @@
 //!
 
 #![cfg_attr(not(feature = "std"), no_std)]
-// unsafe_code is required for volatile memory operations in sampling.rs and puf.rs
+// No `unsafe` in this crate's own code (CORE-01). Forbidden outright in every
+// build except `component`, whose `wit_bindgen::generate!` bindings use
+// `unsafe` for the canonical ABI; that one module is allowed.
+#![cfg_attr(not(feature = "component"), forbid(unsafe_code))]
+#![cfg_attr(feature = "component", deny(unsafe_code))]
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
@@ -117,7 +126,7 @@ pub mod signing;
 
 pub mod credential;
 
-/// Enclave constant-time rejection sampling and CBD η=2 sampler.
+/// Fixed-iteration rejection sampling and CBD η=2 sampler (not verified constant time).
 pub mod sampling;
 
 /// `aethel-plp-1` — versioned wire envelope for PLP projections and proofs
@@ -128,14 +137,17 @@ pub mod wire;
 #[cfg(feature = "puf")]
 pub mod puf;
 
-/// Valgrind/ctgrind constant-time verification harness.
+/// Smoke test of the fixed-iteration prover. Makes no constant-time claim.
 pub mod ct_verify;
 
 /// Rust-side mirror of the `aethel:core` WIT world's `identity-error` variant.
 pub mod identity_error;
 
 /// WebAssembly Component Model adapter implementing the `aethel:core` WIT world.
+// The generated bindings need `unsafe` for the canonical ABI; the adapter's
+// own code has none.
 #[cfg(feature = "component")]
+#[allow(unsafe_code)]
 pub mod component;
 
 // ── Re-exports of public API types ───────────────────────────────────────────
@@ -159,6 +171,10 @@ pub use saap::{SaapProof, SaapValidationError};
 // `docs/PURPOSES.md` for the purpose-context registry and
 // `signing::Identity::sign_with_purpose` for how it is used.
 pub use signing::{verify, verify_with_purpose, Identity};
+
+// CORE-04: the strict forms, where every refusal is an `Err`. Additive; the
+// two above are unchanged. `VerifyingKey` and `VerifyError` stay in `signing`.
+pub use signing::{verify_strict, verify_strict_with_purpose};
 
 // A-4: the bytes-only verify entry point the gap analysis names —
 // `verify_projection(projection_bytes, proof_bytes, context) -> Result<bool, _>`
@@ -189,7 +205,7 @@ pub const PARAM_BETA: i64 = 78;
 /// Rejection threshold γ₁ - β = 130_994.
 pub const REJECTION_BOUND: i64 = PARAM_GAMMA1 - PARAM_BETA;
 
-/// Fixed iteration ceiling for constant-time enclave loop.
+/// Fixed iteration ceiling for the enclave prover's padded loop.
 pub const FIXED_ITERATION_CEILING: usize = 16;
 
 /// Magic header bytes for the Ephemeral Identity Attestation Bundle (EIAB).

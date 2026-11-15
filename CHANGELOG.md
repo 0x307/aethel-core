@@ -7,6 +7,161 @@ adheres to the breaking-change and deprecation rules in
 [`STABILITY.md`](./STABILITY.md) rather than strict SemVer prior to `1.0.0` — see that
 document for what counts as breaking inside `0.x`.
 
+## Yanked versions
+
+Twelve versions are yanked. Each line gives the date it was yanked, in UTC from the crates.io
+audit log, and the reason. No reason was written down when these yanks were made, so each says
+"reason not recorded". Where this changelog or [`SECURITY.md`](./SECURITY.md) documents a defect
+in that version, the line names it, without claiming it was the reason. Each was yanked after its
+successor was published. 0.2.0 has an entry below but was never published to crates.io; 0.3.3
+and 0.5.1 were published and have no entry below, so their lines say what changed.
+
+- **0.1.0**: yanked 2026-09-01, after 0.1.5 was published. Reason not recorded. Its `build.rs`
+  wrote a `dist/` directory into the source tree on every build (fixed in 0.1.5), and reusing a
+  context τ leaked the master secret (AETHEL-F-02, fixed in 0.3.0).
+- **0.1.5**: yanked 2026-09-01, after 0.3.0 was published. Reason not recorded. Reusing a context
+  τ leaked the master secret (AETHEL-F-02, fixed in 0.3.0).
+- **0.3.0**: yanked 2026-09-01, two minutes after 0.3.1 was published. Reason not recorded. Its
+  Fiat-Shamir challenge did not bind `b_τ`, so a proof could be made for a projection with no
+  identity behind it (0X3-108, fixed in 0.3.1).
+- **0.3.1**: yanked 2026-09-03, when 0.3.2 was published. Reason not recorded. It required
+  `pqc-sig` 0.1, which was yanked (0.3.2 moved to 0.3).
+- **0.3.2**: yanked 2026-09-04, when 0.3.3 was published. Reason not recorded.
+- **0.3.3**: yanked 2026-09-07, after 0.4.0 was published. Reason not recorded. No library code
+  changed from 0.3.2: it changed the crates.io description, keywords and categories, and
+  re-recorded `component.sha256`.
+- **0.4.0**: yanked 2026-09-09, after 0.5.0 was published. Reason not recorded. `SECURITY.md`
+  records two defects in it, both fixed in 0.5.0: the projection ran at module rank 1 where the
+  specification requires 4, and the rejection-sampling bound was not derived from the challenge
+  space.
+- **0.5.0**: yanked 2026-09-10, after 0.5.1 was published. Reason not recorded. It required
+  `pqc-sig` 0.3, whose last unyanked version, 0.3.1, was yanked that day.
+- **0.5.1**: yanked 2026-09-10, a minute after 0.6.0 was published. Reason not recorded. Its only
+  change from 0.5.0 was `pqc-sig` 0.3 to 0.4.
+- **0.6.0**: yanked 2026-09-18, after 0.6.1 was published. Reason not recorded.
+- **0.6.1**: yanked 2026-09-24, after 0.7.0 and 0.7.1 were published. Reason not recorded.
+- **0.7.0**: yanked 2026-09-24, after 0.7.1 was published. Reason not recorded. Its crates.io
+  description listed zero-knowledge selective disclosure as a finished property, which D-01 says
+  it is not (fixed in 0.7.1).
+
+## [0.7.6] - Unreleased
+
+A patch release. `signing::verify`, `verify_with_purpose`, `Identity` and `IdentityError` are
+unchanged, and so are the WIT world, every wire format and every key, signature, projection
+and proof byte: the byte-identity test (`signing::byte_identity_tests`) and the `aethel-plp-1`
+vectors pass unchanged.
+
+Two changes use the security exception now in [`STABILITY.md`](./STABILITY.md) §2, because each
+would otherwise need a minor release: **the MSRV rises from 1.85 to 1.87**, and
+**`sampling::enclave_explicit_zeroize` takes `T: Zeroize` instead of any `T`**. Both are below.
+
+### Deprecated
+
+- **`sampling::enclave_plp_prove_fixed_time` is not secure: do not use it.** It is deprecated
+  and hidden from the docs in 0.7.6 and is removed in 0.8. It is research code: the identity
+  path, `signing` and `plp::Prover` don't call it. If you call it, stop.
+
+### Changed
+
+- **MSRV raised from 1.85 to 1.87** (security exception). `ctutils` 0.4.4, the fix for
+  RUSTSEC-2026-0385 (non-constant-time mask generation and `u128` comparisons, reached through
+  pqc-sig's `ml-dsa` and `hybrid-array`), requires rustc 1.87, and pqc-sig 0.5.1 already
+  declares 1.87. A consumer on 1.85 or 1.86 with an MSRV-aware resolver would otherwise resolve
+  pqc-sig 0.5.0 and the vulnerable `ctutils` 0.4.2 with no warning. The CI job is now
+  `MSRV (1.87) build`.
+- **`sampling::enclave_explicit_zeroize` now requires `T: zeroize::Zeroize`** (CORE-01, security
+  exception). It took any `T: Sized` and wrote zero bytes over it with `unsafe` code. That was
+  unsound for a safe function: all-zero is not a valid value of a reference, a `Box` or a
+  `NonZero*`, so safe code could cause undefined behaviour through it. Every type this crate
+  wipes, every integer and every array of them still compile; a caller passing its own struct
+  derives `Zeroize` for it. It now wipes through that impl and then fences.
+- **`enclave` is a no-op** (CORE-02). See Removed.
+- `htss`'s share-width check uses `usize::is_multiple_of`, stable since 1.87, which clippy asks
+  for once the MSRV is 1.87. Same result.
+- **The prover's capture step is a field-by-field masked copy** (CORE-01) instead of byte-slice
+  views of `PlpProof`. A new golden test, recorded from 0.7.5, shows the same proofs for the
+  same inputs.
+
+### Added
+
+- **`signing::verify_strict` and `verify_strict_with_purpose`** (CORE-04), also at the crate
+  root. They return `Result<(), signing::VerifyError>`: every refusal, including a well-formed
+  signature that doesn't verify, is an `Err`. `verify` returns `Ok(false)` for that case, which
+  a caller can drop with `.is_ok()` or `?` and so accept a forgery, so its docs now say "prefer
+  `verify_strict`". `verify` itself is unchanged. The two agree on every input a test tries.
+- **`signing::VerifyingKey`** (CORE-04): parse an ML-DSA-65 public key once with `from_bytes`
+  and verify many signatures without decoding it again (decoding expands the public matrix).
+  `ml-dsa` 0.1.1, the crate pqc-sig already uses for ML-DSA, becomes a direct dependency for
+  this. No crate is added to the dependency graph.
+- **`signing::VerifyError`**, `#[non_exhaustive]`: `InvalidPublicKey`, `MalformedSignature`,
+  `PurposeTooLong`, `BadSignature`.
+- **`#![forbid(unsafe_code)]`** (CORE-01) on every build except `component`, where the crate is
+  `deny(unsafe_code)` and only the bindings `wit_bindgen::generate!` emits are allowed `unsafe`.
+  The default build had five `unsafe` blocks, all in `sampling`; it now has none. Zeroization
+  goes through the `zeroize` crate's volatile writes.
+- **`supply-chain/audits.toml`**: cargo-vet audits of this crate's live versions (0.7.1 to
+  0.7.5), importable by consumers (see the file's header). They are `safe-to-run`, and the
+  header says why.
+- **Tests:** `tests/htss_item_docs.rs` (every public `htss` item carries its label, with a
+  control), `sampling::tests::fixed_time_prover_output_is_unchanged`, and
+  `signing::strict_verify_tests` (6).
+
+### Removed
+
+- **The C enclave sources** (`c/bch_decoder.c`, `c/ct_norm.c`, `c/ct_sampling.c`), the `cc`
+  build step and build-dependency, and `puf::ffi`, the FFI declarations to them (CORE-02).
+  `c/ct_sampling.c` had no includes and called functions defined nowhere, so
+  `--features enclave` never built on Linux or macOS, the only targets the C step ran on; on
+  Windows and wasm32 the feature compiled nothing. No working build loses anything. The
+  `enclave` feature name stays, doing nothing, so a manifest that names it still resolves; it
+  is removed in the next minor release. CI now builds `--features enclave` and
+  `--features puf,enclave` on Linux.
+
+### Fixed
+
+- **Lockfile moves `ctutils` 0.4.2 to 0.4.4** for RUSTSEC-2026-0385 (see the MSRV change), and
+  the dev-dependency **`wasmtime` 48.0.7 to 48.0.8** (with its `cranelift` and `pulley` crates)
+  for RUSTSEC-2026-0422, RUSTSEC-2026-0423 and RUSTSEC-2026-0424. `cargo deny check advisories`
+  had failed on `main` since 0.7.5's merge (2026-10-23) on RUSTSEC-2026-0385, and since
+  2026-11-02 on the three `wasmtime` ones too. `wasmtime` is only used by this crate's
+  own component tests, so no published build was affected by those three.
+
+### Documentation
+
+- **No constant-time claim for `ct_verify` and the enclave prover** (CORE-03). `ct_verify`
+  said it proves constant-time compliance with a Valgrind/ctgrind harness, but the harness
+  files it pointed to were never in the repository and no CI job ran Valgrind. A dudect-style
+  timing test was not added, because a statistical timing test on shared CI runners isn't
+  reliable enough to gate on, so the claim is removed: the module, the crate docs, the README,
+  `docs/OVERVIEW.md` and `docs/PLP-ALGORITHM.md` now say the prover runs a fixed 16 iterations
+  with masked selection and that its timing is untested. The API is unchanged.
+- **Every public `htss` item says "In-process simulation, not key protection"** in its own
+  docs (CORE-03), not only in the module docs, so docs.rs item pages and IDE hovers show it.
+- **The yank text is now true** (FAM-01). `STABILITY.md` said no published version is ever
+  yanked, while 12 of 17 are. It and `SECURITY.md` now describe the practice: fix forward, add a
+  RustSec advisory for a security fix, and yank only when a version can't be installed or would
+  mislead, with the reason recorded here. [Yanked versions](#yanked-versions), at the top of this
+  file, gives one line per yanked version.
+- **A general security exception in `STABILITY.md` §2**, the same paragraph as pqc-kem's and
+  pqc-sig's. This release uses it twice (see the top of this entry).
+- **The crate family section** lists all nine crates with a tier and the family line each one
+  builds on, the same table as the other family READMEs. aethel-vault is now Lab, and the Lab
+  definition reads "keep them off a production identity or payment path".
+
+### CI
+
+- `ci.yml` runs on pull requests into `main` only, the filter `cargo-deny.yml` already had.
+  Stacked story PRs no longer run it; the merge PR into `main` does. `push` is unchanged.
+- The MSRV job is renamed `MSRV (1.87) build` and pins Rust 1.87.0.
+- Clippy 1.100 (stable since 2026-11-09) flags index loops in `ct_verify` and
+  `tests/plp_tests.rs` as `needless_range_loop`. `ct_verify`'s two input loops use iterators
+  now; its tests and `plp_tests` allow the lint, as `sampling` already does. Same behaviour.
+
+**The component's bytes change**, from the `sampling` and `signing` changes and the version
+bump. `component.sha256` is now `7be435d9…`, re-recorded from CI's canonical build of
+`b6efb8d`. aethel-sdk vendors the component by git revision, so it needs a re-vendor after
+0.7.6 is published.
+
 ## [0.7.5] - 2026-10-23
 
 Additive. Nothing existing changes: no function, type, wire format or error variant, and no

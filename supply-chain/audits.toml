@@ -1,0 +1,57 @@
+# cargo-vet audits for aethel-core's own released versions (FAM-04).
+#
+# Written by hand in cargo-vet's audits.toml format (cargo vet was not
+# installed where this was prepared). It holds audits only; this repo does
+# not run `cargo vet` on its own dependencies yet, so there is no
+# config.toml or imports.lock beside it.
+#
+# To trust these audits from your own project, add to your
+# supply-chain/config.toml:
+#
+#   [imports.0x307-aethel-core]
+#   url = "https://raw.githubusercontent.com/0x307/aethel-core/main/supply-chain/audits.toml"
+#
+# What an entry means: the maintainer has reviewed that published version in
+# full (it is the maintainer's own code) against cargo-vet's built-in
+# criteria. It is not an independent third-party audit; see README.md (the
+# crate family's "Audit status"). It covers aethel-core's own code, not its
+# dependencies. A new entry is added when each version is published. The
+# yanked versions (see CHANGELOG.md "Yanked versions") have no entry.
+#
+# Why safe-to-run and not safe-to-deploy: the credential module's commitment
+# does not hide the attributes it commits to (D-01 in SECURITY.md, open in
+# every 0.7.x), and in 0.7.1 to 0.7.5 the public `sampling::enclave_explicit_zeroize`
+# is a safe function that can write zero bytes over a type for which zero is
+# not a valid value (fixed in 0.7.6). The identity and signing path (`signing`,
+# `plp`, the component) is what this crate is deployed for; review it against
+# your own use before treating any entry as safe-to-deploy.
+
+[[audits.aethel-core]]
+who = "Ed Johnson <165963846+eljay179@users.noreply.github.com>"
+criteria = "safe-to-run"
+version = "0.7.1"
+notes = "Maintainer's own release. Pure Rust; ML-DSA-65 through pqc-sig, XChaCha20-Poly1305 sealing, SHAKE-256. build.rs reads two committed files (component.rev, component.sha256) and compiles C only with the non-default enclave feature. No network or filesystem access at run time. Five unsafe blocks in sampling.rs (volatile zeroization, byte views of PlpProof). D-01: credential presentations do not hide attributes."
+
+[[audits.aethel-core]]
+who = "Ed Johnson <165963846+eljay179@users.noreply.github.com>"
+criteria = "safe-to-run"
+delta = "0.7.1 -> 0.7.2"
+notes = "Maintainer's own release. Additive: purpose-separated signing exported through the WIT world (delegating to the native functions) and six registered purposes. No change to cryptographic code."
+
+[[audits.aethel-core]]
+who = "Ed Johnson <165963846+eljay179@users.noreply.github.com>"
+criteria = "safe-to-run"
+delta = "0.7.2 -> 0.7.3"
+notes = "Maintainer's own release. Documentation, lint and doc-link fixes; the retired saap pathway marked as retired. No behaviour change."
+
+[[audits.aethel-core]]
+who = "Ed Johnson <165963846+eljay179@users.noreply.github.com>"
+criteria = "safe-to-run"
+delta = "0.7.3 -> 0.7.4"
+notes = "Maintainer's own release. Additive: registered-purposes export and signing::purpose::ALL, generated from one declaration. No change to cryptographic code."
+
+[[audits.aethel-core]]
+who = "Ed Johnson <165963846+eljay179@users.noreply.github.com>"
+criteria = "safe-to-run"
+delta = "0.7.4 -> 0.7.5"
+notes = "Maintainer's own release. pqc-sig 0.4 to 0.5 (byte-identical encodings, pinned by a byte-identity test), one new registered purpose, doc and CI fixes."

@@ -502,7 +502,7 @@ The following properties are targets for formal verification using Coq or Lean 4
 1. **Unlinkability**: `Adv_Adversary_Link(PLP_τ1, PLP_τ2) ≤ Negl(λ) + ε_DP`
 2. **Soundness**: A forged proof passes verification with probability at most `Negl(λ)` under M-SIS hardness.
 3. **Zero-Knowledge**: The proof transcript `(W, c, z)` is simulatable without knowledge of `s`.
-4. **Constant-Time**: The `enclave_plp_prove_fixed_time` function has no secret-dependent branches (verified via Valgrind/ctgrind).
+4. **Constant-Time**: The `enclave_plp_prove_fixed_time` function has no secret-dependent branches. A target, not verified: no Valgrind/ctgrind or timing test runs (see `src/ct_verify.rs`).
 
 ---
 
