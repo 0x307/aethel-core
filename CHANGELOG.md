@@ -44,7 +44,7 @@ and 0.5.1 were published and have no entry below, so their lines say what change
   description listed zero-knowledge selective disclosure as a finished property, which D-01 says
   it is not (fixed in 0.7.1).
 
-## [0.7.6] - Unreleased
+## [0.7.6] - 2026-11-16
 
 A patch release. `signing::verify`, `verify_with_purpose`, `Identity` and `IdentityError` are
 unchanged, and so are the WIT world, every wire format and every key, signature, projection
